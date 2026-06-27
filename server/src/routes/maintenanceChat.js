@@ -194,7 +194,7 @@ async function buildSystemPrompt(item, manuals) {
     }
   }
 
-  return `You are a knowledgeable home maintenance expert helping a homeowner set up maintenance tasks in their Household Copilot app. Today is ${today}.
+  return `You are a knowledgeable home maintenance expert helping a homeowner set up maintenance tasks in their Household Calendar app. Today is ${today}.
 
 ## Item Details
 ${itemLines.join('\n')}${manualsBlock}

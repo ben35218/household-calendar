@@ -26,7 +26,7 @@ const tripName = ref('');
 const chat = useChat({
   endpoint: '/api/vacation/chat',
   contextEndpoint: `/api/vacation/chat/context?tripId=${tripId}`,
-  storageKey: `household-copilot-vacation-chat-${tripId}`,
+  storageKey: `household-calendar-vacation-chat-${tripId}`,
   buildBody: (messages) => ({ tripId, messages }),
   onResult: (data) => {
     if (data.navigateTo) setTimeout(() => router.push(data.navigateTo), 1200);

@@ -36,7 +36,7 @@ export default function LoginScreen() {
       <View style={styles.inner}>
         <View style={styles.header}>
           <Ionicons name="home" size={56} color={colors.primary} />
-          <Text style={styles.title}>Household Copilot</Text>
+          <Text style={styles.title}>Household Calendar</Text>
           <Text style={styles.subtitle}>Sign in to your account</Text>
         </View>
 

@@ -6,7 +6,7 @@
           <v-card-text class="pa-8">
             <div class="text-center mb-6">
               <v-icon size="64" color="primary">mdi-home-heart</v-icon>
-              <h1 class="text-h5 mt-2 font-weight-bold">Household Copilot</h1>
+              <h1 class="text-h5 mt-2 font-weight-bold">Household Calendar</h1>
               <p class="text-body-2 text-medium-emphasis">Create your account</p>
             </div>
             <v-form @submit.prevent="handleRegister">

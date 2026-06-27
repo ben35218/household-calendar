@@ -18,7 +18,7 @@
         "simulator": false
       },
       "env": {
-        "EXPO_PUBLIC_API_URL": "https://REPLACE_WITH_PROD_API_URL",
+        "EXPO_PUBLIC_API_URL": "https://household-calendar-api.onrender.com",
         "EXPO_PUBLIC_RC_IOS_KEY": "REPLACE_WITH_REVENUECAT_IOS_PUBLIC_KEY",
         "EXPO_PUBLIC_RC_ANDROID_KEY": "REPLACE_WITH_REVENUECAT_ANDROID_PUBLIC_KEY"
       }
@@ -26,7 +26,7 @@
     "production": {
       "autoIncrement": true,
       "env": {
-        "EXPO_PUBLIC_API_URL": "https://REPLACE_WITH_PROD_API_URL",
+        "EXPO_PUBLIC_API_URL": "https://household-calendar-api.onrender.com",
         "EXPO_PUBLIC_RC_IOS_KEY": "REPLACE_WITH_REVENUECAT_IOS_PUBLIC_KEY",
         "EXPO_PUBLIC_RC_ANDROID_KEY": "REPLACE_WITH_REVENUECAT_ANDROID_PUBLIC_KEY"
       }

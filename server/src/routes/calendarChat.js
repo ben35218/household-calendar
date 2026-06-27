@@ -400,7 +400,7 @@ function buildSystemPrompt(req, people) {
   const familySection = buildPeopleSection(people.filter(p => p.type === 'family'));
   const friendsSection = buildPeopleSection(people.filter(p => p.type === 'friend'));
 
-  return `You are a helpful household copilot assistant managing a family's home calendar. Today is ${today}. You are assisting ${userName}.
+  return `You are a helpful household calendar assistant managing a family's home calendar. Today is ${today}. You are assisting ${userName}.
 
 ## Household Members
 ${familySection}

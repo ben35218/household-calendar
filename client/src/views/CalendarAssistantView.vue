@@ -20,7 +20,7 @@ const router = useRouter();
 const chat = useChat({
   endpoint: '/api/calendar/chat',
   contextEndpoint: '/api/calendar/chat/context',
-  storageKey: 'household-copilot-chat-history',
+  storageKey: 'household-calendar-chat-history',
   buildBody: (messages) => ({ messages }),
   onResult: (data) => {
     if (data.navigateTo) setTimeout(() => router.push(data.navigateTo), 1200);

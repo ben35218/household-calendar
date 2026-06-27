@@ -97,7 +97,7 @@ router.post('/from-url', async (req, res) => {
 
     const response = await axios.get(url, {
       timeout: 10000,
-      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; HouseholdCopilot/1.0)' },
+      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; HouseholdCalendar/1.0)' },
       maxContentLength: 5 * 1024 * 1024,
     });
 

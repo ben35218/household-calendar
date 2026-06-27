@@ -1,9 +1,9 @@
-/* Household Copilot service worker — handles web-push display + click (#8). */
+/* Household Calendar service worker — handles web-push display + click (#8). */
 
 self.addEventListener('push', (event) => {
   let data = {};
   try { data = event.data ? event.data.json() : {}; } catch { data = { body: event.data?.text() }; }
-  const title = data.title || 'Household Copilot';
+  const title = data.title || 'Household Calendar';
   event.waitUntil(
     self.registration.showNotification(title, {
       body: data.body || '',

@@ -1,8 +1,8 @@
 {
-  "name": "household-copilot-admin",
+  "name": "household-calendar-admin",
   "version": "1.0.0",
   "private": true,
-  "description": "Household Copilot — admin web app (monetization, households, plans)",
+  "description": "Household Calendar — admin web app (monetization, households, plans)",
   "scripts": {
     "dev": "vite",
     "build": "vite build",

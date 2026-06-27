@@ -1,10 +1,10 @@
 # Store Release (Phase 4)
 
-Status of store-prep work for the Household Copilot mobile app (`mobile/`).
+Status of store-prep work for the Household Calendar mobile app (`mobile/`).
 
 ## Already scaffolded (in the repo)
 
-- **App identity:** name, slug, scheme, bundle id / package `app.householdcopilot.mobile` (`app.json`).
+- **App identity:** name, slug, scheme, bundle id / package `app.householdcalendar.mobile` (`app.json`).
 - **Icons & splash:** `assets/icon.png`, Android adaptive icon set, `assets/splash-icon.png` via `expo-splash-screen`.
 - **Permissions / usage strings:** iOS camera + photo-library descriptions; Android `CAMERA`, `READ_MEDIA_IMAGES`, `POST_NOTIFICATIONS`.
 - **iOS privacy manifest:** `ios.privacyManifests` in `app.json` — declares no tracking and the required-reason API categories used by Expo/SecureStore (UserDefaults `CA92.1`, file timestamp `C617.1`, system boot time `35F9.1`, disk space `E174.1`). RevenueCat ships its own manifest in its pod.
@@ -22,7 +22,7 @@ Each item below is external — provide the value, then drop it into the noted f
    - Unblocks: `eas build`, `eas submit`, **and push tokens** (`getExpoPushTokenAsync` needs the projectId).
    - Server side: set `EXPO_ACCESS_TOKEN` (optional) so `server/src/services/push.js` can call the Expo Push API.
 
-2. **Apple Developer Program** ($99/yr) + **App Store Connect** app record for `app.householdcopilot.mobile`.
+2. **Apple Developer Program** ($99/yr) + **App Store Connect** app record for `app.householdcalendar.mobile`.
    - Fill `eas.json` → `submit.production.ios`: `appleId`, `ascAppId`, `appleTeamId` (or use an ASC API key).
    - Enables TestFlight + App Store submission.
 

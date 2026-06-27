@@ -1,4 +1,4 @@
-# Household Copilot — Mobile (iOS + Android)
+# Household Calendar — Mobile (iOS + Android)
 
 Native app built with **React Native + Expo (SDK 56) + TypeScript**. It talks to
 the same Express/Mongoose API as the web app and admin console.

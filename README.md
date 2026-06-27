@@ -1,4 +1,4 @@
-# Household Copilot
+# Household Calendar
 
 A MEVN-stack web application for managing household inventory, product manuals, and maintenance schedules. Built for rural/countryside homeowners who need to track many items and recurring tasks across appliances, vehicles, systems, and land.
 
@@ -35,7 +35,7 @@ A MEVN-stack web application for managing household inventory, product manuals, 
 
 ```bash
 git clone <repo-url>
-cd household-copilot
+cd household-calendar
 npm install                    # root (concurrently)
 npm --prefix server install    # server deps
 npm --prefix client install    # client deps
@@ -51,7 +51,7 @@ Edit `server/.env`:
 
 ```env
 PORT=3001
-MONGODB_URI=mongodb://localhost:27017/household-copilot
+MONGODB_URI=mongodb://localhost:27017/household-calendar
 JWT_SECRET=<long-random-string>
 JWT_EXPIRES_IN=7d
 UPLOAD_DIR=./uploads
@@ -87,7 +87,7 @@ The app uses Nodemailer with Gmail App Passwords (SMTP). OAuth2 is architectural
 
 1. Go to your Google Account → **Security** → **2-Step Verification** (must be enabled)
 2. At the bottom, click **App passwords**
-3. Create a new app password for "Mail" / "Other" → name it "Household Copilot"
+3. Create a new app password for "Mail" / "Other" → name it "Household Calendar"
 4. Copy the 16-character password into `GMAIL_APP_PASSWORD` in `server/.env`
 
 The scheduler sends a single daily digest at 07:00 local time for all tasks due within your reminder lead window (default: 7 days). Use **Settings → Trigger Email Check Now** to test without waiting.
@@ -97,7 +97,7 @@ The scheduler sends a single daily digest at 07:00 local time for all tasks due 
 ## Project Structure
 
 ```
-/household-copilot
+/household-calendar
   /client               # Vue 3 + Vuetify SPA
     /src
       /views            # Page components

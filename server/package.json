@@ -1,7 +1,7 @@
 {
-  "name": "household-copilot-server",
+  "name": "household-calendar-server",
   "version": "1.0.0",
-  "description": "Household Copilot API server",
+  "description": "Household Calendar API server",
   "main": "src/index.js",
   "scripts": {
     "start": "node src/run.js",

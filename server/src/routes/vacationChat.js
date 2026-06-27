@@ -77,7 +77,7 @@ function buildSystemPrompt(req, trip, items) {
   const userName = req.user.name || 'the user';
   const budgetLine = trip.budget != null ? `${trip.budget} ${trip.baseCurrency || 'CAD'}` : 'not set';
 
-  return `You are a helpful vacation-planning assistant inside the Household Copilot app. Today is ${today}. You are assisting ${userName}.
+  return `You are a helpful vacation-planning assistant inside the Household Calendar app. Today is ${today}. You are assisting ${userName}.
 
 You are focused on ONE specific trip (below). Answer questions about THIS trip only — its itinerary, schedule, costs, and what's left to plan. If the user asks about a different trip, tell them to open the assistant from that trip's page.
 

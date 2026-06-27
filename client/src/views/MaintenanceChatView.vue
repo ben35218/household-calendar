@@ -44,7 +44,7 @@ const createdTasks = ref([]);
 const chat = useChat({
   endpoint: '/api/maintenance/chat',
   contextEndpoint: `/api/maintenance/chat/context?itemId=${itemId}`,
-  storageKey: `household-copilot-maint-chat-${itemId}`,
+  storageKey: `household-calendar-maint-chat-${itemId}`,
   buildBody: (messages) => ({ itemId, messages }),
   onResult: (data) => {
     if (data.tasksCreated?.length) createdTasks.value = createdTasks.value.concat(data.tasksCreated);

@@ -14,7 +14,7 @@ const WMO_DESCRIPTIONS = {
 async function geocodeAddress(address) {
   const { data } = await axios.get('https://nominatim.openstreetmap.org/search', {
     params: { q: address, format: 'json', limit: 1 },
-    headers: { 'User-Agent': 'HouseholdCopilot/1.0 (household management app)' },
+    headers: { 'User-Agent': 'HouseholdCalendar/1.0 (household management app)' },
     timeout: 8000,
   });
   if (!data.length) throw new Error('Could not geocode home address — check that your address in Settings is complete');

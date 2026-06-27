@@ -1,15 +1,15 @@
 {
   "expo": {
-    "name": "Household Copilot",
-    "slug": "household-copilot",
-    "scheme": "householdcopilot",
+    "name": "Household Calendar",
+    "slug": "household-calendar",
+    "scheme": "householdcalendar",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "app.householdcopilot.mobile",
+      "bundleIdentifier": "app.householdcalendar.mobile",
       "infoPlist": {
         "NSCameraUsageDescription": "Take photos of items, receipts, recipes, and booking confirmations to add them automatically.",
         "NSPhotoLibraryUsageDescription": "Attach photos of items, receipts, and confirmations from your library."
@@ -47,7 +47,7 @@
       }
     },
     "android": {
-      "package": "app.householdcopilot.mobile",
+      "package": "app.householdcalendar.mobile",
       "adaptiveIcon": {
         "backgroundColor": "#1976D2",
         "foregroundImage": "./assets/android-icon-foreground.png",

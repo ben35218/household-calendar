@@ -11,7 +11,7 @@ const axios = require('axios');
 //     without it, so native push is always considered available.
 const PUBLIC_KEY  = process.env.VAPID_PUBLIC_KEY;
 const PRIVATE_KEY = process.env.VAPID_PRIVATE_KEY;
-const SUBJECT     = process.env.VAPID_SUBJECT || 'mailto:admin@household-copilot.app';
+const SUBJECT     = process.env.VAPID_SUBJECT || 'mailto:admin@household-calendar.app';
 const EXPO_ACCESS_TOKEN = process.env.EXPO_ACCESS_TOKEN;
 const EXPO_PUSH_URL = 'https://exp.host/--/api/v2/push/send';
 

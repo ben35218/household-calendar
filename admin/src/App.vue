@@ -4,7 +4,7 @@
       <v-app-bar color="primary" density="comfortable" flat>
         <v-app-bar-title>
           <v-icon icon="mdi-shield-crown" class="mr-2" />
-          Household Copilot — Admin
+          Household Calendar — Admin
         </v-app-bar-title>
         <v-spacer />
         <span class="text-body-2 mr-3 d-none d-sm-inline">{{ auth.user?.email }}</span>

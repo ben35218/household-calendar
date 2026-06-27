@@ -1255,7 +1255,7 @@ function buildGroceryText() {
   }
 
   lines.push('');
-  lines.push('Shared from Household Copilot');
+  lines.push('Shared from Household Calendar');
 
   return lines.join('\n');
 }

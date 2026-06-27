@@ -1,9 +1,9 @@
-# Render Blueprint for the Household Copilot API.
+# Render Blueprint for the Household Calendar API.
 # Dashboard → New + → Blueprint → connect this repo; Render reads this file.
 # Secrets marked `sync: false` are entered in the Render UI, never committed.
 services:
   - type: web
-    name: household-copilot-api
+    name: household-calendar-api
     runtime: node
     plan: starter
     region: oregon

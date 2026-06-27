@@ -124,7 +124,7 @@ const PORT = process.env.PORT || 3001;
 
 connectDB().then(() => {
   httpServer = app.listen(PORT, () => {
-    console.log(`Household Copilot server running on port ${PORT}`);
+    console.log(`Household Calendar server running on port ${PORT}`);
     startScheduler();
   });
 });
