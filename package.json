@@ -1,0 +1,21 @@
+{
+  "name": "household-copilot",
+  "version": "1.0.0",
+  "description": "Household Copilot - home inventory, manuals & maintenance scheduler",
+  "private": true,
+  "scripts": {
+    "dev:server": "npm --prefix server run dev",
+    "dev:client": "npm --prefix client run dev",
+    "dev": "concurrently \"npm run dev:server\" \"npm run dev:client\"",
+    "build": "npm --prefix client run build",
+    "start": "npm --prefix server start"
+  },
+  "devDependencies": {
+    "@types/react": "~19.2.14",
+    "concurrently": "^8.2.2",
+    "typescript": "~6.0.3"
+  },
+  "dependencies": {
+    "expo": "^56.0.12"
+  }
+}

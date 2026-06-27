@@ -1,0 +1,45 @@
+# Render Blueprint for the Household Copilot API.
+# Dashboard → New + → Blueprint → connect this repo; Render reads this file.
+# Secrets marked `sync: false` are entered in the Render UI, never committed.
+services:
+  - type: web
+    name: household-copilot-api
+    runtime: node
+    plan: starter
+    region: oregon
+    rootDir: server
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /api/health
+    autoDeploy: true
+    disk:
+      name: uploads
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: JWT_SECRET
+        generateValue: true
+      - key: JWT_EXPIRES_IN
+        value: 7d
+      - key: UPLOAD_DIR
+        value: /var/data/uploads
+      # --- secrets / set in the Render dashboard ---
+      - key: MONGODB_URI
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: REVENUECAT_WEBHOOK_SECRET
+        sync: false
+      - key: EXPO_ACCESS_TOKEN
+        sync: false
+      # --- optional feature keys (leave blank to disable that feature) ---
+      - key: GOOGLE_PLACES_API_KEY
+        sync: false
+      - key: BRAVE_SEARCH_KEY
+        sync: false
+      - key: VAPI_API_KEY
+        sync: false
+      - key: VAPI_PHONE_NUMBER_ID
+        sync: false

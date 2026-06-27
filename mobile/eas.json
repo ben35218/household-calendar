@@ -1,0 +1,48 @@
+{
+  "cli": {
+    "version": ">= 16.0.0",
+    "appVersionSource": "remote"
+  },
+  "build": {
+    "development": {
+      "developmentClient": true,
+      "distribution": "internal",
+      "env": {
+        "EXPO_PUBLIC_API_URL": "http://localhost:3001"
+      }
+    },
+    "preview": {
+      "distribution": "internal",
+      "autoIncrement": true,
+      "ios": {
+        "simulator": false
+      },
+      "env": {
+        "EXPO_PUBLIC_API_URL": "https://REPLACE_WITH_PROD_API_URL",
+        "EXPO_PUBLIC_RC_IOS_KEY": "REPLACE_WITH_REVENUECAT_IOS_PUBLIC_KEY",
+        "EXPO_PUBLIC_RC_ANDROID_KEY": "REPLACE_WITH_REVENUECAT_ANDROID_PUBLIC_KEY"
+      }
+    },
+    "production": {
+      "autoIncrement": true,
+      "env": {
+        "EXPO_PUBLIC_API_URL": "https://REPLACE_WITH_PROD_API_URL",
+        "EXPO_PUBLIC_RC_IOS_KEY": "REPLACE_WITH_REVENUECAT_IOS_PUBLIC_KEY",
+        "EXPO_PUBLIC_RC_ANDROID_KEY": "REPLACE_WITH_REVENUECAT_ANDROID_PUBLIC_KEY"
+      }
+    }
+  },
+  "submit": {
+    "production": {
+      "ios": {
+        "appleId": "REPLACE_WITH_APPLE_ID_EMAIL",
+        "ascAppId": "REPLACE_WITH_APP_STORE_CONNECT_APP_ID",
+        "appleTeamId": "REPLACE_WITH_APPLE_TEAM_ID"
+      },
+      "android": {
+        "serviceAccountKeyPath": "./play-service-account.json",
+        "track": "internal"
+      }
+    }
+  }
+}

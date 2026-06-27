@@ -1,0 +1,44 @@
+const mongoose = require('mongoose');
+
+const recurrenceSchema = new mongoose.Schema({
+  type: { type: String, enum: ['interval', 'calendar', 'one-time'], required: true },
+  intervalValue: Number,
+  intervalUnit: { type: String, enum: ['days', 'weeks', 'months', 'years'] },
+  months: [Number],      // for calendar type: which months; for yearly interval: anchor month [1–12]
+  dayOfMonth: Number,    // 1–31 anchor day for monthly/yearly intervals and calendar type
+  dayOfWeek: Number,     // 0=Sun … 6=Sat anchor for weekly intervals, or weekday for monthly weekOfMonth
+  weekOfMonth: Number,   // 1–4 or -1 (last) — which occurrence of dayOfWeek in the month
+}, { _id: false });
+
+const taskSchema = new mongoose.Schema({
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  itemId: { type: mongoose.Schema.Types.ObjectId, ref: 'Item' },
+  categoryId:    { type: mongoose.Schema.Types.ObjectId, ref: 'Category' },
+  subcategoryId: { type: mongoose.Schema.Types.ObjectId, ref: 'Category', default: null },
+  title: { type: String, required: true },
+  description: String,
+  instructions: String,
+  recurrence: recurrenceSchema,
+  estimatedDurationMins: Number,
+  estimatedCost: Number,
+  priority: { type: String, enum: ['low', 'medium', 'high'], default: 'medium' },
+  seasonal: Boolean,
+  lastCompletedAt: Date,
+  nextDueDate: Date,
+  // Per-task alerts (days before the due date), mirroring chores. Default 0 =
+  // alert on the due date itself. null = no alert. Delivered via push.
+  reminderDaysBefore: { type: Number, default: 0 },
+  alert2DaysBefore:   { type: Number, default: null },
+  // Who the alert goes to in a shared household: 'everyone' or 'owner' (the
+  // member who created the task). Only meaningful with >1 member.
+  alertAudience: { type: String, enum: ['everyone', 'owner'], default: 'everyone' },
+  active: { type: Boolean, default: true },
+  templateId: String,
+  weatherSensitive: { type: Boolean, default: false },
+  // Mileage-based tracking
+  intervalKm:    Number,   // e.g. 50000 — service every 50,000 km
+  lastServiceKm: Number,   // odometer reading at last completion
+  nextDueKm:     Number,   // lastServiceKm + intervalKm
+}, { timestamps: true });
+
+module.exports = mongoose.model('MaintenanceTask', taskSchema);

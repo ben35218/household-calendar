@@ -1,0 +1,275 @@
+// Shared recurrence logic ported from the web client. The web app duplicated
+// this `recurrenceLabel`/save-rebuild logic across TaskFormView, ChoreFormView,
+// TaskDetailView, ChoreDetailView, and the dashboards; here it lives once.
+import { Recurrence, IntervalUnit, RecurrenceType } from '../api';
+
+export const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+export const WEEKDAY_NAMES = [
+  'Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday',
+];
+export const MONTH_NAMES = [
+  'January', 'February', 'March', 'April', 'May', 'June',
+  'July', 'August', 'September', 'October', 'November', 'December',
+];
+
+export const MONTH_OPTIONS = MONTH_NAMES.map((title, i) => ({ label: title, value: i + 1 }));
+
+export const RECURRENCE_TYPE_OPTIONS: { label: string; value: RecurrenceType }[] = [
+  { label: 'Interval (every N days/weeks/months/years)', value: 'interval' },
+  { label: 'Calendar (specific months of the year)', value: 'calendar' },
+  { label: 'One-time', value: 'one-time' },
+];
+
+export const INTERVAL_UNIT_OPTIONS: { label: string; value: IntervalUnit }[] = [
+  { label: 'Days', value: 'days' },
+  { label: 'Weeks', value: 'weeks' },
+  { label: 'Months', value: 'months' },
+  { label: 'Years', value: 'years' },
+];
+
+export const WEEK_OF_MONTH_OPTIONS = [
+  { label: 'First', value: 1 },
+  { label: 'Second', value: 2 },
+  { label: 'Third', value: 3 },
+  { label: 'Fourth', value: 4 },
+  { label: 'Last', value: -1 },
+];
+
+export const ALERT_DAY_OPTIONS: { label: string; value: number | null }[] = [
+  { label: 'No alert', value: null },
+  { label: 'On the due date', value: 0 },
+  { label: '1 day before', value: 1 },
+  { label: '2 days before', value: 2 },
+  { label: '3 days before', value: 3 },
+  { label: '1 week before', value: 7 },
+];
+
+export const AUDIENCE_OPTIONS = [
+  { label: 'Everyone in the household', value: 'everyone' },
+  { label: 'Only me', value: 'owner' },
+];
+
+export function ordinal(n: number | null | undefined): string {
+  if (n == null) return '';
+  const s = ['th', 'st', 'nd', 'rd'];
+  const v = n % 100;
+  return `${n}${s[(v - 20) % 10] || s[v] || s[0]}`;
+}
+
+// Human-readable summary of a stored recurrence (full month/day names).
+export function recurrenceLabel(r?: Recurrence | null): string {
+  if (!r) return '';
+  if (r.type === 'one-time') return 'One-time';
+  if (r.type === 'calendar') {
+    const months = r.months?.map((m) => MONTH_NAMES[m - 1]).join(', ');
+    const day = r.dayOfMonth ? ` on the ${ordinal(r.dayOfMonth)}` : '';
+    return months ? `Every year in ${months}${day}` : 'Calendar';
+  }
+  if (r.type === 'interval') {
+    const n = r.intervalValue;
+    const unit = n === 1 ? r.intervalUnit?.replace(/s$/, '') : r.intervalUnit;
+    let label = `Every ${n} ${unit}`;
+    if (r.intervalUnit === 'weeks' && r.dayOfWeek != null) {
+      label += ` on ${WEEKDAY_NAMES[r.dayOfWeek]}`;
+    }
+    if (r.intervalUnit === 'months') {
+      if (r.weekOfMonth != null && r.dayOfWeek != null) {
+        const pos = r.weekOfMonth === -1
+          ? 'last'
+          : ['', 'first', 'second', 'third', 'fourth'][r.weekOfMonth];
+        label += ` on the ${pos} ${WEEKDAY_NAMES[r.dayOfWeek]}`;
+      } else if (r.dayOfMonth) {
+        label += ` on the ${ordinal(r.dayOfMonth)}`;
+      }
+    }
+    if (r.intervalUnit === 'years') {
+      const m = r.months?.[0];
+      const d = r.dayOfMonth;
+      if (m && d) label += ` on ${MONTH_NAMES[m - 1]} ${ordinal(d)}`;
+      else if (m) label += ` in ${MONTH_NAMES[m - 1]}`;
+      else if (d) label += ` on the ${ordinal(d)}`;
+    }
+    return label;
+  }
+  return '';
+}
+
+// Short summary used on template cards (abbreviated months, no day suffixes).
+export function recurrenceLabelShort(r?: Recurrence | null): string {
+  if (!r) return '';
+  if (r.type === 'one-time') return 'One-time';
+  if (r.type === 'calendar') {
+    const months = r.months?.map((m) => MONTH_NAMES[m - 1].slice(0, 3)).join(' & ');
+    const day = r.dayOfMonth ? ` on the ${ordinal(r.dayOfMonth)}` : '';
+    return `Every year in ${months}${day}`;
+  }
+  if (r.type === 'interval') {
+    const n = r.intervalValue;
+    const unit = n === 1 ? r.intervalUnit?.replace(/s$/, '') : r.intervalUnit;
+    return `Every ${n} ${unit}`;
+  }
+  return '';
+}
+
+// The editable form shape — keeps every anchor field around while editing; the
+// irrelevant ones are stripped at save time by `buildRecurrencePayload`.
+export interface RecurrenceForm {
+  type: RecurrenceType;
+  intervalValue: number;
+  intervalUnit: IntervalUnit;
+  months: number[];
+  dayOfMonth: number | null;
+  dayOfWeek: number | null;
+  weekOfMonth: number | null;
+}
+
+export type MonthlyMode = 'day' | 'weekday';
+
+export function makeRecurrenceForm(defaults?: Partial<RecurrenceForm>): RecurrenceForm {
+  return {
+    type: 'interval',
+    intervalValue: 1,
+    intervalUnit: 'weeks',
+    months: [],
+    dayOfMonth: null,
+    dayOfWeek: null,
+    weekOfMonth: null,
+    ...defaults,
+  };
+}
+
+// Reverse of buildRecurrencePayload: hydrate the editable form from saved data.
+export function recurrenceToForm(
+  r: Recurrence | undefined | null,
+  defaults?: Partial<RecurrenceForm>,
+): { form: RecurrenceForm; monthlyMode: MonthlyMode } {
+  const form = makeRecurrenceForm({ ...defaults, ...(r || {}) } as Partial<RecurrenceForm>);
+  const monthlyMode: MonthlyMode =
+    form.intervalUnit === 'months' && form.weekOfMonth != null ? 'weekday' : 'day';
+  return { form, monthlyMode };
+}
+
+// Strip the editable form down to only the anchor fields relevant to the chosen
+// unit/mode — mirrors the save() logic shared by TaskFormView/ChoreFormView.
+export function buildRecurrencePayload(form: RecurrenceForm, monthlyMode: MonthlyMode): Recurrence {
+  const { type, intervalValue, intervalUnit, dayOfWeek, dayOfMonth, weekOfMonth, months } = form;
+  const rec: Recurrence = { type };
+
+  if (type === 'interval') {
+    rec.intervalValue = intervalValue;
+    rec.intervalUnit = intervalUnit;
+    rec.months = [];
+    if (intervalUnit === 'weeks' && dayOfWeek != null) rec.dayOfWeek = dayOfWeek;
+    if (intervalUnit === 'months') {
+      if (monthlyMode === 'weekday' && weekOfMonth != null && dayOfWeek != null) {
+        rec.weekOfMonth = weekOfMonth;
+        rec.dayOfWeek = dayOfWeek;
+      } else if (monthlyMode === 'day' && dayOfMonth) {
+        rec.dayOfMonth = dayOfMonth;
+      }
+    }
+    if (intervalUnit === 'years') {
+      if (months?.length) rec.months = months;
+      if (dayOfMonth) rec.dayOfMonth = dayOfMonth;
+    }
+  } else if (type === 'calendar') {
+    rec.months = months || [];
+    if (dayOfMonth) rec.dayOfMonth = dayOfMonth;
+  }
+
+  return rec;
+}
+
+// Live preview while editing (mirrors recurrencePreview in the web forms).
+export function recurrencePreview(form: RecurrenceForm, monthlyMode: MonthlyMode): string | null {
+  if (!form.type || form.type === 'one-time') return 'Runs once';
+  if (form.type === 'calendar') {
+    if (!form.months?.length) return null;
+    const monthStr = form.months.map((m) => MONTH_NAMES[m - 1]).join(', ');
+    const dayStr = form.dayOfMonth ? ` on the ${ordinal(form.dayOfMonth)}` : '';
+    return `Every year in ${monthStr}${dayStr}`;
+  }
+  if (form.type === 'interval') {
+    if (!form.intervalValue || !form.intervalUnit) return null;
+    const n = form.intervalValue;
+    const unit = n === 1 ? form.intervalUnit.replace(/s$/, '') : form.intervalUnit;
+    let base = `Every ${n} ${unit}`;
+    if (form.intervalUnit === 'weeks' && form.dayOfWeek != null) {
+      base += ` on ${WEEKDAYS[form.dayOfWeek]}`;
+    }
+    if (form.intervalUnit === 'months') {
+      if (monthlyMode === 'weekday' && form.weekOfMonth != null && form.dayOfWeek != null) {
+        const pos = WEEK_OF_MONTH_OPTIONS.find((w) => w.value === form.weekOfMonth)?.label ?? '';
+        base += ` on the ${pos} ${WEEKDAY_NAMES[form.dayOfWeek]}`;
+      } else if (form.dayOfMonth) {
+        base += ` on the ${ordinal(form.dayOfMonth)}`;
+      }
+    }
+    if (form.intervalUnit === 'years') {
+      const month = form.months?.[0];
+      const day = form.dayOfMonth;
+      if (month && day) base += ` on ${MONTH_NAMES[month - 1]} ${ordinal(day)}`;
+      else if (month) base += ` in ${MONTH_NAMES[month - 1]}`;
+      else if (day) base += ` on the ${ordinal(day)}`;
+    }
+    return base;
+  }
+  return null;
+}
+
+// Alert summary used on detail screens.
+export function alertSummary(opts: {
+  reminderDaysBefore?: number | null;
+  alert2DaysBefore?: number | null;
+  alertAudience?: string;
+}): string {
+  const phrase = (days?: number | null) => {
+    if (days == null) return null;
+    if (days === 0) return 'On the due date';
+    if (days === 1) return '1 day before';
+    if (days === 7) return '1 week before';
+    return `${days} days before`;
+  };
+  const parts = [phrase(opts.reminderDaysBefore), phrase(opts.alert2DaysBefore)].filter(Boolean) as string[];
+  if (!parts.length) return 'No alerts';
+  if (opts.alertAudience === 'owner') parts.push('you only');
+  return parts.join(' · ');
+}
+
+// Due-date status used by the maintenance list rows and task detail header.
+export type DueStatus = 'overdue' | 'soon' | 'upcoming' | 'none';
+
+export function dueStatus(nextDueDate?: string | null): { status: DueStatus; label: string } {
+  if (!nextDueDate) return { status: 'none', label: 'No date' };
+  const due = parseCalendarDate(nextDueDate);
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const soon = new Date(today);
+  soon.setDate(soon.getDate() + 7);
+  if (due < today) return { status: 'overdue', label: 'Overdue' };
+  if (due < soon) return { status: 'soon', label: 'Due Soon' };
+  return { status: 'upcoming', label: 'Upcoming' };
+}
+
+// MongoDB stores date-only inputs as UTC midnight, which shifts to the previous
+// day in negative-offset timezones. Parse the UTC YYYY-MM-DD at local noon.
+export function parseCalendarDate(d: string): Date {
+  const iso = new Date(d).toISOString();
+  const [y, mo, day] = iso.slice(0, 10).split('-').map(Number);
+  return new Date(y, mo - 1, day, 12, 0, 0);
+}
+
+export function formatCalendarDate(d?: string | null): string {
+  if (!d) return 'Not set';
+  return parseCalendarDate(d).toLocaleDateString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+  });
+}
+
+// Strip the web's `mdi-` prefix so the name matches @expo/vector-icons'
+// MaterialCommunityIcons glyph set.
+export function mdiName(icon?: string | null): string {
+  return (icon || 'mdi-broom').replace(/^mdi-/, '');
+}

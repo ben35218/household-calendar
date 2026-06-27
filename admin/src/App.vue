@@ -1,0 +1,38 @@
+<template>
+  <v-app>
+    <template v-if="auth.isLoggedIn && showChrome">
+      <v-app-bar color="primary" density="comfortable" flat>
+        <v-app-bar-title>
+          <v-icon icon="mdi-shield-crown" class="mr-2" />
+          Household Copilot — Admin
+        </v-app-bar-title>
+        <v-spacer />
+        <span class="text-body-2 mr-3 d-none d-sm-inline">{{ auth.user?.email }}</span>
+        <v-btn variant="text" prepend-icon="mdi-logout" @click="auth.logout">Sign out</v-btn>
+      </v-app-bar>
+
+      <v-navigation-drawer permanent>
+        <v-list nav density="comfortable">
+          <v-list-item to="/monetization" prepend-icon="mdi-cash-multiple" title="Monetization" />
+          <v-list-item to="/households" prepend-icon="mdi-home-group" title="Households & plans" />
+        </v-list>
+      </v-navigation-drawer>
+    </template>
+
+    <v-main>
+      <router-view />
+    </v-main>
+  </v-app>
+</template>
+
+<script setup>
+import { computed, onMounted } from 'vue';
+import { useRoute } from 'vue-router';
+import { useAuthStore } from './stores/auth';
+
+const auth = useAuthStore();
+const route = useRoute();
+const showChrome = computed(() => !route.meta.public);
+
+onMounted(() => auth.init());
+</script>

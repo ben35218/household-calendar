@@ -1,0 +1,553 @@
+import api from './client';
+
+// Typed endpoint groups ported from client/src/services/api.js. Wave 1 (Tasks &
+// Chores) fills out the maintenance surface: tasks, chores, their templates,
+// plus the supporting groups their screens need (categories, items, history,
+// settings, odometer, people). Remaining groups (inventory, recipes, trips, …)
+// follow the same one-line-per-endpoint pattern and land with their waves.
+
+export interface User {
+  _id: string;
+  email: string;
+  firstName: string;
+  lastName?: string;
+  role?: 'user' | 'admin';
+  householdId?: string; // used as the RevenueCat app_user_id
+}
+
+export interface AuthResponse {
+  token: string;
+  user: User;
+}
+
+export const authApi = {
+  login: (data: { email: string; password: string }) =>
+    api.post<AuthResponse>('/auth/login', data),
+  register: (data: { email: string; password: string; firstName: string; lastName?: string }) =>
+    api.post<AuthResponse>('/auth/register', data),
+  me: () => api.get<User>('/auth/me'),
+  updateEmail: (data: { email: string; password: string }) => api.put('/auth/email', data),
+  updatePassword: (data: { currentPassword: string; newPassword: string }) =>
+    api.put('/auth/password', data),
+};
+
+// ----- Recurrence (shared by tasks, chores, and their templates) -------------
+
+export type RecurrenceType = 'interval' | 'calendar' | 'one-time';
+export type IntervalUnit = 'days' | 'weeks' | 'months' | 'years';
+
+export interface Recurrence {
+  type: RecurrenceType;
+  intervalValue?: number;
+  intervalUnit?: IntervalUnit;
+  months?: number[];
+  dayOfMonth?: number | null;
+  dayOfWeek?: number | null;
+  weekOfMonth?: number | null;
+}
+
+// ----- Tasks (maintenance) ---------------------------------------------------
+
+export interface LinkedRef {
+  _id: string;
+  name: string;
+}
+
+export interface Task {
+  _id: string;
+  title: string;
+  description?: string;
+  instructions?: string;
+  active?: boolean;
+  categoryId?: LinkedRef | string | null;
+  subcategoryId?: LinkedRef | string | null;
+  itemId?: LinkedRef | string | null;
+  templateId?: string;
+  priority?: 'low' | 'medium' | 'high';
+  estimatedDurationMins?: number;
+  estimatedCost?: number;
+  nextDueDate?: string;
+  lastCompletedAt?: string;
+  recurrence?: Recurrence;
+  weatherSensitive?: boolean;
+  reminderDaysBefore?: number | null;
+  alert2DaysBefore?: number | null;
+  alertAudience?: 'everyone' | 'owner';
+  // mileage-tracked tasks
+  intervalKm?: number;
+  lastServiceKm?: number;
+  nextDueKm?: number;
+}
+
+export interface Completion {
+  _id: string;
+  completedDate: string;
+  performedBy?: string;
+  cost?: number;
+  notes?: string;
+}
+
+export const tasksApi = {
+  list: (params?: Record<string, unknown>) => api.get<Task[]>('/tasks', { params }),
+  get: (id: string) => api.get<Task>(`/tasks/${id}`),
+  create: (data: Record<string, unknown>) => api.post<Task>('/tasks', data),
+  update: (id: string, data: Record<string, unknown>) => api.put<Task>(`/tasks/${id}`, data),
+  delete: (id: string) => api.delete(`/tasks/${id}`),
+  complete: (id: string, data?: Record<string, unknown>) =>
+    api.post<{ task: Task; completion: Completion }>(`/tasks/${id}/complete`, data),
+  pause: (id: string) => api.post(`/tasks/${id}/pause`),
+  resume: (id: string) => api.post(`/tasks/${id}/resume`),
+  fromTemplate: (data: { templateIds: string[]; categoryId?: string }) =>
+    api.post<Task[]>('/tasks/from-template', data),
+  templates: (params?: Record<string, unknown>) => api.get<TaskTemplate[]>('/task-templates', { params }),
+  template: (id: string) => api.get<TaskTemplate>(`/task-templates/${id}`),
+  completions: (params?: Record<string, unknown>) => api.get<Completion[]>('/tasks/completions', { params }),
+};
+
+export interface TaskTemplate {
+  id: string;
+  title: string;
+  recurrence?: Recurrence;
+  priority?: 'low' | 'medium' | 'high';
+  estimatedDurationMins?: number;
+  estimatedCost?: number;
+  intervalKm?: number;
+  defaultCategoryName?: string;
+}
+
+// ----- Chores ----------------------------------------------------------------
+
+export interface ChoreAssignee {
+  _id?: string;
+  accountId?: string;
+  name?: string;
+}
+
+export interface Chore {
+  _id: string;
+  title: string;
+  instructions?: string;
+  description?: string;
+  icon?: string;
+  active?: boolean;
+  assignedTo?: ChoreAssignee | string | null;
+  nextDueDate?: string;
+  recurrence?: Recurrence;
+  reminderDaysBefore?: number | null;
+  alert2DaysBefore?: number | null;
+  alertAudience?: 'everyone' | 'owner';
+}
+
+export interface ChoreTemplate {
+  id: string;
+  title: string;
+  icon?: string;
+  recurrence?: Recurrence;
+  defaultCategoryName?: string;
+}
+
+export const choresApi = {
+  list: (params?: Record<string, unknown>) => api.get<Chore[]>('/chores', { params }),
+  get: (id: string) => api.get<Chore>(`/chores/${id}`),
+  create: (data: Record<string, unknown>) => api.post<Chore>('/chores', data),
+  update: (id: string, data: Record<string, unknown>) => api.put<Chore>(`/chores/${id}`, data),
+  delete: (id: string) => api.delete(`/chores/${id}`),
+  pause: (id: string) => api.post(`/chores/${id}/pause`),
+  resume: (id: string) => api.post(`/chores/${id}/resume`),
+  fromTemplate: (data: { templateIds: string[] }) => api.post<Chore[]>('/chores/from-template', data),
+  templates: (params?: Record<string, unknown>) => api.get<ChoreTemplate[]>('/chore-templates', { params }),
+  template: (id: string) => api.get<ChoreTemplate>(`/chore-templates/${id}`),
+};
+
+// ----- Supporting groups for the maintenance screens -------------------------
+
+export interface Category {
+  _id: string;
+  name: string;
+  color?: string;
+  icon?: string;
+  parent?: string | null;
+}
+
+export const categoriesApi = {
+  list: (params?: Record<string, unknown>) => api.get<Category[]>('/categories', { params }),
+  create: (data: Record<string, unknown>) => api.post<Category>('/categories', data),
+  update: (id: string, data: Record<string, unknown>) => api.put<Category>(`/categories/${id}`, data),
+  delete: (id: string, reassignTo?: string) =>
+    api.delete(`/categories/${id}`, { data: { reassignTo } }),
+};
+
+export interface CustomField {
+  key: string;
+  value: string;
+}
+
+export interface Manual {
+  _id: string;
+  title: string;
+  source: string;
+  fileSizeBytes: number;
+}
+
+export interface Item {
+  _id: string;
+  name: string;
+  type?: string;
+  location?: string;
+  categoryId?: LinkedRef | string | null;
+  manufacturer?: string;
+  modelNumber?: string;
+  serialNumber?: string;
+  purchaseDate?: string;
+  warrantyExpiry?: string;
+  notes?: string;
+  customFields?: CustomField[];
+  manuals?: Manual[];
+  autoLookupManual?: boolean;
+}
+
+export const itemsApi = {
+  list: (params?: Record<string, unknown>) => api.get<Item[]>('/items', { params }),
+  get: (id: string) => api.get<Item>(`/items/${id}`),
+  create: (data: Record<string, unknown>) => api.post<Item>('/items', data),
+  update: (id: string, data: Record<string, unknown>) => api.put<Item>(`/items/${id}`, data),
+  delete: (id: string) => api.delete(`/items/${id}`),
+  // fromPhoto is handled via lib/upload (multipart); endpoint: POST /items/from-photo
+};
+
+export interface ManualCandidate {
+  url: string;
+  title?: string;
+  domain?: string;
+  snippet?: string;
+  recommended?: boolean;
+}
+
+export interface ExtractedTask {
+  title: string;
+  description?: string;
+  priority?: 'low' | 'medium' | 'high';
+  recurrence?: Recurrence;
+}
+
+export const manualsApi = {
+  fromUrl: (itemId: string, data: { url: string; title?: string }) =>
+    api.post(`/manuals/items/${itemId}/from-url`, data),
+  autoLookup: (itemId: string) =>
+    api.post<{ candidates: ManualCandidate[]; query?: string; isFallback?: boolean }>(
+      `/manuals/items/${itemId}/auto-lookup`
+    ),
+  extractTasks: (id: string) =>
+    api.post<{ tasks: ExtractedTask[]; manualTitle?: string }>(`/manuals/${id}/extract-tasks`),
+  createTasks: (id: string, data: Record<string, unknown>) => api.post(`/manuals/${id}/create-tasks`, data),
+  delete: (id: string) => api.delete(`/manuals/${id}`),
+  // upload is handled via lib/upload (multipart, field 'file'); endpoint:
+  //   POST /manuals/items/:itemId/upload
+  // download is a token-query URL built in the screen via downloadUrl():
+  //   GET /manuals/:id/download?token=…
+};
+
+export interface InventoryItem {
+  _id: string;
+  name: string;
+  quantity?: string;
+  category?: string;
+  purchaseDate?: string;
+  expirationDate?: string;
+  notes?: string;
+  status?: 'active' | 'used' | 'thrown_out';
+  statusDate?: string;
+  wasteReason?: string;
+}
+
+export interface ReceiptExtraction {
+  storeName?: string;
+  items: {
+    name: string;
+    quantity?: string;
+    category?: string;
+    estimated_days_until_expiry?: number | null;
+  }[];
+}
+
+export interface Ingredient {
+  amount?: string;
+  unit?: string;
+  name: string;
+}
+
+export interface Recipe {
+  _id: string;
+  title: string;
+  description?: string;
+  imageUrl?: string;
+  sourceUrl?: string;
+  source?: 'manual' | 'ai' | 'url' | 'photo';
+  servings?: number | null;
+  prepTimeMins?: number | null;
+  cookTimeMins?: number | null;
+  tags?: string[];
+  ingredients?: Ingredient[];
+  instructions?: string[];
+}
+
+export const recipesApi = {
+  list: () => api.get<Recipe[]>('/recipes'),
+  get: (id: string) => api.get<Recipe>(`/recipes/${id}`),
+  create: (data: Record<string, unknown>) => api.post<Recipe>('/recipes', data),
+  update: (id: string, data: Record<string, unknown>) => api.put<Recipe>(`/recipes/${id}`, data),
+  delete: (id: string) => api.delete(`/recipes/${id}`),
+  fromUrl: (url: string) => api.post<Partial<Recipe>>('/recipes/from-url', { url }),
+  generateFromAi: (description: string) => api.post<Partial<Recipe>>('/recipes/generate', { description }),
+  // fromPhoto handled via lib/upload (field 'photo'): POST /recipes/from-photo
+};
+
+export interface RecipeSchedule {
+  _id: string;
+  recipeId: { _id: string; title?: string } | string;
+  scheduledDate: string;
+  servings?: number;
+}
+
+export interface GroceryItem {
+  name: string;
+  amount?: string;
+}
+
+export const recipeScheduleApi = {
+  list: (params?: Record<string, unknown>) => api.get<RecipeSchedule[]>('/recipe-schedule', { params }),
+  schedule: (data: { recipeId: string; scheduledDate: string; servings?: number }) =>
+    api.post('/recipe-schedule', data),
+  update: (id: string, data: Record<string, unknown>) => api.put(`/recipe-schedule/${id}`, data),
+  remove: (id: string) => api.delete(`/recipe-schedule/${id}`),
+  forRecipe: (recipeId: string) => api.get<RecipeSchedule[]>(`/recipe-schedule/for-recipe/${recipeId}`),
+  groceryList: (weekStart: string) =>
+    api.get<{ groceryList: GroceryItem[] }>('/recipe-schedule/grocery-list', { params: { weekStart } }),
+};
+
+export const inventoryApi = {
+  list: (params?: Record<string, unknown>) => api.get<InventoryItem[]>('/inventory', { params }),
+  create: (data: Record<string, unknown>) => api.post<InventoryItem>('/inventory', data),
+  update: (id: string, data: Record<string, unknown>) => api.put<InventoryItem>(`/inventory/${id}`, data),
+  consume: (id: string, data: { action: 'used' | 'thrown_out'; wasteReason?: string }) =>
+    api.post(`/inventory/${id}/consume`, data),
+  delete: (id: string) => api.delete(`/inventory/${id}`),
+  fromText: (text: string) => api.post<ReceiptExtraction>('/inventory/from-receipt-text', { text }),
+  batch: (items: Record<string, unknown>[]) => api.post('/inventory/batch', { items }),
+  suggestRecipes: (itemNames: string[], ingredientMode?: boolean) =>
+    api.post('/inventory/suggest-recipes', { itemNames, ingredientMode }),
+  // fromPhoto (receipt) handled via lib/upload (field 'photo'):
+  //   POST /inventory/from-receipt-photo
+};
+
+export const historyApi = {
+  list: (params?: Record<string, unknown>) => api.get<Completion[]>('/history', { params }),
+};
+
+export interface Settings {
+  householdMemberCount?: number;
+  [key: string]: unknown;
+}
+
+export const settingsApi = {
+  get: () => api.get<Settings>('/settings'),
+  update: (data: Record<string, unknown>) => api.put<Settings>('/settings', data),
+};
+
+export interface OdometerLog {
+  _id: string;
+  reading: number;
+  notes?: string;
+  recordedAt: string;
+}
+
+export interface OdometerStatus {
+  currentKm: number | null;
+  kmPerDay?: number | null;
+  logs?: OdometerLog[];
+  mileageTasks?: unknown[];
+}
+
+export const odometerApi = {
+  get: (itemId: string) => api.get<OdometerStatus>(`/vehicles/${itemId}/odometer`),
+  log: (itemId: string, data: Record<string, unknown>) => api.post(`/vehicles/${itemId}/odometer`, data),
+  delete: (itemId: string, logId: string) => api.delete(`/vehicles/${itemId}/odometer/${logId}`),
+};
+
+export interface Person {
+  _id: string;
+  name: string;
+  type: 'family' | 'contact' | string;
+  accountId?: string;
+}
+
+export const peopleApi = {
+  list: (params?: Record<string, unknown>) => api.get<Person[]>('/people', { params }),
+};
+
+// ----- Trips / Vacations -----------------------------------------------------
+
+export type TripStatus = 'considering' | 'booked' | 'completed';
+export type TripItemType =
+  | 'flight' | 'hotel' | 'car-rental' | 'restaurant' | 'activity' | 'transit' | 'other';
+
+export interface TripItem {
+  _id: string;
+  type: TripItemType;
+  title: string;
+  start: string;
+  end?: string;
+  location?: string;
+  details?: Record<string, unknown>;
+  cost?: number | null;
+  currency?: string;
+  confirmation?: string;
+  confirmed?: boolean;
+  sharing?: string;
+  notes?: string;
+  url?: string;
+  phone?: string;
+  attachments?: { _id: string; name: string }[];
+  userId?: { firstName?: string };
+}
+
+export interface CandidateRange {
+  start: string;
+  end: string;
+  label?: string;
+  note?: string;
+}
+
+export interface Trip {
+  _id: string;
+  name: string;
+  destination?: string;
+  destinationTz?: string;
+  status: TripStatus;
+  startDate?: string;
+  endDate?: string;
+  color?: string;
+  notes?: string;
+  candidateRanges?: CandidateRange[];
+  items?: TripItem[];
+  collaborators?: { _id: string; firstName?: string; lastName?: string; email?: string }[];
+  shareCode?: string;
+}
+
+export interface TripBudget {
+  total: number;
+  budget?: number | null;
+  remaining: number;
+  baseCurrency: string;
+  costedCount?: number;
+  byType: { type: string; amount: number }[];
+}
+
+export interface SettlementPayment {
+  _id: string;
+  fromName: string;
+  toName: string;
+  amount: number;
+  currency?: string;
+  note?: string;
+}
+
+export interface Settlement {
+  baseCurrency: string;
+  balances: { fromName: string; toName: string; amount: number }[];
+  payments?: SettlementPayment[];
+}
+
+export const tripsApi = {
+  list: (params?: Record<string, unknown>) => api.get<Trip[]>('/trips', { params }),
+  get: (id: string) => api.get<Trip>(`/trips/${id}`),
+  create: (data: Record<string, unknown>) => api.post<Trip>('/trips', data),
+  update: (id: string, data: Record<string, unknown>) => api.put<Trip>(`/trips/${id}`, data),
+  remove: (id: string) => api.delete(`/trips/${id}`),
+  budget: (id: string) => api.get<TripBudget>(`/trips/${id}/budget`),
+  settlement: (id: string) => api.get<Settlement>(`/trips/${id}/settlement`),
+  addPayment: (id: string, data: Record<string, unknown>) => api.post(`/trips/${id}/settle-payments`, data),
+  addItem: (id: string, data: Record<string, unknown>) => api.post<TripItem>(`/trips/${id}/items`, data),
+  updateItem: (id: string, itemId: string, data: Record<string, unknown>) =>
+    api.put<TripItem>(`/trips/${id}/items/${itemId}`, data),
+  removeItem: (id: string, itemId: string) => api.delete(`/trips/${id}/items/${itemId}`),
+  share: (id: string) => api.post<{ shareCode: string }>(`/trips/${id}/share`),
+  unshare: (id: string) => api.delete(`/trips/${id}/share`),
+  joinShare: (shareCode: string) => api.post<{ tripId: string }>('/trips/join', { shareCode }),
+  leaveShare: (id: string) => api.post(`/trips/${id}/leave-share`),
+};
+
+// ----- Calendar & billing (foundation; expanded in their waves) --------------
+
+export interface CalendarEvent {
+  _id: string;
+  title: string;
+  calendarType: string;
+  allDay?: boolean;
+  startDate: string;
+  endDate?: string;
+  description?: string;
+  location?: string;
+  reminderMinutes?: number | null;
+  recurrence?: { freq: string; interval?: number; until?: string };
+}
+
+export interface CalendarBirthday {
+  id: string;
+  name: string;
+  date: string;
+}
+
+export interface CalendarRecipeSchedule {
+  _id?: string;
+  scheduledDate: string;
+  recipeId?: { _id: string; title?: string } | string;
+}
+
+export interface CalendarTripOverlay {
+  id: string;
+  name: string;
+  color?: string;
+  status?: string;
+  ranges: { start: string; end: string; label?: string }[];
+}
+
+// The /calendar aggregate (server: services/calendarData.js).
+export interface CalendarData {
+  tasks: Task[];
+  chores: Chore[];
+  events: CalendarEvent[];
+  birthdays: CalendarBirthday[];
+  recipes: CalendarRecipeSchedule[];
+  groceryShopping: { id: string; date: string }[];
+  trips: CalendarTripOverlay[];
+}
+
+export const calendarApi = {
+  get: (params?: { from?: string; to?: string }) => api.get<CalendarData>('/calendar', { params }),
+  getEvent: (id: string) => api.get<CalendarEvent>(`/calendar/events/${id}`),
+  createEvent: (data: Record<string, unknown>) => api.post<CalendarEvent>('/calendar/events', data),
+  updateEvent: (id: string, data: Record<string, unknown>) => api.put<CalendarEvent>(`/calendar/events/${id}`, data),
+  deleteEvent: (id: string) => api.delete(`/calendar/events/${id}`),
+};
+
+export interface BillingStatus {
+  plan: string;
+  planLabel: string;
+  usage: Record<string, number>;
+  quotas: Record<string, number | null>;
+  hasHousehold: boolean;
+  catalog: { key: string; label: string; price: number }[];
+}
+
+export const billingApi = {
+  status: () => api.get<BillingStatus>('/billing/status'),
+};
+
+// Native push device registration (server: routes/notifications.js).
+export const notificationsApi = {
+  registerNative: (expoToken: string, platform: 'ios' | 'android', label?: string) =>
+    api.post('/notifications/push/register-native', { expoToken, platform, label }),
+  unregisterNative: (expoToken: string) =>
+    api.post('/notifications/push/unregister-native', { expoToken }),
+};

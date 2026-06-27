@@ -1,0 +1,318 @@
+const express = require('express');
+const path = require('path');
+const Anthropic = require('@anthropic-ai/sdk');
+const { format, addDays } = require('date-fns');
+const MaintenanceTask = require('../models/MaintenanceTask');
+const Item = require('../models/Item');
+const Manual = require('../models/Manual');
+const Category = require('../models/Category');
+const { requireAuth } = require('../middleware/auth');
+const { computeNextDueDate } = require('../services/recurrence');
+const { extractTextFromPdf } = require('../services/manualParser');
+const { streamChat } = require('../services/chatStream');
+const { meter, getConfig } = require('../middleware/usageMeter');
+
+const router = express.Router();
+router.use(requireAuth);
+
+const UPLOAD_DIR = path.resolve(process.env.UPLOAD_DIR || './uploads');
+const MAX_CHARS_PER_MANUAL = 60000;
+
+const TOOLS = [
+  {
+    name: 'get_item_tasks',
+    description: 'Get the existing maintenance tasks already tracked for this item, so you avoid suggesting duplicates.',
+    input_schema: { type: 'object', properties: {}, required: [] },
+  },
+  {
+    name: 'get_categories',
+    description: 'Get available maintenance categories and their subcategories. Call this before suggesting tasks so you can assign the correct categoryId and subcategoryId.',
+    input_schema: { type: 'object', properties: {}, required: [] },
+  },
+  {
+    name: 'create_tasks',
+    description: 'Create one or more maintenance tasks for this item. Only call this after the user has confirmed they want to add the tasks.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        tasks: {
+          type: 'array',
+          description: 'Tasks to create',
+          items: {
+            type: 'object',
+            properties: {
+              title:                  { type: 'string',  description: 'Task title, e.g. "Replace air filter"' },
+              categoryId:             { type: 'string',  description: 'MongoDB ObjectId of the category from get_categories' },
+              subcategoryId:          { type: 'string',  description: 'MongoDB ObjectId of the subcategory (optional)' },
+              recurrenceType:         { type: 'string',  enum: ['interval', 'one-time'], description: 'Whether the task repeats or is done once' },
+              intervalValue:          { type: 'number',  description: 'Number of units between occurrences (e.g. 3 for every 3 months). Required when recurrenceType is interval.' },
+              intervalUnit:           { type: 'string',  enum: ['days', 'weeks', 'months', 'years'], description: 'Unit for the interval. Required when recurrenceType is interval.' },
+              nextDueDateDaysFromNow: { type: 'number',  description: 'Days from today until first due. Defaults to the interval length if omitted.' },
+              description:            { type: 'string',  description: 'Optional additional notes for the task' },
+              priority:               { type: 'string',  enum: ['low', 'medium', 'high'], description: 'Priority (default: medium)' },
+            },
+            required: ['title', 'recurrenceType'],
+          },
+        },
+      },
+      required: ['tasks'],
+    },
+  },
+];
+
+async function extractManualText(manual) {
+  try {
+    const filePath = path.join(UPLOAD_DIR, manual.storageKey);
+    const text = await extractTextFromPdf(filePath);
+    if (!text || text.trim().length < 50) return null;
+    return text.length <= MAX_CHARS_PER_MANUAL
+      ? text
+      : text.slice(0, 4000) + '\n...\n' + text.slice(-(MAX_CHARS_PER_MANUAL - 4000));
+  } catch {
+    return null;
+  }
+}
+
+async function executeTool(name, input, userId, itemId, scopeIds) {
+  switch (name) {
+    case 'get_item_tasks': {
+      const tasks = await MaintenanceTask.find({ userId: { $in: scopeIds }, itemId, active: true })
+        .populate('categoryId', 'name')
+        .populate('subcategoryId', 'name')
+        .lean();
+      return {
+        tasks: tasks.map(t => ({
+          id:           t._id,
+          title:        t.title,
+          category:     t.categoryId?.name || null,
+          subcategory:  t.subcategoryId?.name || null,
+          recurrence:   t.recurrence,
+          nextDueDate:  t.nextDueDate ? t.nextDueDate.toISOString().slice(0, 10) : null,
+        })),
+      };
+    }
+
+    case 'get_categories': {
+      const topLevel = await Category.find({ userId: { $in: scopeIds }, parentId: null }).sort('sortOrder name').lean();
+      const subs     = await Category.find({ userId: { $in: scopeIds }, parentId: { $ne: null } }).sort('sortOrder name').lean();
+      const subMap   = {};
+      for (const sub of subs) {
+        const pid = String(sub.parentId);
+        if (!subMap[pid]) subMap[pid] = [];
+        subMap[pid].push({ id: sub._id, name: sub.name });
+      }
+      return {
+        categories: topLevel.map(cat => ({
+          id:             cat._id,
+          name:           cat.name,
+          subcategories:  subMap[String(cat._id)] || [],
+        })),
+      };
+    }
+
+    case 'create_tasks': {
+      const created = [];
+      for (const t of input.tasks) {
+        const recurrence = t.recurrenceType === 'one-time'
+          ? { type: 'one-time' }
+          : {
+              type:          'interval',
+              intervalValue: t.intervalValue  || 1,
+              intervalUnit:  t.intervalUnit   || 'months',
+            };
+
+        let nextDueDate;
+        if (t.nextDueDateDaysFromNow !== undefined) {
+          nextDueDate = addDays(new Date(), t.nextDueDateDaysFromNow);
+        } else if (recurrence.type !== 'one-time') {
+          nextDueDate = computeNextDueDate({ recurrence }, new Date());
+        }
+
+        const taskData = {
+          userId,
+          itemId,
+          title:      t.title,
+          recurrence,
+          nextDueDate,
+          priority:   t.priority || 'medium',
+        };
+        if (t.categoryId)    taskData.categoryId    = t.categoryId;
+        if (t.subcategoryId) taskData.subcategoryId = t.subcategoryId;
+        if (t.description)   taskData.description   = t.description;
+
+        const task = await MaintenanceTask.create(taskData);
+        created.push({ id: task._id, title: task.title });
+      }
+
+      return {
+        success:       true,
+        tasksCreated:  created.length,
+        tasks:         created,
+        _tasksCreated: created,
+      };
+    }
+
+    default:
+      return { error: `Unknown tool: ${name}` };
+  }
+}
+
+function buildItemLines(item) {
+  const itemLines = [`Name: ${item.name}`, `Type: ${item.type}`];
+  if (item.manufacturer)   itemLines.push(`Manufacturer: ${item.manufacturer}`);
+  if (item.modelNumber)    itemLines.push(`Model: ${item.modelNumber}`);
+  if (item.serialNumber)   itemLines.push(`Serial Number: ${item.serialNumber}`);
+  if (item.location)       itemLines.push(`Location: ${item.location}`);
+  if (item.purchaseDate)   itemLines.push(`Purchased: ${format(new Date(item.purchaseDate), 'MMMM yyyy')}`);
+  if (item.warrantyExpiry) itemLines.push(`Warranty Expiry: ${format(new Date(item.warrantyExpiry), 'MMMM yyyy')}`);
+  if (item.notes)          itemLines.push(`Notes: ${item.notes}`);
+  if (item.customFields?.length) {
+    for (const f of item.customFields) {
+      if (f.key && f.value) itemLines.push(`${f.key}: ${f.value}`);
+    }
+  }
+  return itemLines;
+}
+
+async function buildSystemPrompt(item, manuals) {
+  const today = new Date().toISOString().slice(0, 10);
+  const itemLines = buildItemLines(item);
+
+  // Extract manual text for each attached manual
+  const manualSections = [];
+  for (const manual of manuals) {
+    if (!manual.storageKey) continue;
+    const text = await extractManualText(manual);
+    if (text) manualSections.push({ title: manual.title, text });
+  }
+
+  let manualsBlock = '';
+  if (manualSections.length) {
+    manualsBlock = `\n\n## Attached Manuals\nThe full text of this item's manual(s) is provided below. Use it to suggest accurate, manufacturer-specific maintenance tasks with correct intervals.\n`;
+    for (const m of manualSections) {
+      manualsBlock += `\n### ${m.title}\n${m.text}\n`;
+    }
+  }
+
+  return `You are a knowledgeable home maintenance expert helping a homeowner set up maintenance tasks in their Household Copilot app. Today is ${today}.
+
+## Item Details
+${itemLines.join('\n')}${manualsBlock}
+
+## Your goal
+Have a focused conversation to identify the most important recurring maintenance tasks for this item. If a manual is provided above, base your suggestions directly on its maintenance schedule — don't invent tasks not covered there. If no manual is attached, use your knowledge of this item type and manufacturer.
+
+For each suggested task include:
+- A clear title (e.g. "Replace air filter", not just "filter")
+- How often it should recur (use the manual's schedule when available)
+- Which category/subcategory it fits under (call get_categories first)
+
+Workflow:
+1. At the start of the conversation, call get_categories and get_item_tasks so you know what categories are available and what's already tracked.
+2. Suggest the most important tasks with frequency and category. If a manual is attached, lead with tasks from it.
+3. Once the user confirms (e.g. "yes", "add them", "looks good"), call create_tasks to add them.
+4. After creating, tell the user which tasks were added.
+
+Keep responses concise. Don't overwhelm — lead with the 3–6 most critical tasks first, then offer to continue with more.`;
+}
+
+function buildContextSummary(item, manuals, existingTaskCount) {
+  const idParts = [item.name];
+  if (item.manufacturer) idParts.push(item.manufacturer);
+  if (item.modelNumber)  idParts.push(item.modelNumber);
+  const manualCount = manuals.filter(m => m.storageKey).length;
+  return {
+    sees: [
+      `This item — ${idParts.join(' · ')}`,
+      manualCount
+        ? `${manualCount} attached manual${manualCount === 1 ? '' : 's'} (full text)`
+        : "No manual attached — I'll use general knowledge of this item",
+      existingTaskCount
+        ? `${existingTaskCount} maintenance task${existingTaskCount === 1 ? '' : 's'} already tracked`
+        : 'No maintenance tasks tracked yet',
+    ],
+    can: [
+      'Suggest recurring maintenance tasks with the right intervals',
+      'Create tasks for you — only after you confirm',
+    ],
+    note: 'Tasks are only added once you say so.',
+  };
+}
+
+function buildSuggestedPrompts(item, manuals) {
+  const manualCount = manuals.filter(m => m.storageKey).length;
+  const prompts = [`What maintenance does my ${item.name} need?`];
+  prompts.push(manualCount ? 'Set up tasks from the manual' : `Recommended schedule for a ${item.type}?`);
+  prompts.push('What should I check seasonally?');
+  return prompts;
+}
+
+// Context + starter prompts shown when the assistant first opens.
+router.get('/context', async (req, res) => {
+  try {
+    const { itemId } = req.query;
+    if (!itemId) return res.status(400).json({ error: 'itemId is required' });
+
+    const [item, manuals, existingTaskCount] = await Promise.all([
+      Item.findOne({ _id: itemId, userId: { $in: req.scopeIds } }).lean(),
+      Manual.find({ itemId, userId: { $in: req.scopeIds } }).lean(),
+      MaintenanceTask.countDocuments({ userId: { $in: req.scopeIds }, itemId, active: true }),
+    ]);
+    if (!item) return res.status(404).json({ error: 'Item not found' });
+
+    res.json({
+      context: buildContextSummary(item, manuals, existingTaskCount),
+      suggestedPrompts: buildSuggestedPrompts(item, manuals),
+    });
+  } catch (err) {
+    console.error('Maintenance chat context error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/', meter('chat'), async (req, res) => {
+  try {
+    const { itemId, messages } = req.body;
+    if (!itemId) return res.status(400).json({ error: 'itemId is required' });
+    if (!Array.isArray(messages) || messages.length === 0) return res.status(400).json({ error: 'messages array is required' });
+
+    const apiKey = process.env.ANTHROPIC_API_KEY;
+    if (!apiKey) return res.status(500).json({ error: 'ANTHROPIC_API_KEY is not configured' });
+
+    const userId = req.user._id;
+
+    const [item, manuals] = await Promise.all([
+      Item.findOne({ _id: itemId, userId: { $in: req.scopeIds } }).lean(),
+      Manual.find({ itemId, userId: { $in: req.scopeIds } }).lean(),
+    ]);
+    if (!item) return res.status(404).json({ error: 'Item not found' });
+
+    const systemPrompt = await buildSystemPrompt(item, manuals);
+    const client = new Anthropic({ apiKey });
+
+    // Free tier gets the fast Haiku model; paid tiers get the smarter Sonnet.
+    const config = await getConfig();
+    const plan = req.household?.plan || 'free';
+    const model = plan === 'free' ? config.models.freeChat : config.models.paidChat;
+
+    await streamChat(res, {
+      client,
+      model,
+      system: systemPrompt,
+      tools: TOOLS,
+      messages,
+      executeTool: (name, input) => executeTool(name, input, userId, itemId, req.scopeIds),
+      collectSideEffects: (block, result, acc) => {
+        if (result && result._tasksCreated) {
+          acc.tasksCreated = (acc.tasksCreated || []).concat(result._tasksCreated);
+          delete result._tasksCreated; // keep it out of the model-facing tool result
+        }
+      },
+    });
+  } catch (err) {
+    console.error('Maintenance chat error:', err);
+    if (!res.headersSent) res.status(500).json({ error: err.message });
+  }
+});
+
+module.exports = router;
