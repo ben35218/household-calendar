@@ -11,6 +11,13 @@
         "EXPO_PUBLIC_API_URL": "http://localhost:3001"
       }
     },
+    "development-simulator": {
+      "developmentClient": true,
+      "distribution": "internal",
+      "ios": {
+        "simulator": true
+      }
+    },
     "simulator": {
       "distribution": "internal",
       "ios": {

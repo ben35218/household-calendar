@@ -8,6 +8,7 @@ import { tripsApi, Trip, TripItem } from '../../api';
 import { Card, Badge, Divider } from '../../components/ui';
 import { tripTypeMeta, tripStatusLabel, tripStatusColor, TRIP_PURPLE } from '../../lib/tripTypes';
 import { zonedParts, zonedTimeLabel } from '../../lib/tz';
+import TripTimeline from '../../components/TripTimeline';
 import { TripsStackParamList } from '../../navigation/TripsNavigator';
 import { colors, spacing } from '../../theme';
 
@@ -131,7 +132,32 @@ export default function TripDetailScreen() {
 
   // ── Day itinerary view ──
   if (selectedDate) {
-    const items = itemsForDate(selectedDate);
+    const allItems = trip.items ?? [];
+    // Hotels covering the selected night (check-in date through check-out date).
+    const lodgingForDay = allItems.filter((it) => {
+      if (it.type !== 'hotel') return false;
+      const ci = zonedParts(it.start, tz).dateStr;
+      const co = zonedParts(it.end || it.start, tz).dateStr;
+      return selectedDate >= ci && selectedDate <= co;
+    });
+    const lodgingNote = (h: TripItem) => {
+      const ci = zonedParts(h.start, tz).dateStr;
+      const co = zonedParts(h.end || h.start, tz).dateStr;
+      if (selectedDate === ci) return `Check in ${zonedTimeLabel(h.start, tz)}`;
+      if (selectedDate === co) return `Check out ${zonedTimeLabel(h.end || h.start, tz)}`;
+      return 'Overnight';
+    };
+    // Non-hotel bookings that land on this day (drives the timeline vs empty state).
+    const timedItems = allItems.filter((it) => {
+      if (it.type === 'hotel') return false;
+      const d = it.details as any;
+      if ((it.type === 'flight' || it.type === 'transit') && (d?.departureTz || d?.arrivalTz)) {
+        if (zonedParts(it.start, d.departureTz).dateStr === selectedDate) return true;
+        if (it.end && zonedParts(it.end, d.arrivalTz).dateStr === selectedDate) return true;
+        return false;
+      }
+      return zonedParts(it.start, tz).dateStr === selectedDate;
+    });
     return (
       <View style={styles.screen}>
         <View style={styles.dayNav}>
@@ -153,29 +179,25 @@ export default function TripDetailScreen() {
         </TouchableOpacity>
 
         <ScrollView contentContainerStyle={styles.content}>
-          {items.length === 0 ? (
-            <Text style={styles.empty}>Nothing booked this day.</Text>
+          {lodgingForDay.map((h) => (
+            <View key={`lodge-${h._id}`} style={styles.lodgeBanner}>
+              <MaterialCommunityIcons name="bed" size={18} color="#6A1B9A" />
+              <Text style={styles.lodgeTitle}>{h.title}</Text>
+              <Text style={styles.lodgeNote}>{lodgingNote(h)}</Text>
+              <TouchableOpacity onPress={() => navigation.navigate('TripItemForm', { tripId: id, itemId: h._id, date: selectedDate })}>
+                <Ionicons name="create-outline" size={16} color={colors.textMuted} />
+              </TouchableOpacity>
+            </View>
+          ))}
+          {timedItems.length === 0 ? (
+            lodgingForDay.length === 0 ? <Text style={styles.empty}>Nothing booked this day.</Text> : null
           ) : (
-            items.map((it) => {
-              const meta = tripTypeMeta(it.type);
-              return (
-                <TouchableOpacity key={it._id} activeOpacity={0.8} onPress={() => navigation.navigate('TripItemForm', { tripId: id, itemId: it._id, date: selectedDate })}>
-                  <Card style={[styles.itemCard, { borderLeftColor: meta.color, borderLeftWidth: 4 }]}>
-                    <View style={styles.itemHeader}>
-                      <MaterialCommunityIcons name={meta.icon as any} size={18} color={meta.color} />
-                      <Text style={styles.itemTitle}>{it.title}</Text>
-                      {it.confirmed ? <Ionicons name="checkmark-circle" size={14} color={colors.success} /> : null}
-                    </View>
-                    <Text style={styles.itemTime}>
-                      {zonedTimeLabel(it.start, tz)}
-                      {it.end ? ` – ${zonedTimeLabel(it.end, tz)}` : ''}
-                    </Text>
-                    {it.location ? <Text style={styles.itemSub}>{it.location}</Text> : null}
-                    {it.cost != null ? <Text style={styles.itemSub}>{it.currency || '$'}{it.cost}</Text> : null}
-                  </Card>
-                </TouchableOpacity>
-              );
-            })
+            <TripTimeline
+              items={trip.items ?? []}
+              selectedDate={selectedDate}
+              tz={tz}
+              onEditItem={(itemId) => navigation.navigate('TripItemForm', { tripId: id, itemId, date: selectedDate })}
+            />
           )}
         </ScrollView>
 
@@ -302,6 +324,9 @@ const styles = StyleSheet.create({
   dayCount: { fontSize: 12, color: colors.textMuted },
   backToCal: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: spacing.md, paddingBottom: spacing.sm },
   backToCalText: { color: TRIP_PURPLE, fontSize: 13, fontWeight: '600' },
+  lodgeBanner: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, backgroundColor: '#6A1B9A14', borderRadius: 10, padding: spacing.sm, marginBottom: spacing.sm },
+  lodgeTitle: { fontSize: 14, fontWeight: '600', color: colors.text },
+  lodgeNote: { flex: 1, fontSize: 13, color: colors.textMuted },
   itemCard: { marginBottom: spacing.sm },
   itemHeader: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
   itemTitle: { flex: 1, fontSize: 16, fontWeight: '600', color: colors.text },

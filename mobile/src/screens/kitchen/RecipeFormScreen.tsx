@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { View, Text, StyleSheet, ActivityIndicator, TouchableOpacity, Alert } from 'react-native';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Ionicons } from '@expo/vector-icons';
@@ -6,6 +6,7 @@ import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { recipesApi, Recipe, Ingredient } from '../../api';
 import { Button, Input, Screen, SectionTitle, Card } from '../../components/ui';
+import StepIngredientLinker from '../../components/StepIngredientLinker';
 import { takePhoto, pickImage } from '../../lib/media';
 import { uploadFile } from '../../lib/upload';
 import { KitchenStackParamList } from '../../navigation/KitchenNavigator';
@@ -25,6 +26,9 @@ interface FormState {
   tags: string;
   ingredients: Ingredient[];
   instructions: string[];
+  // Per-ingredient stable client IDs (aligned to ingredients[]) + per-step links.
+  lids: string[];
+  linkedIds: string[][];
 }
 
 const EMPTY: FormState = {
@@ -38,6 +42,8 @@ const EMPTY: FormState = {
   tags: '',
   ingredients: [],
   instructions: [],
+  lids: [],
+  linkedIds: [],
 };
 
 export default function RecipeFormScreen() {
@@ -54,6 +60,21 @@ export default function RecipeFormScreen() {
 
   const set = (patch: Partial<FormState>) => setForm((f) => ({ ...f, ...patch }));
 
+  const lidCounter = useRef(0);
+  const makeLid = () => `_l${++lidCounter.current}`;
+
+  // _lid -> [1-based step numbers it appears in] (recipe-wide).
+  const assignmentsById = useMemo(() => {
+    const map: Record<string, number[]> = {};
+    form.lids.forEach((lid) => { map[lid] = []; });
+    form.linkedIds.forEach((lids, stepIdx) => {
+      lids.forEach((lid) => { if (map[lid]) map[lid].push(stepIdx + 1); });
+    });
+    return map;
+  }, [form.lids, form.linkedIds]);
+
+  const lidIngredients = form.ingredients.map((ing, i) => ({ ...ing, _lid: form.lids[i] }));
+
   useEffect(() => {
     navigation.setOptions({ title: isEdit ? 'Edit Recipe' : 'Add Recipe' });
   }, [navigation, isEdit]);
@@ -65,19 +86,35 @@ export default function RecipeFormScreen() {
   });
 
   const populate = (data: Partial<Recipe>) =>
-    setForm((f) => ({
-      ...f,
-      title: data.title ?? f.title,
-      description: data.description ?? f.description,
-      imageUrl: data.imageUrl ?? f.imageUrl,
-      sourceUrl: data.sourceUrl ?? f.sourceUrl,
-      servings: data.servings != null ? String(data.servings) : f.servings,
-      prepTimeMins: data.prepTimeMins != null ? String(data.prepTimeMins) : f.prepTimeMins,
-      cookTimeMins: data.cookTimeMins != null ? String(data.cookTimeMins) : f.cookTimeMins,
-      tags: data.tags ? data.tags.join(', ') : f.tags,
-      ingredients: data.ingredients ?? f.ingredients,
-      instructions: data.instructions ?? f.instructions,
-    }));
+    setForm((f) => {
+      const ingredients = data.ingredients ?? f.ingredients;
+      const instructions = data.instructions ?? f.instructions;
+      // Regenerate stable lids whenever the ingredient list is replaced.
+      const lids = data.ingredients ? data.ingredients.map(() => makeLid()) : f.lids;
+      // Build per-step linkedIds from incoming instructionIngredients (indices).
+      let linkedIds = f.linkedIds;
+      if (data.instructions) {
+        const incoming = data.instructionIngredients;
+        linkedIds = incoming
+          ? instructions.map((_, si) => (incoming[si] || []).map((idx) => lids[idx]).filter(Boolean))
+          : instructions.map(() => []);
+      }
+      return {
+        ...f,
+        title: data.title ?? f.title,
+        description: data.description ?? f.description,
+        imageUrl: data.imageUrl ?? f.imageUrl,
+        sourceUrl: data.sourceUrl ?? f.sourceUrl,
+        servings: data.servings != null ? String(data.servings) : f.servings,
+        prepTimeMins: data.prepTimeMins != null ? String(data.prepTimeMins) : f.prepTimeMins,
+        cookTimeMins: data.cookTimeMins != null ? String(data.cookTimeMins) : f.cookTimeMins,
+        tags: data.tags ? data.tags.join(', ') : f.tags,
+        ingredients,
+        instructions,
+        lids,
+        linkedIds,
+      };
+    });
 
   useEffect(() => {
     if (recipeQ.data) populate(recipeQ.data);
@@ -115,6 +152,15 @@ export default function RecipeFormScreen() {
 
   const save = useMutation({
     mutationFn: () => {
+      // Keep only named ingredients / non-empty steps, then remap the _lid links
+      // to indices in the pruned ingredient list.
+      const keptIngIdx = form.ingredients.map((ing, i) => ({ ing, lid: form.lids[i] })).filter((x) => x.ing.name.trim());
+      const lidToIdx: Record<string, number> = {};
+      keptIngIdx.forEach((x, idx) => { lidToIdx[x.lid] = idx; });
+      const keptSteps = form.instructions.map((s, i) => ({ s, links: form.linkedIds[i] || [] })).filter((x) => x.s.trim());
+      const instructionIngredients = keptSteps.map((x) =>
+        x.links.map((lid) => lidToIdx[lid]).filter((n) => n != null)
+      );
       const payload = {
         title: form.title,
         description: form.description,
@@ -124,8 +170,9 @@ export default function RecipeFormScreen() {
         prepTimeMins: form.prepTimeMins ? Number(form.prepTimeMins) : null,
         cookTimeMins: form.cookTimeMins ? Number(form.cookTimeMins) : null,
         tags: form.tags.split(',').map((t) => t.trim()).filter(Boolean),
-        ingredients: form.ingredients.filter((i) => i.name.trim()),
-        instructions: form.instructions.filter((s) => s.trim()),
+        ingredients: keptIngIdx.map((x) => x.ing),
+        instructions: keptSteps.map((x) => x.s),
+        instructionIngredients,
       };
       return isEdit ? recipesApi.update(id!, payload) : recipesApi.create(payload);
     },
@@ -136,6 +183,38 @@ export default function RecipeFormScreen() {
       else navigation.goBack();
     },
     onError: (e: any) => setError(e.response?.data?.error || 'Save failed'),
+  });
+
+  const addIngredient = () =>
+    set({ ingredients: [...form.ingredients, { amount: '', unit: '', name: '' }], lids: [...form.lids, makeLid()] });
+  const removeIngredient = (i: number) => {
+    const lid = form.lids[i];
+    set({
+      ingredients: form.ingredients.filter((_, j) => j !== i),
+      lids: form.lids.filter((_, j) => j !== i),
+      linkedIds: form.linkedIds.map((ls) => ls.filter((x) => x !== lid)),
+    });
+  };
+  const addStep = () => set({ instructions: [...form.instructions, ''], linkedIds: [...form.linkedIds, []] });
+  const removeStep = (i: number) =>
+    set({ instructions: form.instructions.filter((_, j) => j !== i), linkedIds: form.linkedIds.filter((_, j) => j !== i) });
+  const setStepLinks = (i: number, lids: string[]) =>
+    set({ linkedIds: form.linkedIds.map((ls, j) => (j === i ? lids : ls)) });
+
+  // AI auto-link: ask the server which ingredients each step uses.
+  const autoLink = useMutation({
+    mutationFn: () => recipesApi.computeIngredientTags(form.ingredients.filter((i) => i.name.trim()), form.instructions.filter((s) => s.trim())),
+    onSuccess: (res) => {
+      const namedLids = form.ingredients.map((ing, i) => ({ named: !!ing.name.trim(), lid: form.lids[i] })).filter((x) => x.named).map((x) => x.lid);
+      const incoming = res.data.instructionIngredients || [];
+      let si = -1;
+      const linkedIds = form.instructions.map((s) => {
+        if (!s.trim()) return [];
+        si += 1;
+        return (incoming[si] || []).map((idx) => namedLids[idx]).filter(Boolean);
+      });
+      set({ linkedIds });
+    },
   });
 
   const onSave = () => {
@@ -219,26 +298,43 @@ export default function RecipeFormScreen() {
           <View style={styles.ingName}>
             <Input placeholder="flour" value={ing.name} onChangeText={(v) => set({ ingredients: form.ingredients.map((x, j) => (j === i ? { ...x, name: v } : x)) })} />
           </View>
-          <TouchableOpacity onPress={() => set({ ingredients: form.ingredients.filter((_, j) => j !== i) })} style={styles.removeBtn}>
+          <TouchableOpacity onPress={() => removeIngredient(i)} style={styles.removeBtn}>
             <Ionicons name="close" size={20} color={colors.textMuted} />
           </TouchableOpacity>
         </View>
       ))}
-      <Button title="+ Add Ingredient" variant="ghost" onPress={() => set({ ingredients: [...form.ingredients, { amount: '', unit: '', name: '' }] })} />
+      <Button title="+ Add Ingredient" variant="ghost" onPress={addIngredient} />
 
-      <SectionTitle>Instructions</SectionTitle>
+      <View style={styles.instrHead}>
+        <SectionTitle>Instructions</SectionTitle>
+        {form.ingredients.length && form.instructions.length ? (
+          <Button title="Auto-link" variant="ghost" loading={autoLink.isPending} onPress={() => autoLink.mutate()} />
+        ) : null}
+      </View>
       {form.instructions.map((step, i) => (
-        <View key={i} style={styles.stepRow}>
-          <Text style={styles.stepNum}>{i + 1}.</Text>
-          <View style={{ flex: 1 }}>
-            <Input placeholder={`Step ${i + 1}`} value={step} onChangeText={(v) => set({ instructions: form.instructions.map((x, j) => (j === i ? v : x)) })} multiline />
+        <View key={i}>
+          <View style={styles.stepRow}>
+            <Text style={styles.stepNum}>{i + 1}.</Text>
+            <View style={{ flex: 1 }}>
+              <Input placeholder={`Step ${i + 1}`} value={step} onChangeText={(v) => set({ instructions: form.instructions.map((x, j) => (j === i ? v : x)) })} multiline />
+            </View>
+            <TouchableOpacity onPress={() => removeStep(i)} style={styles.removeBtn}>
+              <Ionicons name="close" size={20} color={colors.textMuted} />
+            </TouchableOpacity>
           </View>
-          <TouchableOpacity onPress={() => set({ instructions: form.instructions.filter((_, j) => j !== i) })} style={styles.removeBtn}>
-            <Ionicons name="close" size={20} color={colors.textMuted} />
-          </TouchableOpacity>
+          {form.ingredients.length ? (
+            <StepIngredientLinker
+              value={form.linkedIds[i] || []}
+              ingredients={lidIngredients}
+              assignmentsById={assignmentsById}
+              stepNumber={i + 1}
+              stepText={step}
+              onChange={(lids) => setStepLinks(i, lids)}
+            />
+          ) : null}
         </View>
       ))}
-      <Button title="+ Add Step" variant="ghost" onPress={() => set({ instructions: [...form.instructions, ''] })} />
+      <Button title="+ Add Step" variant="ghost" onPress={addStep} />
 
       {error ? <Text style={styles.error}>{error}</Text> : null}
 
@@ -264,6 +360,7 @@ const styles = StyleSheet.create({
   ingAmount: { width: 56 },
   ingUnit: { width: 64 },
   ingName: { flex: 1 },
+  instrHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   stepRow: { flexDirection: 'row', alignItems: 'flex-start', gap: spacing.sm },
   stepNum: { fontSize: 15, fontWeight: '700', color: colors.primary, paddingTop: 12 },
   removeBtn: { paddingTop: 12 },

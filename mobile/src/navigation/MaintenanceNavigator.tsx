@@ -11,6 +11,7 @@ import ItemsListScreen from '../screens/maintenance/ItemsListScreen';
 import ItemDetailScreen from '../screens/maintenance/ItemDetailScreen';
 import ItemFormScreen from '../screens/maintenance/ItemFormScreen';
 import MaintenanceChatScreen from '../screens/maintenance/MaintenanceChatScreen';
+import CategoriesScreen from '../screens/maintenance/CategoriesScreen';
 import type { Item } from '../api';
 import { colors } from '../theme';
 
@@ -26,6 +27,7 @@ export type MaintenanceStackParamList = {
   ItemDetail: { id: string };
   ItemForm: { id?: string; prefill?: Partial<Item> };
   MaintenanceChat: { itemId: string; itemName?: string };
+  Categories: undefined;
 };
 
 const Stack = createNativeStackNavigator<MaintenanceStackParamList>();
@@ -49,6 +51,7 @@ export default function MaintenanceNavigator() {
       <Stack.Screen name="ItemDetail" component={ItemDetailScreen} options={{ title: 'Item' }} />
       <Stack.Screen name="ItemForm" component={ItemFormScreen} options={{ title: 'Item' }} />
       <Stack.Screen name="MaintenanceChat" component={MaintenanceChatScreen} options={{ title: 'Maintenance Assistant' }} />
+      <Stack.Screen name="Categories" component={CategoriesScreen} options={{ title: 'Categories' }} />
     </Stack.Navigator>
   );
 }

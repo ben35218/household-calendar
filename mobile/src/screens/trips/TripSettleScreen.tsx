@@ -1,30 +1,63 @@
-import React, { useLayoutEffect } from 'react';
-import { View, Text, StyleSheet, ActivityIndicator, ScrollView } from 'react-native';
-import { useQuery } from '@tanstack/react-query';
-import { Ionicons } from '@expo/vector-icons';
+import React, { useEffect, useLayoutEffect, useState } from 'react';
+import { View, Text, StyleSheet, ActivityIndicator, ScrollView, TouchableOpacity, Alert } from 'react-native';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
-import { tripsApi } from '../../api';
-import { Card, Divider } from '../../components/ui';
-import { TRIP_PURPLE } from '../../lib/tripTypes';
+import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import { tripsApi, SettlementBalance, SettlementLine } from '../../api';
+import { Button, Card, Input, Select } from '../../components/ui';
+import { tripTypeMeta, TRIP_PURPLE } from '../../lib/tripTypes';
 import { TripsStackParamList } from '../../navigation/TripsNavigator';
 import { colors, spacing } from '../../theme';
 
 type Rt = RouteProp<TripsStackParamList, 'TripSettle'>;
+type Nav = NativeStackNavigationProp<TripsStackParamList, 'TripSettle'>;
 
-function money(amount: number, cur?: string) {
-  const c = cur || 'USD';
+const CURRENCIES = ['CAD', 'USD', 'EUR', 'GBP', 'JPY', 'AUD', 'CHF', 'CNY', 'MXN', 'INR'];
+
+function money(amount: number | null | undefined, cur: string) {
+  if (amount == null) return '—';
   try {
-    return new Intl.NumberFormat(undefined, { style: 'currency', currency: c, maximumFractionDigits: 0 }).format(amount);
+    return new Intl.NumberFormat(undefined, { style: 'currency', currency: cur, maximumFractionDigits: 0 }).format(amount);
   } catch {
-    return `${c} ${Math.round(amount)}`;
+    return `${cur} ${Math.round(amount)}`;
   }
 }
 
+function lineMeta(line: SettlementLine) {
+  if (line.kind === 'payment') return { icon: 'cash-check', color: '#2E7D32', label: 'Payment recorded' };
+  const m = tripTypeMeta(line.type || 'other');
+  return { icon: m.icon, color: m.color, label: line.title || '' };
+}
+
+// Mirrors client/src/views/TripSettleView.vue — balances with breakdown lines,
+// a record-payment form, and deletable payment history.
 export default function TripSettleScreen() {
   const { id } = useRoute<Rt>().params;
-  const navigation = useNavigation();
+  const navigation = useNavigation<Nav>();
+  const qc = useQueryClient();
 
-  const settleQ = useQuery({ queryKey: ['trips', id, 'settlement'], queryFn: async () => (await tripsApi.settlement(id)).data });
+  const settleQ = useQuery({
+    queryKey: ['trips', id, 'settlement'],
+    queryFn: async () => (await tripsApi.settlement(id)).data,
+  });
+
+  const [form, setForm] = useState({ from: '', to: '', amount: '', currency: 'CAD', note: '' });
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+
+  const base = settleQ.data?.baseCurrency || 'CAD';
+
+  useEffect(() => {
+    if (settleQ.data) {
+      setForm((f) => ({
+        ...f,
+        from: f.from || settleQ.data!.myHouseholdId || '',
+        currency: f.currency === 'CAD' ? base : f.currency,
+      }));
+    }
+  }, [settleQ.data, base]);
 
   useLayoutEffect(() => {
     navigation.setOptions({ title: 'Settle Up' });
@@ -38,48 +71,152 @@ export default function TripSettleScreen() {
     );
   }
 
-  const { balances, payments, baseCurrency } = settleQ.data;
+  const { balances, payments, households, ratesAvailable } = settleQ.data;
+  const householdOptions = (households ?? []).map((h) => ({ label: h.name, value: h.householdId }));
+
+  function prefill(b: SettlementBalance) {
+    setForm({ from: b.from || '', to: b.to || '', amount: String(b.amount), currency: base, note: '' });
+    setError('');
+  }
+
+  async function savePayment() {
+    setError('');
+    if (!form.from || !form.to) return setError('Pick who paid and who they paid.');
+    if (form.from === form.to) return setError('Pick two different families.');
+    if (!(Number(form.amount) > 0)) return setError('Enter an amount greater than zero.');
+    setSaving(true);
+    try {
+      await tripsApi.addPayment(id, {
+        from: form.from,
+        to: form.to,
+        amount: Number(form.amount),
+        currency: form.currency,
+        note: form.note,
+      });
+      setForm((f) => ({ ...f, amount: '', note: '' }));
+      qc.invalidateQueries({ queryKey: ['trips', id] });
+      settleQ.refetch();
+    } catch (e: any) {
+      setError(e?.response?.data?.error || 'Could not record that payment.');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function removePayment(payId: string) {
+    Alert.alert('Delete payment?', '', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Delete',
+        style: 'destructive',
+        onPress: async () => {
+          setDeletingId(payId);
+          try {
+            await tripsApi.removePayment(id, payId);
+            qc.invalidateQueries({ queryKey: ['trips', id] });
+            settleQ.refetch();
+          } finally {
+            setDeletingId(null);
+          }
+        },
+      },
+    ]);
+  }
 
   return (
     <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
+      {/* Balances */}
       <Card style={styles.card}>
-        <Text style={styles.title}>Who owes whom</Text>
-        <Divider />
+        <Text style={styles.sectionLabel}>Balances</Text>
         {balances.length === 0 ? (
           <View style={styles.allSettled}>
             <Ionicons name="checkmark-circle" size={20} color={colors.success} />
-            <Text style={styles.settledText}>All settled up</Text>
+            <Text style={styles.settledText}>Everyone is settled up.</Text>
           </View>
         ) : (
           balances.map((b, i) => (
-            <View key={i} style={styles.balanceRow}>
-              <Text style={styles.balanceText}>
-                <Text style={styles.bold}>{b.fromName}</Text> owes <Text style={styles.bold}>{b.toName}</Text>
-              </Text>
-              <Text style={styles.amount}>{money(b.amount, baseCurrency)}</Text>
+            <View key={i} style={[styles.balanceGroup, i > 0 && styles.balanceGroupSep]}>
+              <View style={styles.balanceHead}>
+                <Ionicons name="arrow-forward-circle-outline" size={18} color={TRIP_PURPLE} />
+                <Text style={styles.balanceText}>
+                  <Text style={styles.bold}>{b.fromName}</Text> owes <Text style={styles.bold}>{b.toName}</Text>
+                </Text>
+                <Text style={styles.balanceAmt}>{money(b.amount, base)}</Text>
+                <TouchableOpacity style={styles.payBtn} onPress={() => prefill(b)}>
+                  <Text style={styles.payBtnText}>Pay</Text>
+                </TouchableOpacity>
+              </View>
+              {(b.lines ?? []).map((line, li) => {
+                const m = lineMeta(line);
+                const Row: any = line.itemId ? TouchableOpacity : View;
+                return (
+                  <Row
+                    key={li}
+                    style={styles.breakdownRow}
+                    onPress={line.itemId ? () => navigation.navigate('TripItemForm', { tripId: id, itemId: line.itemId }) : undefined}
+                  >
+                    <MaterialCommunityIcons name={m.icon as any} size={14} color={m.color} />
+                    <Text style={styles.breakdownLabel} numberOfLines={1}>{m.label}</Text>
+                    <Text style={[styles.breakdownAmt, line.amount < 0 && styles.creditAmt]}>
+                      {line.amount < 0 ? '−' : '+'}{money(Math.abs(line.amount), base)}
+                    </Text>
+                    {line.itemId ? <Ionicons name="chevron-forward" size={13} color={colors.textMuted} /> : null}
+                  </Row>
+                );
+              })}
             </View>
           ))
         )}
-        <Text style={styles.note}>Estimated, converted to {baseCurrency}.</Text>
+        {ratesAvailable === false ? (
+          <Text style={styles.warn}>⚠ Exchange rates unavailable — only same-currency costs are totalled.</Text>
+        ) : null}
       </Card>
 
+      {/* Record a payment */}
+      <Card style={styles.card}>
+        <Text style={[styles.sectionLabel, { color: '#2E7D32' }]}>Record a payment</Text>
+        <View style={styles.fromToRow}>
+          <View style={styles.flex1}>
+            <Select label="From" value={form.from} options={householdOptions} onChange={(v) => setForm((f) => ({ ...f, from: (v as string) || '' }))} />
+          </View>
+          <Ionicons name="arrow-forward" size={18} color={colors.textMuted} style={{ marginTop: 28 }} />
+          <View style={styles.flex1}>
+            <Select label="To" value={form.to} options={householdOptions} onChange={(v) => setForm((f) => ({ ...f, to: (v as string) || '' }))} />
+          </View>
+        </View>
+        <View style={styles.amountRow}>
+          <View style={styles.flex1}>
+            <Input label="Amount" value={form.amount} onChangeText={(v) => setForm((f) => ({ ...f, amount: v }))} keyboardType="decimal-pad" />
+          </View>
+          <View style={styles.currencyBox}>
+            <Select label="Currency" value={form.currency} options={CURRENCIES.map((c) => ({ label: c, value: c }))} onChange={(v) => setForm((f) => ({ ...f, currency: (v as string) || 'CAD' }))} />
+          </View>
+        </View>
+        <Input label="Note (optional)" value={form.note} onChangeText={(v) => setForm((f) => ({ ...f, note: v }))} />
+        {error ? <Text style={styles.error}>{error}</Text> : null}
+        <Button title="Record payment" onPress={savePayment} loading={saving} />
+      </Card>
+
+      {/* History */}
       {payments && payments.length > 0 ? (
         <Card style={styles.card}>
-          <Text style={styles.title}>Recorded payments</Text>
-          <Divider />
+          <Text style={styles.sectionLabel}>Recorded payments</Text>
           {payments.map((p) => (
-            <View key={p._id} style={styles.balanceRow}>
-              <Text style={styles.balanceText}>
-                <Text style={styles.bold}>{p.fromName}</Text> paid <Text style={styles.bold}>{p.toName}</Text>
-                {p.note ? ` · ${p.note}` : ''}
-              </Text>
-              <Text style={styles.amount}>{money(p.amount, p.currency || baseCurrency)}</Text>
+            <View key={p._id} style={styles.payRow}>
+              <View style={styles.flex1}>
+                <Text style={styles.balanceText}>
+                  <Text style={styles.bold}>{p.fromName}</Text> paid <Text style={styles.bold}>{p.toName}</Text>
+                </Text>
+                {p.note ? <Text style={styles.payNote}>{p.note}</Text> : null}
+              </View>
+              <Text style={styles.payAmt}>{money(p.amount, p.currency || base)}</Text>
+              <TouchableOpacity onPress={() => removePayment(p._id)} disabled={deletingId === p._id}>
+                <Ionicons name="trash-outline" size={18} color={colors.textMuted} />
+              </TouchableOpacity>
             </View>
           ))}
         </Card>
       ) : null}
-
-      <Text style={styles.footer}>Recording new payments is available on the web app.</Text>
     </ScrollView>
   );
 }
@@ -89,13 +226,28 @@ const styles = StyleSheet.create({
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.background },
   content: { padding: spacing.md },
   card: { marginBottom: spacing.md },
-  title: { fontSize: 16, fontWeight: '700', color: colors.text, marginBottom: spacing.sm },
-  balanceRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 8 },
-  balanceText: { flex: 1, fontSize: 14, color: colors.text, marginRight: spacing.sm },
-  bold: { fontWeight: '700' },
-  amount: { fontSize: 14, fontWeight: '700', color: colors.text },
+  sectionLabel: { fontSize: 11, fontWeight: '700', letterSpacing: 0.5, textTransform: 'uppercase', color: TRIP_PURPLE, marginBottom: spacing.sm },
   allSettled: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, paddingVertical: spacing.sm },
   settledText: { fontSize: 14, color: colors.textMuted },
-  note: { fontSize: 12, color: colors.textMuted, marginTop: spacing.sm },
-  footer: { fontSize: 13, color: colors.textMuted, textAlign: 'center', marginTop: spacing.sm },
+  balanceGroup: { marginBottom: spacing.sm },
+  balanceGroupSep: { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.border, paddingTop: spacing.sm },
+  balanceHead: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
+  balanceText: { flex: 1, fontSize: 14, color: colors.text },
+  bold: { fontWeight: '700' },
+  balanceAmt: { fontSize: 14, fontWeight: '700', color: colors.text },
+  payBtn: { backgroundColor: '#2E7D3222', paddingHorizontal: 12, paddingVertical: 4, borderRadius: 6 },
+  payBtnText: { color: '#2E7D32', fontWeight: '700', fontSize: 12 },
+  breakdownRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 3, marginLeft: 26 },
+  breakdownLabel: { flex: 1, fontSize: 12, color: colors.textMuted },
+  breakdownAmt: { fontSize: 12, color: colors.textMuted },
+  creditAmt: { color: colors.success },
+  warn: { fontSize: 12, color: colors.warning, marginTop: spacing.sm },
+  fromToRow: { flexDirection: 'row', alignItems: 'flex-start', gap: spacing.sm },
+  flex1: { flex: 1 },
+  amountRow: { flexDirection: 'row', gap: spacing.sm },
+  currencyBox: { width: 120 },
+  error: { color: colors.warning, fontSize: 13, marginBottom: spacing.sm },
+  payRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, paddingVertical: 8, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border },
+  payNote: { fontSize: 12, color: colors.textMuted, marginTop: 2 },
+  payAmt: { fontSize: 14, fontWeight: '600', color: colors.text },
 });

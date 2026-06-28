@@ -289,6 +289,8 @@ export interface Recipe {
   tags?: string[];
   ingredients?: Ingredient[];
   instructions?: string[];
+  // Per-step ingredient links: instructionIngredients[stepIdx] = ingredient indices.
+  instructionIngredients?: number[][];
 }
 
 export const recipesApi = {
@@ -299,6 +301,10 @@ export const recipesApi = {
   delete: (id: string) => api.delete(`/recipes/${id}`),
   fromUrl: (url: string) => api.post<Partial<Recipe>>('/recipes/from-url', { url }),
   generateFromAi: (description: string) => api.post<Partial<Recipe>>('/recipes/generate', { description }),
+  editWithAi: (recipe: Record<string, unknown>, instruction: string) =>
+    api.post<Partial<Recipe>>('/recipes/edit-with-ai', { recipe, instruction }),
+  computeIngredientTags: (ingredients: Ingredient[], instructions: string[]) =>
+    api.post<{ instructionIngredients: number[][] }>('/recipes/compute-ingredient-tags', { ingredients, instructions }),
   // fromPhoto handled via lib/upload (field 'photo'): POST /recipes/from-photo
 };
 
@@ -323,7 +329,29 @@ export const recipeScheduleApi = {
   forRecipe: (recipeId: string) => api.get<RecipeSchedule[]>(`/recipe-schedule/for-recipe/${recipeId}`),
   groceryList: (weekStart: string) =>
     api.get<{ groceryList: GroceryItem[] }>('/recipe-schedule/grocery-list', { params: { weekStart } }),
+  organizeGroceryList: (items: GroceryItem[], store?: string, sectionOrder?: string[]) =>
+    api.post<OrganizedGroceryList>('/recipe-schedule/organize-grocery-list', {
+      items,
+      store: store || undefined,
+      sectionOrder: sectionOrder?.length ? sectionOrder : undefined,
+    }),
+  sessionGet: (weekStart: string) =>
+    api.get<{ state?: GrocerySessionState }>('/recipe-schedule/session', { params: { weekStart } }),
+  sessionPut: (weekStart: string, state: GrocerySessionState) =>
+    api.put('/recipe-schedule/session', { weekStart, state }),
 };
+
+export interface OrganizedGroceryList {
+  store_known?: boolean;
+  categories: { name: string; items: GroceryItem[] }[];
+}
+
+export interface GrocerySessionState {
+  checked?: Record<string, boolean>;
+  substitutions?: Record<string, string>;
+  notFound?: Record<string, boolean>;
+  store?: string;
+}
 
 export const inventoryApi = {
   list: (params?: Record<string, unknown>) => api.get<InventoryItem[]>('/inventory', { params }),
@@ -346,6 +374,14 @@ export const historyApi = {
 
 export interface Settings {
   householdMemberCount?: number;
+  firstName?: string;
+  lastName?: string;
+  birthday?: string;
+  timezone?: string;
+  homeAddress?: string;
+  reminderLeadDays?: number;
+  groceryShoppingDay?: number;
+  grocerySections?: string[];
   [key: string]: unknown;
 }
 
@@ -377,12 +413,68 @@ export const odometerApi = {
 export interface Person {
   _id: string;
   name: string;
-  type: 'family' | 'contact' | string;
+  type: 'family' | 'friend' | string;
   accountId?: string;
+  relationship?: string;
+  birthday?: string;
+  email?: string;
+  phone?: string;
+  address?: string;
+  interests?: string[];
+  notes?: string;
 }
 
 export const peopleApi = {
   list: (params?: Record<string, unknown>) => api.get<Person[]>('/people', { params }),
+  create: (data: Record<string, unknown>) => api.post<Person>('/people', data),
+  update: (id: string, data: Record<string, unknown>) => api.put<Person>(`/people/${id}`, data),
+  delete: (id: string) => api.delete(`/people/${id}`),
+  bulk: (people: Record<string, unknown>[]) => api.post('/people/bulk', { people }),
+};
+
+// ----- Household (sharing) ---------------------------------------------------
+
+export interface HouseholdMember {
+  _id: string;
+  firstName?: string;
+  lastName?: string;
+  email?: string;
+}
+
+export interface Household {
+  _id: string;
+  name: string;
+  joinCode: string;
+  ownerId: string;
+  members: HouseholdMember[];
+}
+
+export const householdApi = {
+  get: () => api.get<Household>('/household'),
+  rename: (name: string) => api.put<Household>('/household', { name }),
+  join: (joinCode: string) => api.post('/household/join', { joinCode }),
+  leave: () => api.post('/household/leave'),
+};
+
+// ----- Places (Google Places proxy; powers address autocomplete) -------------
+
+export interface PlacePrediction {
+  place_id: string;
+  description: string;
+  main_text?: string;
+  secondary_text?: string;
+}
+
+export const placesApi = {
+  autocomplete: (query: string, type?: string) =>
+    api.get<{ predictions: PlacePrediction[] }>('/places/autocomplete', {
+      params: { query, ...(type ? { type } : {}) },
+    }),
+  getDetails: (placeId: string) => api.get(`/places/details/${placeId}`),
+  getTimezone: (placeId: string) => api.get<{ timeZoneId?: string }>(`/places/timezone/${placeId}`),
+  getTravelTime: (destination: string, origin?: string) =>
+    api.get('/places/travel-time', { params: { destination, origin: origin || undefined } }),
+  routeLeg: (payload: Record<string, unknown>) => api.post('/places/route-leg', payload),
 };
 
 // ----- Trips / Vacations -----------------------------------------------------
@@ -407,6 +499,13 @@ export interface TripItem {
   notes?: string;
   url?: string;
   phone?: string;
+  placeId?: string;
+  address?: string;
+  householdId?: string;
+  paidByHouseholdId?: string;
+  myData?: { cost?: number | null; currency?: string; confirmation?: string; confirmed?: boolean; partySize?: number };
+  shares?: { householdId: string; amount?: number | null }[];
+  participants?: string[];
   attachments?: { _id: string; name: string }[];
   userId?: { firstName?: string };
 }
@@ -450,12 +549,38 @@ export interface SettlementPayment {
   amount: number;
   currency?: string;
   note?: string;
+  date?: string;
+}
+
+export interface SettlementLine {
+  kind?: 'booking' | 'payment';
+  itemId?: string;
+  type?: string;
+  title?: string;
+  amount: number;
+}
+
+export interface SettlementBalance {
+  from?: string;
+  to?: string;
+  fromName: string;
+  toName: string;
+  amount: number;
+  lines?: SettlementLine[];
+}
+
+export interface HouseholdOption {
+  householdId: string;
+  name: string;
 }
 
 export interface Settlement {
   baseCurrency: string;
-  balances: { fromName: string; toName: string; amount: number }[];
+  ratesAvailable?: boolean;
+  balances: SettlementBalance[];
   payments?: SettlementPayment[];
+  households?: HouseholdOption[];
+  myHouseholdId?: string | null;
 }
 
 export const tripsApi = {
@@ -465,8 +590,10 @@ export const tripsApi = {
   update: (id: string, data: Record<string, unknown>) => api.put<Trip>(`/trips/${id}`, data),
   remove: (id: string) => api.delete(`/trips/${id}`),
   budget: (id: string) => api.get<TripBudget>(`/trips/${id}/budget`),
+  families: (id: string) => api.get<{ householdId: string; name: string }[]>(`/trips/${id}/families`),
   settlement: (id: string) => api.get<Settlement>(`/trips/${id}/settlement`),
   addPayment: (id: string, data: Record<string, unknown>) => api.post(`/trips/${id}/settle-payments`, data),
+  removePayment: (id: string, payId: string) => api.delete(`/trips/${id}/settle-payments/${payId}`),
   addItem: (id: string, data: Record<string, unknown>) => api.post<TripItem>(`/trips/${id}/items`, data),
   updateItem: (id: string, itemId: string, data: Record<string, unknown>) =>
     api.put<TripItem>(`/trips/${id}/items/${itemId}`, data),
@@ -542,6 +669,30 @@ export interface BillingStatus {
 
 export const billingApi = {
   status: () => api.get<BillingStatus>('/billing/status'),
+};
+
+// ----- Weather ---------------------------------------------------------------
+
+export interface WeatherData {
+  current: { temperature: number; weatherCode: number; description: string; humidity: number; windSpeed: number; precipitation: number };
+  units: { temperature: string; wind: string; precipitation: string };
+  forecast: { date: string; weatherCode: number; tempMax: number; tempMin: number; precipProbability: number; precipSum: number; goodWeather?: boolean }[];
+}
+
+export interface OutlookWeek {
+  startDate: string;
+  endDate: string;
+  avgTempMax: number;
+  avgTempMin: number;
+  totalPrecip: number;
+  rainyDays: number;
+  yearsInSample?: number;
+}
+
+export const weatherApi = {
+  get: () => api.get<WeatherData>('/weather'),
+  range: (from: string, to: string) => api.get('/weather/range', { params: { from, to } }),
+  outlook: () => api.get<{ weeks: OutlookWeek[] }>('/weather/outlook'),
 };
 
 // Native push device registration (server: routes/notifications.js).

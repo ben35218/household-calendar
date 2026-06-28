@@ -5,6 +5,7 @@ import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { calendarApi } from '../../api';
 import { Button, Input, Select, Screen, SwitchRow, SectionTitle, DateField, TimeField } from '../../components/ui';
+import PlacesAutocomplete from '../../components/PlacesAutocomplete';
 import { EVENT_CALENDAR_TYPES } from '../../lib/calendar';
 import { CalendarStackParamList } from '../../navigation/CalendarNavigator';
 import { colors, spacing } from '../../theme';
@@ -166,7 +167,7 @@ export default function EventFormScreen() {
         </View>
       ) : null}
 
-      <Input label="Location" value={form.location} onChangeText={(v) => set({ location: v })} />
+      <PlacesAutocomplete label="Location" value={form.location} onChangeText={(v) => set({ location: v })} />
       <Input label="Description" value={form.description} onChangeText={(v) => set({ description: v })} multiline />
 
       <SectionTitle>Reminders</SectionTitle>

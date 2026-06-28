@@ -13,6 +13,7 @@ type AuthState = {
   login: (creds: { email: string; password: string }) => Promise<void>;
   register: (data: { email: string; password: string; firstName: string; lastName?: string }) => Promise<void>;
   logout: () => Promise<void>;
+  setUser: (user: User | null) => void;
 };
 
 const AuthContext = createContext<AuthState | undefined>(undefined);
@@ -66,7 +67,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   return (
     <AuthContext.Provider
-      value={{ user, bootstrapping, isLoggedIn: !!user, login, register, logout }}
+      value={{ user, bootstrapping, isLoggedIn: !!user, login, register, logout, setUser }}
     >
       {children}
     </AuthContext.Provider>

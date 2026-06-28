@@ -5,7 +5,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { calendarApi } from '../../api';
-import { buildMonth, dayDots, MonthGrid } from '../../lib/calendar';
+import { buildMonth, dayDots, weekBars, MonthGrid } from '../../lib/calendar';
 import { CalendarStackParamList } from '../../navigation/CalendarNavigator';
 import { colors, spacing } from '../../theme';
 
@@ -45,6 +45,12 @@ export default function CalendarScreen() {
     navigation.setOptions({
       headerRight: () => (
         <View style={styles.headerBtns}>
+          <TouchableOpacity onPress={() => navigation.navigate('Events')} style={{ paddingHorizontal: 4 }}>
+            <Ionicons name="list" size={22} color="#fff" />
+          </TouchableOpacity>
+          <TouchableOpacity onPress={() => navigation.navigate('Calendars')} style={{ paddingHorizontal: 4 }}>
+            <Ionicons name="options" size={22} color="#fff" />
+          </TouchableOpacity>
           <TouchableOpacity onPress={() => navigation.navigate('CalendarAssistant')} style={{ paddingHorizontal: 4 }}>
             <Ionicons name="sparkles" size={22} color="#fff" />
           </TouchableOpacity>
@@ -66,7 +72,9 @@ export default function CalendarScreen() {
           </View>
         ))}
       </View>
-      {month.weeks.map((week, wi) => (
+      {month.weeks.map((week, wi) => {
+        const bars = weekBars(calQ.data, week.map((c) => c.date));
+        return (
         <View key={wi} style={styles.weekRow}>
           {week.map((cell) => {
             const dots = cell.currentMonth ? dayDots(calQ.data, cell.date) : [];
@@ -92,8 +100,25 @@ export default function CalendarScreen() {
               </TouchableOpacity>
             );
           })}
+          {bars.map((bar) => (
+            <View
+              key={bar.key}
+              style={[
+                styles.spanBar,
+                {
+                  backgroundColor: bar.color,
+                  left: bar.startCol * cellSize + 1,
+                  width: (bar.endCol - bar.startCol + 1) * cellSize - 3,
+                  bottom: 3 + bar.lane * 8,
+                },
+              ]}
+            >
+              <Text style={styles.spanBarText} numberOfLines={1}>{bar.label}</Text>
+            </View>
+          ))}
         </View>
-      ))}
+        );
+      })}
     </View>
   );
 
@@ -125,7 +150,9 @@ const styles = StyleSheet.create({
   weekdayRow: { flexDirection: 'row' },
   weekdayCell: { alignItems: 'center', paddingVertical: 4 },
   weekdayText: { fontSize: 12, color: colors.textMuted, fontWeight: '600' },
-  weekRow: { flexDirection: 'row' },
+  weekRow: { flexDirection: 'row', position: 'relative' },
+  spanBar: { position: 'absolute', height: 7, borderRadius: 3, justifyContent: 'center', paddingHorizontal: 3 },
+  spanBarText: { fontSize: 7, color: '#fff', fontWeight: '700' },
   dayCell: { alignItems: 'center', paddingTop: 4, borderWidth: 0.5, borderColor: colors.border },
   dayNumWrap: { width: 24, height: 24, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
   todayWrap: { backgroundColor: colors.primary },

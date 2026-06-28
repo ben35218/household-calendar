@@ -4,8 +4,9 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Ionicons } from '@expo/vector-icons';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import { tripsApi, CandidateRange, TripStatus } from '../../api';
+import { tripsApi, placesApi, CandidateRange, TripStatus } from '../../api';
 import { Button, Input, Select, Screen, SectionTitle, DateField } from '../../components/ui';
+import PlacesAutocomplete from '../../components/PlacesAutocomplete';
 import { TRIP_PURPLE } from '../../lib/tripTypes';
 import { TripsStackParamList } from '../../navigation/TripsNavigator';
 import { colors, spacing } from '../../theme';
@@ -114,7 +115,12 @@ export default function TripFormScreen() {
   return (
     <Screen>
       <Input label="Trip Name *" value={form.name} onChangeText={(v) => set({ name: v })} placeholder="e.g. Rome 2026" />
-      <Input label="Destination" value={form.destination} onChangeText={(v) => set({ destination: v })} />
+      <PlacesAutocomplete
+        label="Destination"
+        value={form.destination}
+        onChangeText={(v) => set({ destination: v })}
+        onSelect={(p) => placesApi.getTimezone(p.place_id).then((r) => r.data.timeZoneId && set({ destinationTz: r.data.timeZoneId })).catch(() => {})}
+      />
       <Input label="Destination timezone (IANA)" value={form.destinationTz} onChangeText={(v) => set({ destinationTz: v })} placeholder="e.g. Europe/Rome" autoCapitalize="none" />
       <Select label="Status" value={form.status} options={STATUS_OPTIONS} onChange={(v) => set({ status: (v as TripStatus) ?? 'considering' })} />
 

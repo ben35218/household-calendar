@@ -81,6 +81,55 @@ export function dayDots(data: CalendarData | undefined, dateStr: string, max = 4
   return dots.slice(0, max);
 }
 
+// Multi-day spanning bars (trips + multi-day events) for one week row. Each bar
+// is lane-packed so overlapping spans stack. Mirrors the web's trip/event bars.
+export interface WeekBar {
+  key: string;
+  color: string;
+  label: string;
+  startCol: number;
+  endCol: number;
+  lane: number;
+}
+
+export function weekBars(data: CalendarData | undefined, weekDates: string[], maxLanes = 2): WeekBar[] {
+  if (!data || weekDates.length !== 7) return [];
+  const weekStart = weekDates[0];
+  const weekEnd = weekDates[6];
+  const colOf = (dateStr: string) => {
+    if (dateStr < weekStart) return 0;
+    if (dateStr > weekEnd) return 6;
+    return weekDates.indexOf(dateStr);
+  };
+
+  const spans: { color: string; label: string; start: string; end: string }[] = [];
+  for (const t of data.trips ?? []) {
+    for (const r of t.ranges ?? []) {
+      const s = localDate(r.start);
+      const e = localDate(r.end);
+      if (e >= weekStart && s <= weekEnd) spans.push({ color: t.color || CALENDAR_COLORS.vacations, label: t.name, start: s, end: e });
+    }
+  }
+  for (const ev of data.events ?? []) {
+    const s = localDate(ev.startDate);
+    const e = ev.endDate ? localDate(ev.endDate) : s;
+    if (e > s && e >= weekStart && s <= weekEnd) spans.push({ color: eventColor(ev), label: ev.title, start: s, end: e });
+  }
+
+  spans.sort((a, b) => (a.start < b.start ? -1 : 1));
+  const laneEnds: number[] = [];
+  const bars: WeekBar[] = [];
+  for (const sp of spans) {
+    const startCol = colOf(sp.start);
+    const endCol = colOf(sp.end);
+    let lane = laneEnds.findIndex((end) => startCol > end);
+    if (lane === -1) { lane = laneEnds.length; laneEnds.push(endCol); }
+    else laneEnds[lane] = endCol;
+    if (lane < maxLanes) bars.push({ key: `${sp.label}-${sp.start}-${lane}`, color: sp.color, label: sp.label, startCol, endCol, lane });
+  }
+  return bars;
+}
+
 // Build a calendar month grid (6 weeks, Sunday-first) of yyyy-MM-dd cells.
 export interface MonthGrid {
   key: string;

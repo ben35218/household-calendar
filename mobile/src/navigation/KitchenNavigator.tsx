@@ -6,6 +6,8 @@ import ReceiptScanScreen from '../screens/kitchen/ReceiptScanScreen';
 import RecipeDetailScreen from '../screens/kitchen/RecipeDetailScreen';
 import RecipeFormScreen from '../screens/kitchen/RecipeFormScreen';
 import CookingModeScreen from '../screens/kitchen/CookingModeScreen';
+import FindRecipesScreen from '../screens/kitchen/FindRecipesScreen';
+import MealPlannerSettingsScreen from '../screens/kitchen/MealPlannerSettingsScreen';
 import { colors } from '../theme';
 
 export type KitchenStackParamList = {
@@ -15,6 +17,8 @@ export type KitchenStackParamList = {
   RecipeDetail: { id: string };
   RecipeForm: { id?: string };
   CookingMode: { id: string };
+  FindRecipes: undefined;
+  MealPlannerSettings: undefined;
 };
 
 const Stack = createNativeStackNavigator<KitchenStackParamList>();
@@ -33,6 +37,8 @@ export default function KitchenNavigator() {
       <Stack.Screen name="RecipeDetail" component={RecipeDetailScreen} options={{ title: 'Recipe' }} />
       <Stack.Screen name="RecipeForm" component={RecipeFormScreen} options={{ title: 'Recipe' }} />
       <Stack.Screen name="CookingMode" component={CookingModeScreen} options={{ title: 'Cooking' }} />
+      <Stack.Screen name="FindRecipes" component={FindRecipesScreen} options={{ title: 'Find Recipes' }} />
+      <Stack.Screen name="MealPlannerSettings" component={MealPlannerSettingsScreen} options={{ title: 'Meal Planner Settings' }} />
     </Stack.Navigator>
   );
 }

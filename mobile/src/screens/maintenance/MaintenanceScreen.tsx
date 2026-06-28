@@ -48,6 +48,9 @@ export default function MaintenanceScreen() {
           <TouchableOpacity onPress={() => navigation.navigate('ItemsList')} style={styles.headerBtn}>
             <Ionicons name="cube-outline" size={22} color="#fff" />
           </TouchableOpacity>
+          <TouchableOpacity onPress={() => navigation.navigate('Categories')} style={styles.headerBtn}>
+            <Ionicons name="pricetags-outline" size={22} color="#fff" />
+          </TouchableOpacity>
           <TouchableOpacity
             onPress={() => navigation.navigate(tab === 'tasks' ? 'TaskTemplates' : 'ChoreTemplates')}
             style={styles.headerBtn}
