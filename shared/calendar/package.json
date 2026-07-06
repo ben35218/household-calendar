@@ -1,0 +1,11 @@
+{
+  "name": "@household/calendar",
+  "version": "0.1.0",
+  "description": "Shared calendar range-expansion engine (recurrence -> occurrences + assembled CalendarData). Pure, dependency-free; used by server + web + mobile.",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "scripts": {
+    "test": "node --test 'index.test.js'"
+  },
+  "license": "ISC"
+}

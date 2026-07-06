@@ -1,7 +1,8 @@
 const express = require('express');
 const CalendarEvent    = require('../models/CalendarEvent');
 const { requireAuth }  = require('../middleware/auth');
-const { collectCalendarRecords } = require('../services/calendarData');
+const Person           = require('../models/Person');
+const { collectCalendarRecords, fetchCalendarSources } = require('../services/calendarData');
 const { isObjectId, pickRecordEnc } = require('../services/householdKey');
 
 const router = express.Router();
@@ -36,6 +37,30 @@ router.get('/', async (req, res) => {
     });
 
     res.json(data);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Raw source records for CLIENT-side expansion (§9.1 P2). Returns the same
+// records collectCalendarRecords fetches, but unexpanded and with their enc
+// blobs intact, so the client runs the shared @household/calendar engine over
+// the decrypted records (offline via the replica, and post-§9-drop when the
+// server can no longer expand). Dual-write: plaintext is still included today.
+router.get('/raw', async (req, res) => {
+  try {
+    const { from, to } = req.query;
+    const fromDate = from ? new Date(from) : new Date(0);
+    const toDate   = to   ? new Date(to)   : new Date('2099-12-31');
+
+    if (req.user) await Person.ensureSelf(req.user);
+    const sources = await fetchCalendarSources({ scopeIds: req.scopeIds, fromDate, toDate });
+
+    res.json({
+      ...sources,
+      selfId: String(req.user._id),
+      groceryShoppingDay: (req.household || req.user)?.groceryShoppingDay ?? 6,
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
