@@ -9,7 +9,7 @@ const MaintenanceTask = require('../models/MaintenanceTask');
 const { requireAuth } = require('../middleware/auth');
 const { meter } = require('../middleware/usageMeter');
 const { findManuals } = require('../services/manualLookup');
-const { parseManualForTasks } = require('../services/manualParser');
+const { parseManualForTasks, parseManualBufferForTasks } = require('../services/manualParser');
 const { computeNextDueDate } = require('../services/recurrence');
 
 const router = express.Router();
@@ -33,6 +33,14 @@ const upload = multer({
     const allowed = ['application/pdf', 'image/jpeg', 'image/png', 'image/gif'];
     cb(null, allowed.includes(file.mimetype));
   },
+});
+
+// In-memory upload for the ephemeral-consent extract path (§9.1 P4b): decrypted
+// manual bytes are parsed per-request and never written to disk.
+const memUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 50 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => cb(null, file.mimetype === 'application/pdf'),
 });
 
 router.post('/items/:itemId/upload', meter('manualParse'), upload.single('file'), async (req, res) => {
@@ -155,14 +163,22 @@ router.get('/:id/download', async (req, res) => {
 });
 
 // Parse a saved manual PDF and extract maintenance tasks via Claude
-router.post('/:id/extract-tasks', meter('manualParse'), async (req, res) => {
+router.post('/:id/extract-tasks', meter('manualParse'), memUpload.single('file'), async (req, res) => {
   try {
     const manual = await Manual.findOne({ _id: req.params.id, userId: { $in: req.scopeIds } });
     if (!manual) return res.status(404).json({ error: 'Manual not found' });
+
+    // Ephemeral-consent (§9.1 P4b): when the client posts the decrypted manual
+    // bytes, parse them per-request (never stored). This is how an *encrypted*
+    // manual gets task-extracted post-drop — the client decrypts it on device.
+    if (req.file) {
+      const tasks = await parseManualBufferForTasks(req.file.buffer);
+      return res.json({ tasks, manualTitle: manual.title });
+    }
+
     if (manual.encrypted) {
-      // The server can't read an encrypted manual; client-side extraction with
-      // ephemeral consent is Phase 5.
-      return res.status(400).json({ error: 'This manual is encrypted — task extraction from encrypted manuals is coming soon.' });
+      // No decrypted bytes provided and the server can't read the ciphertext.
+      return res.status(400).json({ error: 'This manual is encrypted — decrypt it on a device with the key to extract tasks.' });
     }
 
     const filePath = path.join(uploadDir, manual.storageKey);

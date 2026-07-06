@@ -67,7 +67,13 @@ export const manualsApi = {
   fromUrl: (itemId, data) => api.post(`/manuals/items/${itemId}/from-url`, data),
   autoLookup: (itemId) => api.post(`/manuals/items/${itemId}/auto-lookup`),
   proxyUrl: (url) => `/api/manuals/proxy?token=${localStorage.getItem('hc_token')}&url=${encodeURIComponent(url)}`,
-  extractTasks: (id) => api.post(`/manuals/${id}/extract-tasks`),
+  // With a File (decrypted bytes) → multipart ephemeral extract (encrypted manuals);
+  // without → server reads the stored plaintext file.
+  extractTasks: (id, file) => {
+    if (!file) return api.post(`/manuals/${id}/extract-tasks`);
+    const fd = new FormData(); fd.append('file', file);
+    return api.post(`/manuals/${id}/extract-tasks`, fd, { headers: { 'Content-Type': 'multipart/form-data' } });
+  },
   createTasks: (id, data) => api.post(`/manuals/${id}/create-tasks`, data),
   download: (id) => `/api/manuals/${id}/download?token=${localStorage.getItem('hc_token')}`,
   // Authenticated fetch of the raw bytes (ciphertext for encrypted manuals).

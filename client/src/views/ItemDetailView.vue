@@ -530,7 +530,22 @@ const creatingTasks = ref(false);
 async function extractTasks(manual) {
   extractingManual.value = manual._id;
   try {
-    const { data } = await manualsApi.extractTasks(manual._id);
+    // Ephemeral-consent (§9.1 P4b): an encrypted manual is decrypted here and its
+    // bytes posted per-request so the server can parse it without ever storing
+    // plaintext. Plaintext manuals extract server-side as before.
+    let file = null;
+    if (manual.encrypted) {
+      if (!isUnlocked()) {
+        pageAlert.value = { msg: 'Unlock your account to extract tasks from this encrypted manual.', error: true };
+        return;
+      }
+      const { data: cipher } = await manualsApi.downloadBytes(manual._id);
+      const fileText = new TextDecoder().decode(new Uint8Array(cipher));
+      const bytes = await decryptAttachment('Manual', manual._id, manual.keyVersion, manual.wrappedFileKey, fileText);
+      if (!bytes) { pageAlert.value = { msg: 'Could not decrypt this manual.', error: true }; return; }
+      file = new File([bytes], `${manual.title || 'manual'}.pdf`, { type: 'application/pdf' });
+    }
+    const { data } = await manualsApi.extractTasks(manual._id, file);
     extractedTasks.value = data.tasks || [];
     extractManualId.value = manual._id;
     extractManualTitle.value = data.manualTitle || manual.title;

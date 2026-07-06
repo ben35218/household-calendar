@@ -39,8 +39,7 @@ Rules:
 - Only include tasks explicitly stated in the manual. Do not invent tasks.
 - If the text is too short or contains no maintenance schedule, return { "tasks": [] }.`;
 
-async function extractTextFromPdf(filePath) {
-  const buffer = fs.readFileSync(filePath);
+async function extractTextFromPdfBuffer(buffer) {
   const parser = new PDFParse({ data: buffer });
   await parser.load();
   const result = await parser.getText();
@@ -48,16 +47,36 @@ async function extractTextFromPdf(filePath) {
   return result.text; // plain string of all page text joined
 }
 
-async function parseManualForTasks(filePath) {
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) throw new Error('ANTHROPIC_API_KEY is not configured');
+async function extractTextFromPdf(filePath) {
+  return extractTextFromPdfBuffer(fs.readFileSync(filePath));
+}
 
+// Parse maintenance tasks from a manual given as raw bytes (never touches disk).
+// Used for the ephemeral-consent path (§9.1 P4b): the client decrypts an
+// encrypted manual and posts the plaintext bytes per-request.
+async function parseManualBufferForTasks(buffer) {
+  let text;
+  try {
+    text = await extractTextFromPdfBuffer(buffer);
+  } catch (err) {
+    throw new Error('Could not read PDF: ' + err.message);
+  }
+  return tasksFromManualText(text);
+}
+
+async function parseManualForTasks(filePath) {
   let text;
   try {
     text = await extractTextFromPdf(filePath);
   } catch (err) {
     throw new Error('Could not read PDF: ' + err.message);
   }
+  return tasksFromManualText(text);
+}
+
+async function tasksFromManualText(text) {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) throw new Error('ANTHROPIC_API_KEY is not configured');
 
   if (!text || text.trim().length < 100) {
     throw new Error('PDF appears to be scanned/image-based — no extractable text found');
@@ -103,4 +122,4 @@ async function parseManualForTasks(filePath) {
   return parsed.tasks;
 }
 
-module.exports = { parseManualForTasks, extractTextFromPdf };
+module.exports = { parseManualForTasks, parseManualBufferForTasks, extractTextFromPdf };
