@@ -3,6 +3,7 @@ import { View, Text, ScrollView, StyleSheet, Alert, ActivityIndicator } from 're
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useAuth } from '../../store/auth';
 import { settingsApi, authApi } from '../../api';
+import { getHDK, sealUpdate, openRecord } from '../../lib/e2ee';
 import { registerForPushNotifications } from '../../lib/push';
 import { rewrapForNewPassword, regenerateRecoveryCode } from '../../lib/e2ee';
 import { Button, Card, Input, DateField, Select, SectionTitle, Divider } from '../../components/ui';
@@ -41,6 +42,13 @@ export default function AccountScreen() {
       timezone: settings.timezone ?? 'America/Toronto',
       homeAddress: settings.homeAddress ?? '',
     });
+    // Decrypt the sealed home location over the plaintext (§9.1 P5); dormant
+    // without an HDK. Post-drop this is the only source of the address.
+    if (settings.enc && getHDK() && settings.householdId) {
+      openRecord('Household', { _id: String(settings.householdId), keyVersion: settings.keyVersion, enc: settings.enc } as any)
+        .then((dec: any) => { if (dec.homeAddress) setForm((f) => ({ ...f, homeAddress: dec.homeAddress })); })
+        .catch(() => { /* locked / wrong key */ });
+    }
   }, [settings]);
 
   const set = (k: keyof typeof form) => (v: string) => setForm((f) => ({ ...f, [k]: v }));
@@ -48,13 +56,18 @@ export default function AccountScreen() {
   async function save() {
     setSaving(true);
     try {
-      await settingsApi.update({
+      let body: Record<string, unknown> = {
         firstName: form.firstName,
         lastName: form.lastName,
         birthday: form.birthday || undefined,
         timezone: form.timezone,
         homeAddress: form.homeAddress,
-      });
+      };
+      // Seal the home location alongside the plaintext (§9.1 P5); no-op without an HDK.
+      if (getHDK() && settings?.householdId) {
+        body = await sealUpdate('Household', String(settings.householdId), body, { homeAddress: form.homeAddress });
+      }
+      await settingsApi.update(body);
       qc.invalidateQueries({ queryKey: ['settings'] });
       Alert.alert('Saved', 'Your account details were updated.');
     } catch (e: any) {

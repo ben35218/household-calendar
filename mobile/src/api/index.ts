@@ -405,6 +405,10 @@ export interface Settings {
   reminderLeadDays?: number;
   groceryShoppingDay?: number;
   grocerySections?: string[];
+  // Encrypted home-location blob (§9.1 P5).
+  householdId?: string;
+  keyVersion?: number;
+  enc?: { alg: string; nonce: string; ct: string };
   [key: string]: unknown;
 }
 

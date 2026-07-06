@@ -1,6 +1,11 @@
 import { reactive, ref, watch } from 'vue';
 import { settingsApi, householdApi, placesApi } from '../services/api';
 import { useAuthStore } from '../stores/auth';
+import { getHDK, sealUpdate, openRecord } from '../services/e2ee';
+
+// The home location (homeAddress) is sealed under the HDK on save and decrypted
+// on load (§9.1 P5). Dormant without an HDK. householdId binds the AEAD.
+const householdId = ref('');
 
 // Shared singleton state so the drill-in form sections (Account / Notifications
 // / About) and their ProfileSaveBar all bind to the same form. This lifts the
@@ -92,7 +97,16 @@ async function load() {
     form.birthdayInput = data.birthday ? data.birthday.slice(0, 10) : '';
     form.groceryShoppingDay = data.groceryShoppingDay ?? 6;
     householdMemberCount.value = data.householdMemberCount ?? 1;
-    if (data.homeAddress) addressSelected.value = data.homeAddress;
+    householdId.value = data.householdId ? String(data.householdId) : '';
+    // Decrypt the sealed home location over the plaintext (dual-write); no-op
+    // without an HDK. Post-drop this is the only source of the address.
+    if (data.enc && getHDK() && householdId.value) {
+      try {
+        const dec = await openRecord('Household', { _id: householdId.value, keyVersion: data.keyVersion, enc: data.enc });
+        if (dec.homeAddress) form.homeAddress = dec.homeAddress;
+      } catch { /* locked / wrong key — keep server plaintext */ }
+    }
+    if (form.homeAddress) addressSelected.value = form.homeAddress;
 
     try {
       const { data: hh } = await householdApi.get();
@@ -119,7 +133,12 @@ async function save() {
   saveMsg.value = '';
   try {
     const { birthdayInput, ...rest } = form;
-    await settingsApi.update({ ...rest, birthday: birthdayInput || undefined, groceryShoppingDay: form.groceryShoppingDay });
+    let body = { ...rest, birthday: birthdayInput || undefined, groceryShoppingDay: form.groceryShoppingDay };
+    // Seal the home location alongside the plaintext (§9.1 P5); no-op without an HDK.
+    if (getHDK() && householdId.value) {
+      body = await sealUpdate('Household', householdId.value, body, { homeAddress: form.homeAddress });
+    }
+    await settingsApi.update(body);
     saveMsg.value = 'Settings saved!';
     saveError.value = false;
     dirty.value = false;

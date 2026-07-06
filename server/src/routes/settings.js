@@ -3,6 +3,7 @@ const User = require('../models/User');
 const Household = require('../models/Household');
 const Person = require('../models/Person');
 const { requireAuth } = require('../middleware/auth');
+const { pickRecordEnc } = require('../services/householdKey');
 
 const router = express.Router();
 router.use(requireAuth);
@@ -33,6 +34,11 @@ router.get('/', async (req, res) => {
     groceryShoppingDay: hh.groceryShoppingDay, grocerySections: hh.grocerySections,
     reminderLeadDays: hh.reminderLeadDays,
     householdMemberCount: memberCount,
+    // Encrypted home-location blob (§9.1 P5) so the client can decrypt the address
+    // after the drop. householdId lets the client bind the AAD.
+    householdId: req.household?._id,
+    enc: req.household?.enc,
+    keyVersion: req.household?.keyVersion,
   });
 });
 
@@ -45,6 +51,9 @@ router.put('/', async (req, res) => {
     for (const key of SHARED) if (req.body[key] !== undefined) hhUpdate[key] = req.body[key];
     // Bust cached geocoordinates when the home address changes
     if (hhUpdate.homeAddress !== undefined) { hhUpdate.lat = null; hhUpdate.lon = null; }
+    // Encrypted home-location blob (§9.1 P5), when the client sealed it.
+    try { Object.assign(hhUpdate, pickRecordEnc(req.body)); }
+    catch (msg) { return res.status(400).json({ error: msg }); }
 
     const [user] = await Promise.all([
       Object.keys(userUpdate).length

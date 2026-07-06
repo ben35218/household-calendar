@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 const { randomInt } = require('crypto');
+const { encFields } = require('./encFields');
 
 // Short, unambiguous join code (no 0/O/1/I) used to invite members.
 // Uses a CSPRNG so codes aren't predictable from previously issued ones.
@@ -39,6 +40,11 @@ const householdSchema = new mongoose.Schema({
   // Monthly AI-action usage counters: { 'YYYY-MM': { chat, scan, generation, manualParse, aiHelper } }.
   // Mixed so we can $inc arbitrary month/action paths without a fixed schema.
   usage: { type: mongoose.Schema.Types.Mixed, default: () => ({}) },
+
+  // E2EE dual-write ciphertext (§9.1 P5): the home location (homeAddress/lat/lon)
+  // is sensitive, so it's sealed here alongside the plaintext during dual-write
+  // and read from `enc` after the drop. Name/joinCode/plan/timezone stay plaintext.
+  ...encFields,
 }, { timestamps: true, minimize: false });
 
 // Create a household with a guaranteed-unique join code.
