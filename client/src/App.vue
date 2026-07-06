@@ -37,6 +37,12 @@
       </template>
     </v-snackbar>
 
+    <!-- One-time E2EE recovery code, shown right after enrollment -->
+    <RecoveryCodeDialog />
+
+    <!-- Unlock prompt when enrolled but the password didn't unlock the key -->
+    <UnlockDialog />
+
     <!-- App-wide confirm dialog (#6) -->
     <v-dialog v-model="confirmState.show" max-width="420" persistent>
       <v-card rounded="lg">
@@ -57,6 +63,8 @@ import { useRoute, useRouter } from 'vue-router';
 import { useAuthStore } from './stores/auth';
 import { useSnackbar } from './composables/useSnackbar';
 import { useConfirm } from './composables/useConfirm';
+import RecoveryCodeDialog from './components/RecoveryCodeDialog.vue';
+import UnlockDialog from './components/UnlockDialog.vue';
 
 const route = useRoute();
 const router = useRouter();
@@ -69,7 +77,7 @@ const quota = reactive({ show: false, text: '' });
 function onQuota(e) {
   const d = e.detail || {};
   const tier = d.upgradeTo ? d.upgradeTo.charAt(0).toUpperCase() + d.upgradeTo.slice(1) : 'a paid plan';
-  quota.text = `You’ve hit your monthly limit for this feature. Upgrade to ${tier} for more.`;
+  quota.text = `You’ve hit your weekly limit for this feature. Upgrade to ${tier} for more.`;
   quota.show = true;
 }
 function goUpgrade() {

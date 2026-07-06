@@ -201,6 +201,8 @@ import { ref, computed, onMounted } from 'vue';
 import { useRouter } from 'vue-router';
 import { format } from 'date-fns';
 import { recipesApi, recipeScheduleApi } from '../services/api';
+import { openRecord } from '../services/e2ee';
+import * as replica from '../services/replica';
 
 const router = useRouter();
 
@@ -252,8 +254,10 @@ const filteredRecipes = computed(() => {
 async function loadRecipes() {
   loading.value = true;
   try {
-    const { data } = await recipesApi.list();
-    recipes.value = data;
+    // Offline-first (Phase 4b): sync the replica, fall back to cache offline,
+    // then decrypt content over the plaintext rows.
+    const rows = await replica.syncedList('Recipe', async () => (await recipesApi.list()).data);
+    recipes.value = await Promise.all(rows.map((r) => openRecord('Recipe', r)));
   } finally {
     loading.value = false;
   }

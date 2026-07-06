@@ -310,6 +310,12 @@ import { ref, computed, watch, onMounted } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { format } from 'date-fns';
 import { tripsApi, placesApi } from '../services/api';
+import { sealNew, sealUpdate, openRecord } from '../services/e2ee';
+
+// Encrypted trip-item content (cost/sharing/confirmation/dates stay plaintext).
+const TRIP_ITEM_ENC = (p) => ({
+  title: p.title, location: p.location, url: p.url, phone: p.phone, notes: p.notes, details: p.details,
+});
 import { zonedWallclockToUtc, zonedParts } from '../utils/tz';
 import { useSmartBack, useReturnTo } from '../composables/useSmartBack';
 import { useAuthStore } from '../stores/auth';
@@ -641,9 +647,9 @@ async function save() {
 
     let itemId = route.params.itemId;
     if (isEdit.value) {
-      await tripsApi.updateItem(tripId, itemId, payload);
+      await tripsApi.updateItem(tripId, itemId, await sealUpdate('TripItem', itemId, payload, TRIP_ITEM_ENC(payload)));
     } else {
-      const { data } = await tripsApi.addItem(tripId, payload);
+      const { data } = await tripsApi.addItem(tripId, await sealNew('TripItem', payload, TRIP_ITEM_ENC(payload)));
       itemId = data._id;
     }
     // Attach any files staged during creation
@@ -700,8 +706,9 @@ onMounted(async () => {
       return;
     }
 
-    const item = data.items.find(i => i._id === route.params.itemId);
-    if (!item) { router.replace(`/vacations/${tripId}`); return; }
+    const found = data.items.find(i => i._id === route.params.itemId);
+    if (!found) { router.replace(`/vacations/${tripId}`); return; }
+    const item = await openRecord('TripItem', found); // decrypt content over plaintext
     attachments.value = item.attachments ?? [];
     const d = item.details ?? {};
     // Restore cost-sharing state

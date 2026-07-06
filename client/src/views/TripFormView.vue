@@ -123,6 +123,10 @@ import { ref, computed, onMounted } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { format } from 'date-fns';
 import { tripsApi, placesApi } from '../services/api';
+import { sealNew, sealUpdate, openRecord } from '../services/e2ee';
+
+// Encrypted trip content (dates/candidateRanges/placeId stay plaintext).
+const TRIP_ENC = (p) => ({ name: p.name, destination: p.destination, notes: p.notes });
 import { useSmartBack, useReturnTo } from '../composables/useSmartBack';
 import { useConfirm } from '../composables/useConfirm';
 
@@ -246,9 +250,9 @@ async function save() {
 
     let id = route.params.id;
     if (isEdit.value) {
-      await tripsApi.update(id, payload);
+      await tripsApi.update(id, await sealUpdate('Trip', id, payload, TRIP_ENC(payload)));
     } else {
-      const { data } = await tripsApi.create(payload);
+      const { data } = await tripsApi.create(await sealNew('Trip', payload, TRIP_ENC(payload)));
       id = data._id;
     }
     returnTo(`/vacations/${id}`);
@@ -280,7 +284,7 @@ onMounted(async () => {
   loading.value = true;
   try {
     const { data } = await tripsApi.get(route.params.id);
-    const t = data.trip;
+    const t = await openRecord('Trip', data.trip); // decrypt content over plaintext
     form.value = {
       name: t.name ?? '',
       destinationRaw: t.destination ?? '',

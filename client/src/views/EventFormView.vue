@@ -435,6 +435,7 @@ import { ref, computed, watch, onMounted } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { format } from 'date-fns';
 import { calendarApi, placesApi, settingsApi, tasksApi, categoriesApi, itemsApi, choresApi, peopleApi } from '../services/api';
+import { sealNew, sealUpdate, openRecord } from '../services/e2ee';
 import { useSmartBack, useReturnTo } from '../composables/useSmartBack';
 import { useAuthStore } from '../stores/auth';
 
@@ -648,10 +649,11 @@ async function saveEvent() {
       alertAudience:    eventForm.value.alertAudience || 'everyone',
       recurrence,
     };
+    // E2EE dual-write: send ciphertext alongside plaintext (no-op without an HDK).
     if (isEdit.value) {
-      await calendarApi.updateEvent(route.params.eventId, payload);
+      await calendarApi.updateEvent(route.params.eventId, await sealUpdate('CalendarEvent', route.params.eventId, payload));
     } else {
-      await calendarApi.createEvent(payload);
+      await calendarApi.createEvent(await sealNew('CalendarEvent', payload));
     }
     returnTo('/calendar');
   } finally {
@@ -960,30 +962,32 @@ onMounted(async () => {
     loading.value = true;
     try {
       const { data: event } = await calendarApi.getEvent(route.params.eventId);
-      const isAllDay = event.allDay !== false;
-      const startStr = format(new Date(event.startDate), 'yyyy-MM-dd');
-      const endD     = event.endDate ? new Date(event.endDate) : null;
+      // E2EE dual-write: prefer decrypted content, falling back to plaintext.
+      const src = await openRecord('CalendarEvent', event);
+      const isAllDay = src.allDay !== false;
+      const startStr = format(new Date(src.startDate), 'yyyy-MM-dd');
+      const endD     = src.endDate ? new Date(src.endDate) : null;
       const endStr   = endD ? format(endD, 'yyyy-MM-dd') : '';
       eventForm.value = {
-        title:            event.title,
-        calendarType:     event.calendarType,
+        title:            src.title,
+        calendarType:     src.calendarType,
         date:             startStr,
         endDate:          endStr !== startStr ? endStr : '',
         allDay:           isAllDay,
-        startTime:        isAllDay ? '09:00' : format(new Date(event.startDate), 'HH:mm'),
+        startTime:        isAllDay ? '09:00' : format(new Date(src.startDate), 'HH:mm'),
         endTime:          endD && !isAllDay ? format(endD, 'HH:mm') : '10:00',
-        description:      event.description ?? '',
-        locationRaw:      event.location ?? '',
-        phone:            event.phone ?? '',
-        url:              event.url ?? '',
-        travelMinutes:    event.travelMinutes ?? null,
-        travelDistanceKm: event.travelDistanceKm ?? null,
+        description:      src.description ?? '',
+        locationRaw:      src.location ?? '',
+        phone:            src.phone ?? '',
+        url:              src.url ?? '',
+        travelMinutes:    src.travelMinutes ?? null,
+        travelDistanceKm: src.travelDistanceKm ?? null,
         fromAddress:      eventForm.value.fromAddress,
-        reminderMinutes:  event.reminderMinutes ?? null,
-        alert2Minutes:    event.alert2Minutes ?? null,
-        alertAudience:    event.alertAudience ?? 'everyone',
-        recurrFreq:       event.recurrence?.freq ?? '',
-        recurrUntil:      event.recurrence?.until ? format(new Date(event.recurrence.until), 'yyyy-MM-dd') : '',
+        reminderMinutes:  src.reminderMinutes ?? null,
+        alert2Minutes:    src.alert2Minutes ?? null,
+        alertAudience:    src.alertAudience ?? 'everyone',
+        recurrFreq:       src.recurrence?.freq ?? '',
+        recurrUntil:      src.recurrence?.until ? format(new Date(src.recurrence.until), 'yyyy-MM-dd') : '',
       };
     } finally {
       loading.value = false;

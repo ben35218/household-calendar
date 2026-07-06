@@ -519,6 +519,12 @@
 import { ref, computed, onMounted, watch } from 'vue';
 import { format, parseISO } from 'date-fns';
 import { inventoryApi } from '../services/api';
+import { sealNew, sealUpdate, openRecord } from '../services/e2ee';
+import * as replica from '../services/replica';
+
+// Encrypted inventory content (category/dates/status stay plaintext).
+const INV_ENC = (p) => ({ name: p.name, quantity: p.quantity, notes: p.notes });
+const decryptList = (rows) => Promise.all(rows.map((r) => openRecord('FoodInventory', r)));
 
 // ── Constants ──────────────────────────────────────────────────────────────────
 
@@ -710,13 +716,15 @@ function historyAccentColor(status) {
 async function loadItems() {
   loading.value = true;
   try {
-    const [activeRes, usedRes, thrownRes] = await Promise.all([
-      inventoryApi.list({ status: 'active' }),
+    // Offline-first (Phase 4b): the active list syncs the replica + falls back
+    // to cache offline; history stays server-only.
+    const [active, usedRes, thrownRes] = await Promise.all([
+      replica.syncedList('FoodInventory', async () => (await inventoryApi.list({ status: 'active' })).data),
       inventoryApi.list({ status: 'used' }),
       inventoryApi.list({ status: 'thrown_out' }),
     ]);
-    items.value = activeRes.data;
-    const merged = [...usedRes.data, ...thrownRes.data];
+    items.value = await decryptList(active);
+    const merged = await decryptList([...usedRes.data, ...thrownRes.data]);
     merged.sort((a, b) => new Date(b.statusDate || 0) - new Date(a.statusDate || 0));
     historyItems.value = merged;
   } finally {
@@ -795,10 +803,10 @@ async function saveItem() {
       notes: itemForm.value.notes,
     };
     if (editingItem.value) {
-      await inventoryApi.update(editingItem.value._id, payload);
+      await inventoryApi.update(editingItem.value._id, await sealUpdate('FoodInventory', editingItem.value._id, payload, INV_ENC(payload)));
       showSnack('Item updated');
     } else {
-      await inventoryApi.create(payload);
+      await inventoryApi.create(await sealNew('FoodInventory', payload, INV_ENC(payload)));
       showSnack('Item added');
     }
     itemDialog.value = false;

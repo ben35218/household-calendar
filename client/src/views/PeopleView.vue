@@ -269,6 +269,15 @@
 <script setup>
 import { ref, computed, watch, onMounted } from 'vue';
 import { peopleApi, settingsApi, placesApi } from '../services/api';
+import { sealNew, sealUpdate, openRecord } from '../services/e2ee';
+import * as replica from '../services/replica';
+
+// Encrypted person content (type stays plaintext for roster grouping; birthday
+// stays plaintext so the calendar can still surface it during dual-write).
+const PERSON_ENC = (p) => ({
+  name: p.name, relationship: p.relationship, interests: p.interests,
+  notes: p.notes, address: p.address, phone: p.phone, email: p.email,
+});
 import { useAuthStore } from '../stores/auth';
 import { useSnackbar } from '../composables/useSnackbar';
 
@@ -445,9 +454,9 @@ async function save() {
       email:        form.value.email.trim() || undefined,
     };
     if (editing.value?._id) {
-      await peopleApi.update(editing.value._id, payload);
+      await peopleApi.update(editing.value._id, await sealUpdate('Person', editing.value._id, payload, PERSON_ENC(payload)));
     } else {
-      await peopleApi.create(payload);
+      await peopleApi.create(await sealNew('Person', payload, PERSON_ENC(payload)));
     }
     dialog.value = false;
     await load();
@@ -473,8 +482,19 @@ async function doDelete() {
 }
 
 async function load() {
+  // Offline-first (Phase 4b): paint instantly from the local replica, then
+  // refresh from the server and sync the replica (LWW on updatedAt).
+  try {
+    if (!people.value.length) {
+      const cached = await replica.getAll('Person');
+      if (cached.length) people.value = await Promise.all(cached.map((p) => openRecord('Person', p)));
+    }
+  } catch { /* replica unavailable — fall through to the server */ }
+
   const { data } = await peopleApi.list();
-  people.value = data;
+  // Decrypt each person's content over the plaintext (dual-write); no-op without an HDK.
+  people.value = await Promise.all(data.map((p) => openRecord('Person', p)));
+  replica.upsert('Person', data).catch(() => {}); // best-effort cache
 }
 
 onMounted(async () => {

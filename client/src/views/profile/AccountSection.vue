@@ -71,6 +71,35 @@
       </v-list>
     </v-card>
 
+    <!-- Encryption & recovery -->
+    <v-card variant="flat" border rounded="lg" class="pa-4 mt-4">
+      <div class="text-subtitle-1 font-weight-medium mb-1">Encryption &amp; recovery</div>
+      <div class="text-body-2 text-medium-emphasis mb-4">
+        Your account has an end-to-end encryption key. Passkeys and your recovery
+        code are extra ways to unlock it. Resetting your password restores sign-in
+        only — it doesn’t by itself decrypt your data.
+      </div>
+      <v-list class="py-0">
+        <v-list-item class="px-0">
+          <v-list-item-title class="text-body-2 text-medium-emphasis">Passkey</v-list-item-title>
+          <v-list-item-subtitle class="text-body-1 text-high-emphasis">
+            {{ passkeySupported ? 'Unlock with Face ID / Touch ID / a security key' : 'Not supported in this browser' }}
+          </v-list-item-subtitle>
+          <template #append>
+            <v-btn variant="text" color="primary" size="small" :loading="passkeyBusy" :disabled="!passkeySupported" @click="setupPasskey">Add</v-btn>
+          </template>
+        </v-list-item>
+        <v-divider />
+        <v-list-item class="px-0">
+          <v-list-item-title class="text-body-2 text-medium-emphasis">Recovery code</v-list-item-title>
+          <v-list-item-subtitle class="text-body-1 text-high-emphasis">A one-time code to regain access if you’re locked out</v-list-item-subtitle>
+          <template #append>
+            <v-btn variant="text" color="primary" size="small" :loading="recoveryBusy" @click="regenerate">Regenerate</v-btn>
+          </template>
+        </v-list-item>
+      </v-list>
+    </v-card>
+
     <!-- Push notifications -->
     <v-card variant="flat" border rounded="lg" class="pa-4 mt-4">
       <div class="d-flex align-center justify-space-between">
@@ -141,6 +170,9 @@ import { useAuthStore } from '../../stores/auth';
 import { useSnackbar } from '../../composables/useSnackbar';
 import { usePush } from '../../composables/usePush';
 import { authApi } from '../../services/api';
+import {
+  rewrapForNewPassword, regenerateRecoveryCode, enrollPasskey, passkeySupported as e2eePasskeySupported,
+} from '../../services/e2ee';
 
 const {
   form, timezones, ensureLoaded,
@@ -229,12 +261,53 @@ async function savePassword() {
   passwordError.value = '';
   try {
     await authApi.updatePassword({ currentPassword: passwordForm.currentPassword, newPassword: passwordForm.newPassword });
+    // Re-wrap the E2EE key under the new password so it can still unlock the
+    // account. Best-effort: if the session isn't unlocked, the old password
+    // factor stays valid until the next unlock+rewrap.
+    await rewrapForNewPassword(passwordForm.newPassword).catch(() => {});
     passwordDialog.value = false;
     toast('Password updated');
   } catch (e) {
     passwordError.value = e.response?.data?.error || 'Failed to update password';
   } finally {
     passwordSaving.value = false;
+  }
+}
+
+// ── Encryption & recovery ─────────────────────────────────────────────────────
+const passkeySupported = e2eePasskeySupported();
+const passkeyBusy = ref(false);
+const recoveryBusy = ref(false);
+
+async function setupPasskey() {
+  passkeyBusy.value = true;
+  try {
+    const r = await enrollPasskey(auth.user);
+    if (r.enrolled) return toast('Passkey added — you can now unlock with it');
+    const reasons = {
+      locked: 'Sign out and back in first, then add a passkey.',
+      unsupported: 'Passkeys aren’t supported in this browser.',
+      'no-prf': 'This device can’t use a passkey for encryption (no PRF support).',
+      cancelled: 'Passkey setup was cancelled.',
+    };
+    toast(reasons[r.reason] || 'Could not add a passkey');
+  } catch (e) {
+    toast(e?.message || 'Could not add a passkey');
+  } finally {
+    passkeyBusy.value = false;
+  }
+}
+
+async function regenerate() {
+  recoveryBusy.value = true;
+  try {
+    const code = await regenerateRecoveryCode();
+    if (code) auth.pendingRecoveryCode = code; // RecoveryCodeDialog shows it once
+    else toast('Sign out and back in to manage your recovery code');
+  } catch (e) {
+    toast(e?.message || 'Could not regenerate your recovery code');
+  } finally {
+    recoveryBusy.value = false;
   }
 }
 

@@ -140,6 +140,10 @@
 import { ref, computed, onMounted } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { choresApi, peopleApi, settingsApi } from '../services/api';
+import { sealUpdate, openRecord } from '../services/e2ee';
+
+// Content fields encrypted for a chore (assignedTo/icon/dates stay plaintext).
+const CHORE_ENC = (p) => ({ title: p.title, instructions: p.instructions, description: p.description });
 import { useSmartBack, useReturnTo } from '../composables/useSmartBack';
 import { useAuthStore } from '../stores/auth';
 
@@ -299,7 +303,7 @@ async function save() {
     }
     payload.recurrence = rec;
 
-    await choresApi.update(route.params.id, payload);
+    await choresApi.update(route.params.id, await sealUpdate('Chore', route.params.id, payload, CHORE_ENC(payload)));
     returnTo(`/chores/${route.params.id}`);
   } catch (e) {
     error.value = e.response?.data?.error || 'Save failed';
@@ -316,7 +320,7 @@ onMounted(async () => {
   ]);
   familyOptions.value = buildFamilyOptions(peopleRes.data);
   memberCount.value = settingsRes.data.householdMemberCount ?? 1;
-  const data = choreRes.data;
+  const data = await openRecord('Chore', choreRes.data); // decrypt content over plaintext
   const rec = {
     type: 'interval', intervalValue: 1, intervalUnit: 'weeks',
     months: [], dayOfMonth: null, dayOfWeek: null, weekOfMonth: null,

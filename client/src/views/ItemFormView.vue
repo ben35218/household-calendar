@@ -241,6 +241,13 @@
 import { ref, computed, reactive, onMounted } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { itemsApi, categoriesApi } from '../services/api';
+import { sealNew, sealUpdate, openRecord } from '../services/e2ee';
+
+// Encrypted item content (categoryId/type/dates/photoRef stay plaintext).
+const ITEM_ENC = (p) => ({
+  name: p.name, manufacturer: p.manufacturer, modelNumber: p.modelNumber,
+  serialNumber: p.serialNumber, location: p.location, notes: p.notes, customFields: p.customFields,
+});
 import { useSmartBack, useReturnTo } from '../composables/useSmartBack';
 
 const route = useRoute();
@@ -668,10 +675,10 @@ async function save() {
     if (!payload.serialNumber) delete payload.serialNumber;
 
     if (isEdit.value) {
-      await itemsApi.update(route.params.id, payload);
+      await itemsApi.update(route.params.id, await sealUpdate('Item', route.params.id, payload, ITEM_ENC(payload)));
       returnTo(`/items/${route.params.id}`);
     } else {
-      const { data } = await itemsApi.create(payload);
+      const { data } = await itemsApi.create(await sealNew('Item', payload, ITEM_ENC(payload)));
       returnTo(`/items/${data._id}`);
     }
   } catch (e) {
@@ -686,7 +693,8 @@ onMounted(async () => {
   categories.value = cats;
 
   if (isEdit.value) {
-    const { data } = await itemsApi.get(route.params.id);
+    const { data: raw } = await itemsApi.get(route.params.id);
+    const data = await openRecord('Item', raw); // decrypt content over plaintext
     Object.assign(form.value, {
       ...data,
       categoryId: data.categoryId?._id || '',

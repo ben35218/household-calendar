@@ -470,6 +470,14 @@
 import { ref, computed, onMounted } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { recipesApi } from '../services/api';
+import { sealNew, sealUpdate, openRecord } from '../services/e2ee';
+
+// Encrypted recipe content (no populated refs — imageUrl/source stay plaintext).
+const RECIPE_ENC = (p) => ({
+  title: p.title, description: p.description, ingredients: p.ingredients,
+  instructions: p.instructions, tags: p.tags,
+  servings: p.servings, prepTimeMins: p.prepTimeMins, cookTimeMins: p.cookTimeMins,
+});
 import StepIngredientLinker from '../components/StepIngredientLinker.vue';
 import { useSmartBack, useReturnTo } from '../composables/useSmartBack';
 
@@ -842,10 +850,10 @@ async function save() {
   try {
     const payload = buildPayload();
     if (isEdit.value) {
-      await recipesApi.update(route.params.id, payload);
+      await recipesApi.update(route.params.id, await sealUpdate('Recipe', route.params.id, payload, RECIPE_ENC(payload)));
       returnTo(`/recipes/${route.params.id}`);
     } else {
-      const { data } = await recipesApi.create({ ...payload, source: 'manual' });
+      const { data } = await recipesApi.create(await sealNew('Recipe', { ...payload, source: 'manual' }, RECIPE_ENC(payload)));
       returnTo(`/recipes/${data._id}`);
     }
   } catch (e) {
@@ -864,7 +872,8 @@ async function saveAsNew() {
   }
   savingAsNew.value = true;
   try {
-    const { data } = await recipesApi.create({ ...buildPayload(), source: 'manual' });
+    const p = buildPayload();
+    const { data } = await recipesApi.create(await sealNew('Recipe', { ...p, source: 'manual' }, RECIPE_ENC(p)));
     returnTo(`/recipes/${data._id}`);
   } catch (e) {
     saveError.value = e.response?.data?.error || 'Save failed.';
@@ -878,7 +887,7 @@ onMounted(async () => {
   pageLoading.value = true;
   try {
     const { data } = await recipesApi.get(route.params.id);
-    populateForm(data);
+    populateForm(await openRecord('Recipe', data)); // decrypt content over plaintext
   } finally {
     pageLoading.value = false;
   }

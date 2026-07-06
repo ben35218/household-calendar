@@ -75,6 +75,8 @@
 <script setup>
 import { ref, onMounted } from 'vue';
 import { choresApi } from '../services/api';
+import { openRecord } from '../services/e2ee';
+import * as replica from '../services/replica';
 import { useAuthStore } from '../stores/auth';
 
 const auth = useAuthStore();
@@ -139,8 +141,10 @@ async function togglePause(chore) {
 
 onMounted(async () => {
   try {
-    const { data } = await choresApi.list();
-    chores.value = data;
+    // Offline-first (Phase 4b): sync the replica, fall back to cache offline,
+    // then decrypt content over the plaintext rows.
+    const rows = await replica.syncedList('Chore', async () => (await choresApi.list()).data);
+    chores.value = await Promise.all(rows.map((c) => openRecord('Chore', c)));
   } finally {
     loading.value = false;
   }

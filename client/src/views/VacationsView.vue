@@ -72,6 +72,8 @@ import { ref, computed, onMounted } from 'vue';
 import { useRouter } from 'vue-router';
 import { format } from 'date-fns';
 import { tripsApi } from '../services/api';
+import { openRecord } from '../services/e2ee';
+import * as replica from '../services/replica';
 
 const router = useRouter();
 const loading = ref(true);
@@ -144,8 +146,10 @@ const groups = computed(() => {
 async function load() {
   loading.value = true;
   try {
-    const { data } = await tripsApi.list();
-    trips.value = data;
+    // Offline-first (Phase 4b): sync the replica, fall back to cache offline,
+    // then decrypt content over the plaintext rows.
+    const rows = await replica.syncedList('Trip', async () => (await tripsApi.list()).data);
+    trips.value = await Promise.all(rows.map((t) => openRecord('Trip', t)));
   } finally {
     loading.value = false;
   }

@@ -224,6 +224,14 @@
 import { ref, computed, watch, onMounted } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { tasksApi, categoriesApi, itemsApi, settingsApi } from '../services/api';
+import { sealNew, sealUpdate, openRecord } from '../services/e2ee';
+
+// Content fields encrypted for a task (text/scalars only — refs, dates, and
+// recurrence stay plaintext so the server can still schedule + populate them).
+const TASK_ENC = (p) => ({
+  title: p.title, description: p.description, instructions: p.instructions,
+  estimatedCost: p.estimatedCost, estimatedDurationMins: p.estimatedDurationMins,
+});
 import { useSmartBack, useReturnTo } from '../composables/useSmartBack';
 
 const route = useRoute();
@@ -397,10 +405,10 @@ async function save() {
     payload.recurrence = rec;
 
     if (isEdit.value) {
-      await tasksApi.update(route.params.id, payload);
+      await tasksApi.update(route.params.id, await sealUpdate('MaintenanceTask', route.params.id, payload, TASK_ENC(payload)));
       returnTo(`/tasks/${route.params.id}`);
     } else {
-      const { data } = await tasksApi.create(payload);
+      const { data } = await tasksApi.create(await sealNew('MaintenanceTask', payload, TASK_ENC(payload)));
       returnTo(`/tasks/${data._id}`);
     }
   } catch (e) {
@@ -416,7 +424,8 @@ onMounted(async () => {
   items.value = itemsRes.data;
   memberCount.value = settingsRes.data.householdMemberCount ?? 1;
   if (isEdit.value) {
-    const { data } = await tasksApi.get(route.params.id);
+    const { data: raw } = await tasksApi.get(route.params.id);
+    const data = await openRecord('MaintenanceTask', raw); // decrypt content over plaintext
     const rec = {
       type: 'interval', intervalValue: 3, intervalUnit: 'months',
       months: [], dayOfMonth: null, dayOfWeek: null, weekOfMonth: null,

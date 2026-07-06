@@ -139,7 +139,8 @@
               :subtitle="`${(m.fileSizeBytes / 1024 / 1024).toFixed(1)} MB · ${m.source}`"
             >
               <template #append>
-                <v-btn icon="mdi-eye" variant="text" size="small" @click="viewManual(manualsApi.download(m._id), m.title)" />
+                <v-icon v-if="m.encrypted" icon="mdi-lock" size="x-small" color="success" class="mr-1" title="End-to-end encrypted" />
+                <v-btn icon="mdi-eye" variant="text" size="small" :loading="openingManual === m._id" @click="openManual(m)" />
                 <v-btn
                   icon="mdi-list-box-outline"
                   variant="text"
@@ -149,7 +150,7 @@
                   title="Extract maintenance tasks from this manual"
                   @click="extractTasks(m)"
                 />
-                <v-btn icon="mdi-download" variant="text" size="small" :href="manualsApi.download(m._id)" target="_blank" />
+                <v-btn icon="mdi-download" variant="text" size="small" :loading="openingManual === m._id" @click="openManual(m)" />
                 <v-btn icon="mdi-delete" variant="text" size="small" color="error" @click="deleteManual(m._id)" />
               </template>
             </v-list-item>
@@ -404,6 +405,7 @@ import { ref, computed, onMounted } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { format } from 'date-fns';
 import { itemsApi, manualsApi, tasksApi, odometerApi } from '../services/api';
+import { encryptAttachment, decryptAttachment, newObjectId, isUnlocked } from '../services/e2ee';
 
 const route = useRoute();
 const router = useRouter();
@@ -517,6 +519,7 @@ const pageAlert = ref({ msg: '', error: false });
 
 // ── Task extraction ───────────────────────────────────────────────────────────
 const extractingManual = ref(null);   // manual _id currently being parsed
+const openingManual = ref(null);       // manual _id currently being opened (decrypt)
 const extractOpen = ref(false);
 const extractedTasks = ref([]);
 const extractManualId = ref(null);
@@ -600,6 +603,27 @@ function viewManual(src) {
   window.open(src, '_blank', 'noopener');
 }
 
+// Open a manual for viewing/download. Encrypted manuals are fetched as
+// ciphertext, decrypted in the browser, and opened via a blob URL; plaintext
+// ones open the server URL directly.
+async function openManual(m) {
+  if (!m.encrypted) { viewManual(manualsApi.download(m._id)); return; }
+  openingManual.value = m._id;
+  try {
+    const { data } = await manualsApi.downloadBytes(m._id);
+    const fileText = new TextDecoder().decode(new Uint8Array(data));
+    const bytes = await decryptAttachment('Manual', m._id, m.keyVersion, m.wrappedFileKey, fileText);
+    if (!bytes) { pageAlert.value = { msg: 'Unlock your account to view this encrypted manual.', error: true }; return; }
+    const url = URL.createObjectURL(new Blob([bytes], { type: m.fileType || 'application/pdf' }));
+    window.open(url, '_blank', 'noopener');
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+  } catch (e) {
+    pageAlert.value = { msg: e.response?.data?.error || 'Could not open this manual.', error: true };
+  } finally {
+    openingManual.value = null;
+  }
+}
+
 function viewCandidate(c) {
   window.open(c.url, '_blank', 'noopener');
 }
@@ -655,8 +679,25 @@ async function doUpload() {
   uploading.value = true;
   uploadError.value = '';
   try {
+    const file = uploadFile.value[0] || uploadFile.value;
     const fd = new FormData();
-    fd.append('file', uploadFile.value[0] || uploadFile.value);
+    // E2EE (Phase 4c): encrypt the file client-side when the session is unlocked;
+    // upload the ciphertext + wrapped key with a client-minted _id (AAD binding).
+    let sealed = null;
+    if (isUnlocked()) {
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      const _id = newObjectId();
+      sealed = await encryptAttachment('Manual', _id, bytes);
+      if (sealed) {
+        fd.append('file', new Blob([sealed.fileText], { type: 'application/octet-stream' }), `${file.name}.enc`);
+        fd.append('_id', _id);
+        fd.append('encrypted', 'true');
+        fd.append('wrappedFileKey', sealed.wrappedKey);
+        fd.append('keyVersion', String(sealed.keyVersion));
+        fd.append('fileType', file.type || 'application/pdf');
+      }
+    }
+    if (!sealed) fd.append('file', file);
     if (uploadTitle.value) fd.append('title', uploadTitle.value);
     await manualsApi.upload(route.params.id, fd);
     manualPanel.value = null;

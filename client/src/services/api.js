@@ -34,6 +34,18 @@ export const authApi = {
   updatePassword: (data) => api.put('/auth/password', data),
 };
 
+// E2EE key material (Phase 1). The server is a blind store: it only ever sees
+// the identity PUBLIC key and the private key wrapped as opaque factor
+// envelopes. All crypto happens client-side in services/e2ee.js.
+export const keysApi = {
+  me: () => api.get('/keys/me'),
+  enroll: (data) => api.post('/keys/enroll', data),
+  putFactor: (envelope) => api.put('/keys/factors', envelope),
+  removeFactor: (factor, credentialId) =>
+    api.delete(`/keys/factors/${factor}`, { params: credentialId ? { credentialId } : {} }),
+  publicKey: (userId) => api.get(`/keys/public/${userId}`),
+};
+
 export const categoriesApi = {
   list: (params) => api.get('/categories', { params }),
   create: (data) => api.post('/categories', data),
@@ -58,6 +70,8 @@ export const manualsApi = {
   extractTasks: (id) => api.post(`/manuals/${id}/extract-tasks`),
   createTasks: (id, data) => api.post(`/manuals/${id}/create-tasks`, data),
   download: (id) => `/api/manuals/${id}/download?token=${localStorage.getItem('hc_token')}`,
+  // Authenticated fetch of the raw bytes (ciphertext for encrypted manuals).
+  downloadBytes: (id) => api.get(`/manuals/${id}/download`, { responseType: 'arraybuffer' }),
   delete: (id) => api.delete(`/manuals/${id}`),
 };
 
@@ -133,8 +147,17 @@ export const notificationsApi = {
 export const householdApi = {
   get:    ()        => api.get('/household'),
   rename: (name)    => api.put('/household', { name }),
+  // Approve-on-device join: request → wait for a member to approve (Phase 2).
   join:   (joinCode) => api.post('/household/join', { joinCode }),
-  leave:  ()        => api.post('/household/leave'),
+  myJoinRequest:    () => api.get('/household/join-requests/mine'),
+  cancelJoinRequest: () => api.delete('/household/join-requests/mine'),
+  joinRequests:     () => api.get('/household/join-requests'),
+  approveJoin: (id, envelope) => api.post(`/household/join-requests/${id}/approve`, envelope),
+  rejectJoin:  (id) => api.post(`/household/join-requests/${id}/reject`),
+  // HDK envelopes.
+  getKey:  ()          => api.get('/household/key'),
+  mintKey: (envelope)  => api.post('/household/key', envelope),
+  leave:   ()          => api.post('/household/leave'),
 };
 
 export const billingApi = {
