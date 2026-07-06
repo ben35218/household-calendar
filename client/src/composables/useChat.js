@@ -103,7 +103,7 @@ export function useChat(options) {
       if (detail.code === 'QUOTA_EXCEEDED') {
         window.dispatchEvent(new CustomEvent('hc:quota', { detail }));
       }
-      throw new Error(detail.error || 'You’ve reached your monthly chat limit.');
+      throw new Error(detail.error || 'You’ve reached your weekly chat limit.');
     }
     if (!res.ok || !res.body) throw new Error('Request failed');
 

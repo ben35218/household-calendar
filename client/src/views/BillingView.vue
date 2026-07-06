@@ -18,7 +18,7 @@
             </div>
           </div>
 
-          <div class="text-caption text-medium-emphasis mb-1">This month’s usage</div>
+          <div class="text-caption text-medium-emphasis mb-1">This week’s usage</div>
           <div v-for="a in USAGE_ACTIONS" :key="a.key" class="mb-2">
             <div class="d-flex justify-space-between text-body-2">
               <span>{{ a.label }}</span>

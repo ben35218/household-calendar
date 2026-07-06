@@ -114,7 +114,7 @@
         <v-card-text>
           <v-table density="comfortable">
             <thead>
-              <tr><th>Household</th><th>Join code</th><th>Plan</th><th>This month (chat/scan/gen/manual)</th><th></th></tr>
+              <tr><th>Household</th><th>Join code</th><th>Plan</th><th>This week (chat/scan/gen/manual)</th><th></th></tr>
             </thead>
             <tbody>
               <tr v-for="h in households" :key="h._id">
@@ -125,7 +125,7 @@
                             @update:model-value="v => setHouseholdPlan(h, v)" />
                 </td>
                 <td class="text-caption">
-                  {{ h.usageThisMonth.chat||0 }} / {{ h.usageThisMonth.scan||0 }} / {{ h.usageThisMonth.generation||0 }} / {{ h.usageThisMonth.manualParse||0 }}
+                  {{ h.usageThisWeek.chat||0 }} / {{ h.usageThisWeek.scan||0 }} / {{ h.usageThisWeek.generation||0 }} / {{ h.usageThisWeek.manualParse||0 }}
                 </td>
                 <td></td>
               </tr>
