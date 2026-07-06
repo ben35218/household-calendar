@@ -72,6 +72,11 @@ async function runDailyCheck() {
 }
 
 async function runDailyCheckForHousehold(hh) {
+  // E2EE households compute all reminders on-device (§9.1 P3); post-drop the
+  // server can't read task/chore/birthday content anyway. Skip the whole
+  // household. Dormant pre-drop (e2eeActive defaults false).
+  if (hh.e2eeActive) return;
+
   const members = await User.find({ householdId: hh._id });
   if (!members.length) return;
 
@@ -212,6 +217,12 @@ async function fireRecurringReminders(now, windowEnd) {
 async function fanOutEventReminder(event) {
   const owner = await User.findById(event.userId).lean();
   if (!owner) return;
+  // Skip E2EE households — event reminders are on-device post-drop, and the
+  // server can no longer read event content (§9.1 P3). Dormant pre-drop.
+  if (owner.householdId) {
+    const hh = await Household.findById(owner.householdId).select('e2eeActive').lean();
+    if (hh?.e2eeActive) return;
+  }
   const members = owner.householdId
     ? await User.find({ householdId: owner.householdId })
     : [await User.findById(owner._id)];

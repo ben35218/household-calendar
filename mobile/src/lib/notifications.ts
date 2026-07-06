@@ -14,7 +14,8 @@
 
 import { Platform } from 'react-native';
 import * as Notifications from 'expo-notifications';
-import { calendarApi, notificationsApi, CalendarData } from '../api';
+import { notificationsApi, CalendarData } from '../api';
+import { loadCalendarData } from './calendarData';
 
 const WINDOW_DAYS = 21;
 const MAX_SCHEDULED = 60;  // headroom under the iOS ~64 pending cap
@@ -101,7 +102,7 @@ export async function rescheduleReminders(): Promise<number> {
     }
     const from = new Date();
     const to = new Date(Date.now() + WINDOW_DAYS * 86400000);
-    const { data } = await calendarApi.get({ from: from.toISOString(), to: to.toISOString() });
+    const data = await loadCalendarData({ from: from.toISOString(), to: to.toISOString() });
     const reminders = computeReminders(data);
 
     await Notifications.cancelAllScheduledNotificationsAsync();

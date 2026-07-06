@@ -129,6 +129,14 @@ test('"today" is evaluated in the member\'s own zone (no UTC rollover)', async (
   assert.strictEqual(pushes.length, 1, 'only the task due today (local) fires');
 });
 
+test('E2EE-active household is skipped entirely (§9.1 P3)', async () => {
+  reset();
+  membersRows = [userA, userB];
+  tasksRows = [task()]; // would otherwise fire for the Toronto member at 7am
+  await withFakeNow(AT_7AM_TORONTO, () => runDailyCheckForHousehold({ ...HH, e2eeActive: true }));
+  assert.strictEqual(pushes.length, 0, 'no server pushes for an E2EE household');
+});
+
 test('inAudience predicate: owner vs everyone', () => {
   assert.strictEqual(inAudience({ alertAudience: 'owner', userId: 'a' }, userA), true);
   assert.strictEqual(inAudience({ alertAudience: 'owner', userId: 'a' }, userB), false);
