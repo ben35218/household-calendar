@@ -17,8 +17,19 @@ const { assembleCalendarData } = require('@household/calendar');
 // Fetch the raw source records for a household so a caller can expand them.
 // Returns the plain arrays (populated where the CalendarData shape needs names);
 // the shared engine does all date filtering + expansion in memory.
-async function fetchCalendarSources({ scopeIds, fromDate, toDate }) {
+async function fetchCalendarSources({ scopeIds, fromDate, toDate, allDates = false }) {
   const userId = { $in: scopeIds };
+  // Post-drop (§9.1 P6) the date/birthday fields are encrypted, so the server
+  // can't filter on them — it returns every event/person and the client filters
+  // via the shared engine. Pre-drop it keeps the efficient bounded queries.
+  const regularEventQuery = allDates
+    ? { userId, 'recurrence.freq': { $exists: false } }
+    : { userId, 'recurrence.freq': { $exists: false }, startDate: { $gte: fromDate, $lte: toDate } };
+  const recurringEventQuery = allDates
+    ? { userId, 'recurrence.freq': { $exists: true } }
+    : { userId, 'recurrence.freq': { $exists: true }, startDate: { $lte: toDate } };
+  const peopleQuery = allDates ? { userId } : { userId, birthday: { $exists: true, $ne: null } };
+
   const [tasks, chores, regularEvents, recurringEvents, people, recipeSchedules, trips] = await Promise.all([
     MaintenanceTask.find({ userId, active: true })
       .populate('itemId', 'name')
@@ -30,19 +41,11 @@ async function fetchCalendarSources({ scopeIds, fromDate, toDate }) {
       .sort('nextDueDate')
       .lean(),
 
-    CalendarEvent.find({
-      userId,
-      'recurrence.freq': { $exists: false },
-      startDate: { $gte: fromDate, $lte: toDate },
-    }).sort('startDate').lean(),
+    CalendarEvent.find(regularEventQuery).sort('startDate').lean(),
 
-    CalendarEvent.find({
-      userId,
-      'recurrence.freq': { $exists: true },
-      startDate: { $lte: toDate },
-    }).lean(),
+    CalendarEvent.find(recurringEventQuery).lean(),
 
-    Person.find({ userId, birthday: { $exists: true, $ne: null } }).lean(),
+    Person.find(peopleQuery).lean(),
 
     RecipeSchedule.find({ userId, scheduledDate: { $gte: fromDate, $lte: toDate } })
       .populate('recipeId', 'title description prepTimeMins cookTimeMins servings')

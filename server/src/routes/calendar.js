@@ -54,7 +54,11 @@ router.get('/raw', async (req, res) => {
     const toDate   = to   ? new Date(to)   : new Date('2099-12-31');
 
     if (req.user) await Person.ensureSelf(req.user);
-    const sources = await fetchCalendarSources({ scopeIds: req.scopeIds, fromDate, toDate });
+    // Post-drop the server can't filter on the encrypted date/birthday fields,
+    // so it returns everything and the client filters (§9.1 P6).
+    const sources = await fetchCalendarSources({
+      scopeIds: req.scopeIds, fromDate, toDate, allDates: !!req.household?.e2eeActive,
+    });
 
     res.json({
       ...sources,

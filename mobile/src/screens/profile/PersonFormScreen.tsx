@@ -10,6 +10,7 @@ import { sealNew, sealUpdate } from '../../lib/e2ee';
 const PERSON_ENC = (p: Record<string, unknown>) => ({
   name: p.name, relationship: p.relationship, interests: p.interests,
   notes: p.notes, address: p.address, phone: p.phone, email: p.email,
+  birthday: p.birthday, // encrypted now (§9.1 P6): cron gated (P3), calendar reads decrypted (P2)
 });
 import { Button, Card, Input, DateField, SegmentedControl, useHeaderCheckButton } from '../../components/ui';
 import FormAssist from '../../components/FormAssist';

@@ -15,10 +15,11 @@ import type { ProfileStackParamList } from '../../navigation/ProfileNavigator';
 type Nav = NativeStackNavigationProp<ProfileStackParamList>;
 
 // Encrypted person content (mirrors PersonFormScreen); type stays plaintext for
-// roster grouping, birthday plaintext during dual-write for the calendar.
+// roster grouping. birthday is encrypted now (§9.1 P6).
 const PERSON_ENC = (p: Record<string, unknown>) => ({
   name: p.name, relationship: p.relationship, interests: p.interests,
   notes: p.notes, address: p.address, phone: p.phone, email: p.email,
+  birthday: p.birthday,
 });
 
 // Mirrors client/src/views/PeopleView.vue: a "You" card, Family Members, and

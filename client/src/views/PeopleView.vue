@@ -277,6 +277,9 @@ import * as replica from '../services/replica';
 const PERSON_ENC = (p) => ({
   name: p.name, relationship: p.relationship, interests: p.interests,
   notes: p.notes, address: p.address, phone: p.phone, email: p.email,
+  // birthday is encrypted now that its readers are reconciled (§9.1 P6): the cron
+  // is gated (P3) and the calendar reads it from the decrypted replica (P2).
+  birthday: p.birthday,
 });
 import { useAuthStore } from '../stores/auth';
 import { useSnackbar } from '../composables/useSnackbar';
