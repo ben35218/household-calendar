@@ -177,6 +177,7 @@ import {
   isBefore, addDays, addMonths,
 } from 'date-fns';
 import { calendarApi, weatherApi } from '../services/api';
+import { loadCalendarData } from '../services/calendarData';
 import { useCalendarFilters } from '../composables/useCalendarFilters';
 import CalendarFilterMenu from '../components/CalendarFilterMenu.vue';
 import { getCanadianHolidays } from '../utils/canadianHolidays';
@@ -461,20 +462,20 @@ async function initView(base = new Date()) {
   const fromStr = format(from, 'yyyy-MM-dd');
   const toStr   = format(to,   'yyyy-MM-dd');
   const [calData] = await Promise.all([
-    calendarApi.get({ from: from.toISOString(), to: to.toISOString() }),
+    loadCalendarData({ from: from.toISOString(), to: to.toISOString() }),
     weatherApi.range(fromStr, toStr).then(({ data }) => {
       const map = {};
       for (const r of data.records ?? []) map[r.date] = r;
       weatherByDate.value = map;
     }).catch(() => {}),
   ]);
-  tasks.value           = calData.data.tasks          ?? [];
-  chores.value          = calData.data.chores         ?? [];
-  calendarEvents.value  = calData.data.events         ?? [];
-  birthdays.value       = calData.data.birthdays      ?? [];
-  recipeSchedules.value = calData.data.recipes        ?? [];
-  groceryShopping.value = calData.data.groceryShopping ?? [];
-  trips.value           = calData.data.trips          ?? [];
+  tasks.value           = calData.tasks          ?? [];
+  chores.value          = calData.chores         ?? [];
+  calendarEvents.value  = calData.events         ?? [];
+  birthdays.value       = calData.birthdays      ?? [];
+  recipeSchedules.value = calData.recipes        ?? [];
+  groceryShopping.value = calData.groceryShopping ?? [];
+  trips.value           = calData.trips          ?? [];
 
   await nextTick();
   setupMonthObserver();

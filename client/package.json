@@ -8,6 +8,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@household/calendar": "file:../shared/calendar",
     "@household/crypto": "file:../shared/crypto",
     "@mdi/font": "^7.4.47",
     "axios": "^1.6.8",

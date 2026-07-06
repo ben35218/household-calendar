@@ -5,7 +5,8 @@ import { useQuery } from '@tanstack/react-query';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import { calendarApi, CalendarData, Chore } from '../../api';
+import { CalendarData, Chore } from '../../api';
+import { loadCalendarData } from '../../lib/calendarData';
 import { useAuth } from '../../store/auth';
 import { weekBars, WeekBar, CALENDAR_COLORS, eventColor, ymd } from '../../lib/calendar';
 import { getCanadianHolidays } from '../../lib/holidays';
@@ -117,7 +118,7 @@ export default function CalendarScreen() {
 
   const calQ = useQuery({
     queryKey: ['calendar', range.from, range.to],
-    queryFn: async () => (await calendarApi.get({ from: range.from, to: range.to })).data,
+    queryFn: async () => loadCalendarData({ from: range.from, to: range.to }),
   });
 
   const holidaysByDate = useMemo(() => {

@@ -4,7 +4,7 @@ import { useQuery } from '@tanstack/react-query';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import { calendarApi } from '../../api';
+import { loadCalendarData } from '../../lib/calendarData';
 import { getCanadianHolidays } from '../../lib/holidays';
 import { useHolidayPrefs, useCalendarColors } from '../../lib/calendarPrefs';
 import { eventColor, ymd } from '../../lib/calendar';
@@ -39,7 +39,7 @@ export default function CalendarSearchScreen() {
 
   const { data, isLoading } = useQuery({
     queryKey: ['calendar', 'events-list'],
-    queryFn: async () => (await calendarApi.get({ from: range.from.toISOString(), to: range.to.toISOString() })).data,
+    queryFn: async () => loadCalendarData({ from: range.from.toISOString(), to: range.to.toISOString() }),
   });
 
   const all = useMemo<Result[]>(() => {

@@ -162,6 +162,7 @@ import { ref, computed, onMounted, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { format, parseISO, addDays, subDays } from 'date-fns';
 import { calendarApi, weatherApi } from '../services/api';
+import { loadCalendarData } from '../services/calendarData';
 
 const WMO_ICONS = {
   0: 'mdi-weather-sunny', 1: 'mdi-weather-sunny',
@@ -220,8 +221,8 @@ async function loadData() {
   try {
     const from = `${dateStr.value}T00:00:00.000Z`;
     const to   = `${dateStr.value}T23:59:59.999Z`;
-    const [{ data }] = await Promise.all([
-      calendarApi.get({ from, to }),
+    const [data] = await Promise.all([
+      loadCalendarData({ from, to }),
       weatherApi.get().then(({ data: w }) => {
         dayWeather.value = w.forecast?.find(d => d.date === dateStr.value) ?? null;
       }).catch(() => {}),

@@ -131,7 +131,7 @@
 <script setup>
 import { ref, computed, reactive, watch, onMounted, nextTick } from 'vue';
 import { format, isToday, isTomorrow, isYesterday, subYears, addYears } from 'date-fns';
-import { calendarApi } from '../services/api';
+import { loadCalendarData } from '../services/calendarData';
 import { useCalendarFilters } from '../composables/useCalendarFilters';
 import CalendarFilterMenu from '../components/CalendarFilterMenu.vue';
 import { getCanadianHolidays } from '../utils/canadianHolidays';
@@ -364,7 +364,7 @@ async function loadEvents() {
     const now  = new Date();
     const from = subYears(now, 5);
     const to   = addYears(now, 5);
-    const { data } = await calendarApi.get({ from: from.toISOString(), to: to.toISOString() });
+    const data = await loadCalendarData({ from: from.toISOString(), to: to.toISOString() });
     rawTasks.value    = data.tasks   ?? [];
     rawChores.value   = data.chores  ?? [];
     rawEvents.value   = data.events  ?? [];

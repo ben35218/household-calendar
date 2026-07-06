@@ -720,8 +720,20 @@ export interface CalendarData {
   trips: CalendarTripOverlay[];
 }
 
+export interface CalendarRaw {
+  events: CalendarEvent[];
+  tasks: Task[];
+  chores: Chore[];
+  people: Person[];
+  recipeSchedules: Record<string, unknown>[];
+  trips: Trip[];
+  selfId: string;
+  groceryShoppingDay: number;
+}
+
 export const calendarApi = {
   get: (params?: { from?: string; to?: string }) => api.get<CalendarData>('/calendar', { params }),
+  getRaw: (params?: { from?: string; to?: string }) => api.get<CalendarRaw>('/calendar/raw', { params }),
   getEvent: (id: string) => api.get<CalendarEvent>(`/calendar/events/${id}`),
   createEvent: (data: Record<string, unknown>) => api.post<CalendarEvent>('/calendar/events', data),
   updateEvent: (id: string, data: Record<string, unknown>) => api.put<CalendarEvent>(`/calendar/events/${id}`, data),

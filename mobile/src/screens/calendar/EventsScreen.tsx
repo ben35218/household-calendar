@@ -5,7 +5,7 @@ import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useQuery } from '@tanstack/react-query';
-import { calendarApi } from '../../api';
+import { loadCalendarData } from '../../lib/calendarData';
 import { useAuth } from '../../store/auth';
 import { getCanadianHolidays } from '../../lib/holidays';
 import { useCalendarVisibility, useHolidayPrefs, useCalendarColors } from '../../lib/calendarPrefs';
@@ -120,7 +120,7 @@ export default function EventsScreen() {
   const { data, isLoading } = useQuery({
     queryKey: ['calendar', 'events-list'],
     queryFn: async () =>
-      (await calendarApi.get({ from: range.from.toISOString(), to: range.to.toISOString() })).data,
+      loadCalendarData({ from: range.from.toISOString(), to: range.to.toISOString() }),
   });
 
   // Build flattened rows + the index of the Today marker + per-row offsets.

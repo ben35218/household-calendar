@@ -16,7 +16,13 @@ export default defineConfig({
   ],
   // @household/crypto ships TypeScript source (no build step); let Vite's normal
   // pipeline transpile it rather than pre-bundling it as a dep.
-  optimizeDeps: { exclude: ['@household/crypto'] },
+  // @household/calendar is a linked CommonJS package: pre-bundle it in dev so its
+  // named exports resolve, and (below) run Rollup's commonjs transform over it at
+  // build time (it lives outside node_modules, so it isn't covered by default).
+  optimizeDeps: { include: ['@household/calendar'], exclude: ['@household/crypto'] },
+  build: {
+    commonjsOptions: { include: [/shared[\\/]calendar/, /node_modules/] },
+  },
   resolve: { alias: { 'libsodium-wrappers-sumo': libsodiumCjs } },
   server: {
     port: 5173,

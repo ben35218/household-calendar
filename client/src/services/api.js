@@ -114,6 +114,7 @@ export const odometerApi = {
 
 export const calendarApi = {
   get:         (params)   => api.get('/calendar', { params }),
+  getRaw:      (params)   => api.get('/calendar/raw', { params }),
   getEvent:    (id)       => api.get(`/calendar/events/${id}`),
   createEvent: (data)     => api.post('/calendar/events', data),
   updateEvent: (id, data) => api.put(`/calendar/events/${id}`, data),
