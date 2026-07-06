@@ -10,18 +10,26 @@
 </template>
 
 <script setup>
-import { onMounted } from 'vue';
+import { onMounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import ChatPanel from '../components/ChatPanel.vue';
 import { useChat } from '../composables/useChat';
+import { peopleApi, householdApi } from '../services/api';
+import { getHDK, openRecord } from '../services/e2ee';
+import { loadCalendarSources } from '../services/calendarData';
 
 const router = useRouter();
+
+// Ephemeral-consent (§9.1 P4c): post-drop send the decrypted people (system
+// prompt) + calendar sources (list_events/call_business) so the server needn't
+// read stored plaintext. Dormant pre-drop (e2eeActive false / locked).
+const ephemeral = ref(null);
 
 const chat = useChat({
   endpoint: '/api/calendar/chat',
   contextEndpoint: '/api/calendar/chat/context',
   storageKey: 'household-calendar-chat-history',
-  buildBody: (messages) => ({ messages }),
+  buildBody: (messages) => ({ messages, ...(ephemeral.value || {}) }),
   onResult: (data) => {
     if (data.navigateTo) setTimeout(() => router.push(data.navigateTo), 1200);
   },
@@ -36,5 +44,22 @@ const chat = useChat({
   },
 });
 
-onMounted(() => chat.loadContext());
+onMounted(async () => {
+  chat.loadContext();
+  try {
+    let e2eeActive = false;
+    try { e2eeActive = !!(await householdApi.get()).data.e2eeActive; } catch { /* solo/offline */ }
+    if (!e2eeActive || !getHDK()) return;
+    // A wide window so the model can query most reasonable ranges from the
+    // supplied sources (recurring items expand per-range from their raw records).
+    const now = new Date();
+    const from = new Date(now.getFullYear() - 1, 0, 1).toISOString();
+    const to   = new Date(now.getFullYear() + 2, 0, 1).toISOString();
+    const [calendarSources, peopleRows] = await Promise.all([
+      loadCalendarSources({ from, to }),
+      peopleApi.list().then(({ data }) => Promise.all(data.map((p) => openRecord('Person', p)))),
+    ]);
+    ephemeral.value = { people: peopleRows, calendarSources };
+  } catch { /* non-fatal — server falls back to its DB read */ }
+});
 </script>

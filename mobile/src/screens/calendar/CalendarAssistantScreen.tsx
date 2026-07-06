@@ -4,6 +4,9 @@ import { useNavigation } from '@react-navigation/native';
 import { useQueryClient } from '@tanstack/react-query';
 import { useChat } from '../../hooks/useChat';
 import ChatScreen from '../chat/ChatScreen';
+import { peopleApi, householdApi } from '../../api';
+import { getHDK, openRecord } from '../../lib/e2ee';
+import { loadCalendarSources } from '../../lib/calendarData';
 
 // Calendar Assistant — ports client/src/views/CalendarAssistantView.vue.
 // navigateTo from the web (router paths) doesn't map to RN screens, so instead
@@ -13,10 +16,14 @@ export default function CalendarAssistantScreen() {
   const navigation = useNavigation();
   const qc = useQueryClient();
 
+  // Ephemeral-consent (§9.1 P4c): post-drop send decrypted people + calendar
+  // sources so the server needn't read stored plaintext. Dormant pre-drop.
+  const ephemeralRef = React.useRef<Record<string, unknown> | null>(null);
+
   const chat = useChat({
     endpoint: '/calendar/chat',
     contextEndpoint: '/calendar/chat/context',
-    buildBody: (messages) => ({ messages }),
+    buildBody: (messages) => ({ messages, ...(ephemeralRef.current || {}) }),
     onResult: () => qc.invalidateQueries({ queryKey: ['calendar'] }),
     toolLabels: {
       list_events: 'Checking your calendar…',
@@ -31,6 +38,21 @@ export default function CalendarAssistantScreen() {
 
   useEffect(() => {
     chat.loadContext();
+    (async () => {
+      try {
+        let e2eeActive = false;
+        try { e2eeActive = !!(await householdApi.get()).data.e2eeActive; } catch { /* solo/offline */ }
+        if (!e2eeActive || !getHDK()) return;
+        const now = new Date();
+        const from = new Date(now.getFullYear() - 1, 0, 1).toISOString();
+        const to = new Date(now.getFullYear() + 2, 0, 1).toISOString();
+        const [calendarSources, peopleRows] = await Promise.all([
+          loadCalendarSources({ from, to }),
+          peopleApi.list().then(({ data }) => Promise.all(data.map((p) => openRecord('Person', p as any)))),
+        ]);
+        ephemeralRef.current = { people: peopleRows, calendarSources };
+      } catch { /* non-fatal — server falls back to its DB read */ }
+    })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 

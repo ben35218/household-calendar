@@ -10,6 +10,7 @@ const { requireAuth } = require('../middleware/auth');
 const { streamChat } = require('../services/chatStream');
 const { meter, getConfig } = require('../middleware/usageMeter');
 const { collectCalendarRecords } = require('../services/calendarData');
+const { assembleCalendarData } = require('@household/calendar');
 
 const router = express.Router();
 router.use(requireAuth);
@@ -174,7 +175,17 @@ async function executeTool(name, input, ctx) {
       const fromDate = new Date(input.from);
       const toDate   = new Date(input.to);
 
-      const data = await collectCalendarRecords({ scopeIds, fromDate, toDate, user, household });
+      // Ephemeral-consent (§9.1 P4c): when the client supplied its decrypted
+      // calendar sources, expand them with the shared engine (same code the
+      // server uses) instead of reading stored plaintext. Else read the DB.
+      const data = ctx.calendarSources
+        ? assembleCalendarData({
+            ...ctx.calendarSources,
+            fromDate, toDate,
+            selfId: String(userId),
+            groceryShoppingDay: (household || user)?.groceryShoppingDay ?? 6,
+          })
+        : await collectCalendarRecords({ scopeIds, fromDate, toDate, user, household });
 
       const eventFields = (e) => ({
         id: e._id,
@@ -247,7 +258,9 @@ async function executeTool(name, input, ctx) {
       if (!vapiKey)       return { error: 'VAPI_API_KEY is not configured on the server' };
       if (!phoneNumberId) return { error: 'VAPI_PHONE_NUMBER_ID is not configured on the server' };
 
-      const event = await CalendarEvent.findOne({ _id: input.eventId, userId: { $in: scopeIds } }).lean();
+      const event = ctx.calendarSources
+        ? (ctx.calendarSources.events || []).find(e => String(e._id) === String(input.eventId))
+        : await CalendarEvent.findOne({ _id: input.eventId, userId: { $in: scopeIds } }).lean();
       if (!event) return { error: 'Event not found' };
       if (!event.phone) {
         return { error: 'No phone number stored for this appointment. Please add the business phone number to the event first, then try again.' };
@@ -505,7 +518,7 @@ router.get('/context', async (req, res) => {
 
 router.post('/', meter('chat'), async (req, res) => {
   try {
-    const { messages } = req.body;
+    const { messages, people: clientPeople, calendarSources } = req.body;
     if (!Array.isArray(messages) || messages.length === 0) {
       return res.status(400).json({ error: 'messages array is required' });
     }
@@ -514,7 +527,11 @@ router.post('/', meter('chat'), async (req, res) => {
     if (!apiKey) return res.status(500).json({ error: 'ANTHROPIC_API_KEY is not configured' });
 
     const userId = req.user._id;
-    const people = await loadPeople(req);
+    // Ephemeral-consent (§9.1 P4c): the client supplies decrypted people (system
+    // prompt) and calendar sources (list_events / call_business, expanded by the
+    // shared engine) so the server needn't read stored plaintext. Dual-write: with
+    // neither present it reads the DB exactly as before.
+    const people = Array.isArray(clientPeople) ? clientPeople : await loadPeople(req);
     const systemPrompt = buildSystemPrompt(req, people);
     const client = new Anthropic({ apiKey });
 
@@ -531,6 +548,7 @@ router.post('/', meter('chat'), async (req, res) => {
       messages,
       executeTool: (name, input) => executeTool(name, input, {
         userId, scopeIds: req.scopeIds, user: req.user, household: req.household,
+        calendarSources: (calendarSources && typeof calendarSources === 'object') ? calendarSources : null,
       }),
       collectSideEffects: (block, result, acc) => {
         if (result && result.navigateTo) acc.navigateTo = result.navigateTo;
