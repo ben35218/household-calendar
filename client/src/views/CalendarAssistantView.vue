@@ -17,6 +17,7 @@ import { useChat } from '../composables/useChat';
 import { peopleApi, householdApi } from '../services/api';
 import { getHDK, openRecord } from '../services/e2ee';
 import { loadCalendarSources } from '../services/calendarData';
+import { loadForecast } from '../services/weather';
 
 const router = useRouter();
 
@@ -55,11 +56,12 @@ onMounted(async () => {
     const now = new Date();
     const from = new Date(now.getFullYear() - 1, 0, 1).toISOString();
     const to   = new Date(now.getFullYear() + 2, 0, 1).toISOString();
-    const [calendarSources, peopleRows] = await Promise.all([
+    const [calendarSources, peopleRows, weather] = await Promise.all([
       loadCalendarSources({ from, to }),
       peopleApi.list().then(({ data }) => Promise.all(data.map((p) => openRecord('Person', p)))),
+      loadForecast().catch(() => null),
     ]);
-    ephemeral.value = { people: peopleRows, calendarSources };
+    ephemeral.value = { people: peopleRows, calendarSources, ...(weather ? { weather } : {}) };
   } catch { /* non-fatal — server falls back to its DB read */ }
 });
 </script>

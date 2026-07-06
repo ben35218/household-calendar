@@ -344,6 +344,15 @@ async function executeTool(name, input, ctx) {
     }
 
     case 'get_weather_forecast': {
+      // Ephemeral-consent (§9.1 P5): when the client supplied its forecast (it
+      // fetched it from open-meteo over the decrypted location), filter that
+      // instead of the server WeatherRecord cache. Already in the right shape.
+      if (ctx.weather && Array.isArray(ctx.weather.forecast)) {
+        const days = ctx.weather.forecast.filter(d =>
+          (!input.from || d.date >= input.from) && (!input.to || d.date <= input.to));
+        return days.length ? { forecast: days } : { message: 'No weather data for that range.' };
+      }
+
       const records = await WeatherRecord.find({
         userId,
         date: { $gte: input.from, $lte: input.to },
@@ -518,7 +527,7 @@ router.get('/context', async (req, res) => {
 
 router.post('/', meter('chat'), async (req, res) => {
   try {
-    const { messages, people: clientPeople, calendarSources } = req.body;
+    const { messages, people: clientPeople, calendarSources, weather } = req.body;
     if (!Array.isArray(messages) || messages.length === 0) {
       return res.status(400).json({ error: 'messages array is required' });
     }
@@ -549,6 +558,7 @@ router.post('/', meter('chat'), async (req, res) => {
       executeTool: (name, input) => executeTool(name, input, {
         userId, scopeIds: req.scopeIds, user: req.user, household: req.household,
         calendarSources: (calendarSources && typeof calendarSources === 'object') ? calendarSources : null,
+        weather: (weather && typeof weather === 'object') ? weather : null,
       }),
       collectSideEffects: (block, result, acc) => {
         if (result && result.navigateTo) acc.navigateTo = result.navigateTo;

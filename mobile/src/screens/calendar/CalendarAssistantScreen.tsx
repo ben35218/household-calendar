@@ -7,6 +7,7 @@ import ChatScreen from '../chat/ChatScreen';
 import { peopleApi, householdApi } from '../../api';
 import { getHDK, openRecord } from '../../lib/e2ee';
 import { loadCalendarSources } from '../../lib/calendarData';
+import { loadForecast } from '../../lib/weather';
 
 // Calendar Assistant — ports client/src/views/CalendarAssistantView.vue.
 // navigateTo from the web (router paths) doesn't map to RN screens, so instead
@@ -46,11 +47,12 @@ export default function CalendarAssistantScreen() {
         const now = new Date();
         const from = new Date(now.getFullYear() - 1, 0, 1).toISOString();
         const to = new Date(now.getFullYear() + 2, 0, 1).toISOString();
-        const [calendarSources, peopleRows] = await Promise.all([
+        const [calendarSources, peopleRows, weather] = await Promise.all([
           loadCalendarSources({ from, to }),
           peopleApi.list().then(({ data }) => Promise.all(data.map((p) => openRecord('Person', p as any)))),
+          loadForecast().catch(() => null),
         ]);
-        ephemeralRef.current = { people: peopleRows, calendarSources };
+        ephemeralRef.current = { people: peopleRows, calendarSources, ...(weather ? { weather } : {}) };
       } catch { /* non-fatal — server falls back to its DB read */ }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
