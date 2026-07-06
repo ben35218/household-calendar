@@ -281,11 +281,23 @@ router.post('/', meter('chat'), async (req, res) => {
 
     const userId = req.user._id;
 
-    const [item, manuals] = await Promise.all([
-      Item.findOne({ _id: itemId, userId: { $in: req.scopeIds } }).lean(),
-      Manual.find({ itemId, userId: { $in: req.scopeIds } }).lean(),
-    ]);
-    if (!item) return res.status(404).json({ error: 'Item not found' });
+    // Ephemeral-consent (§9.1 P4a): when the client supplies the decrypted item,
+    // use it for the system prompt and skip the stored-plaintext read; verify
+    // itemId access via plaintext metadata. Otherwise read the DB (dual-write).
+    // (Manuals + the get_item_tasks/create_tasks tools still hit the DB — their
+    // client-execution move is deferred to the tool-execution slice.)
+    const { item: clientItem } = req.body;
+    let item;
+    if (clientItem) {
+      if (!(await Item.exists({ _id: itemId, userId: { $in: req.scopeIds } }))) {
+        return res.status(404).json({ error: 'Item not found' });
+      }
+      item = clientItem;
+    } else {
+      item = await Item.findOne({ _id: itemId, userId: { $in: req.scopeIds } }).lean();
+      if (!item) return res.status(404).json({ error: 'Item not found' });
+    }
+    const manuals = await Manual.find({ itemId, userId: { $in: req.scopeIds } }).lean();
 
     const systemPrompt = await buildSystemPrompt(item, manuals);
     const client = new Anthropic({ apiKey });

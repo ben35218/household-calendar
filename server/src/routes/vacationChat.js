@@ -150,7 +150,7 @@ router.get('/context', async (req, res) => {
 
 router.post('/', meter('chat'), async (req, res) => {
   try {
-    const { tripId, messages } = req.body;
+    const { tripId, messages, trip: clientTrip, items: clientItems } = req.body;
     if (!tripId) return res.status(400).json({ error: 'tripId is required' });
     if (!Array.isArray(messages) || messages.length === 0) {
       return res.status(400).json({ error: 'messages array is required' });
@@ -159,10 +159,24 @@ router.post('/', meter('chat'), async (req, res) => {
     const apiKey = process.env.ANTHROPIC_API_KEY;
     if (!apiKey) return res.status(500).json({ error: 'ANTHROPIC_API_KEY is not configured' });
 
-    const loaded = await loadTrip(req, tripId);
-    if (!loaded) return res.status(404).json({ error: 'Trip not found' });
+    // Ephemeral-consent (§9.1 P4a): when the client supplies the decrypted trip +
+    // itinerary, use it for the prompt and skip the stored-plaintext read; verify
+    // tripId access via plaintext metadata. Otherwise read the DB (dual-write).
+    let trip, items;
+    if (clientTrip && Array.isArray(clientItems)) {
+      if (!(await Trip.exists({ _id: tripId, ...accessFilter(req) }))) {
+        return res.status(404).json({ error: 'Trip not found' });
+      }
+      trip = clientTrip;
+      items = clientItems;
+    } else {
+      const loaded = await loadTrip(req, tripId);
+      if (!loaded) return res.status(404).json({ error: 'Trip not found' });
+      trip = loaded.trip;
+      items = loaded.items;
+    }
 
-    const systemPrompt = buildSystemPrompt(req, loaded.trip, loaded.items);
+    const systemPrompt = buildSystemPrompt(req, trip, items);
     const client = new Anthropic({ apiKey });
 
     const config = await getConfig();
