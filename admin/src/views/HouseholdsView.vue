@@ -19,7 +19,7 @@
               <th>Household</th>
               <th>Join code</th>
               <th style="width: 180px">Plan</th>
-              <th class="text-caption">This month (chat / scan / gen / manual)</th>
+              <th class="text-caption">This week (chat / scan / gen / manual)</th>
             </tr>
           </thead>
           <tbody>
@@ -33,8 +33,8 @@
                   @update:model-value="v => setPlan(h, v)" />
               </td>
               <td class="text-caption">
-                {{ h.usageThisMonth.chat || 0 }} / {{ h.usageThisMonth.scan || 0 }} /
-                {{ h.usageThisMonth.generation || 0 }} / {{ h.usageThisMonth.manualParse || 0 }}
+                {{ h.usageThisWeek.chat || 0 }} / {{ h.usageThisWeek.scan || 0 }} /
+                {{ h.usageThisWeek.generation || 0 }} / {{ h.usageThisWeek.manualParse || 0 }}
               </td>
             </tr>
             <tr v-if="!filtered.length">
