@@ -319,7 +319,14 @@ The drop can't run while the server still reads plaintext content in live code p
 
 ### 9.2 Drop readiness (as of 2026-07-06)
 
-All dormant prerequisites are in place and dual-write-verified; **the §9 drop is the only remaining step**, and it is the first time any of this runs with `e2eeActive = true`, so it needs **live/on-device verification** (nothing below has been exercised with the flag on). The drop itself: (1) readiness gate (every member enrolled + compatible version — the version signal still needs a min-version field + client report); (2) owner re-encrypts any records still lacking `enc`; (3) manifest verify; (4) **null plaintext content columns + drop plaintext indexes + set `Household.e2eeActive = true`**; (5) rollback = keep plaintext until step 4. Known live-verification checklist once flipped: calendar expansion over `/calendar/raw` (all-dates path), reminders on-device, all five AI surfaces with client-supplied context, encrypted-manual extract, client weather via open-meteo, encrypted self-Person seed, encrypted home-location decrypt.
+All dormant prerequisites are in place and dual-write-verified; **the §9 drop is the only remaining step**, and it is the first time any of this runs with `e2eeActive = true`, so it needs **live/on-device verification** (nothing below has been exercised with the flag on).
+
+**Drop tooling is built** (pure parts tested; the destructive path unverified-live):
+- `services/dropReadiness.js` — pure `computeReadiness` (every member enrolled + holds a current-version envelope) + the authoritative per-collection content-field map (mirrors the client encrypt-subsets). 5 `node:test`.
+- `GET /household/e2ee/readiness` — read-only readiness checklist API.
+- `scripts/dropPlaintext.js <householdId> [--commit]` — **dry-run by default** (prints readiness + sealed/straggler counts). `--commit` verifies readiness + zero stragglers, then nulls plaintext content columns *only where ciphertext exists* and sets `e2eeActive = true`, writing a `plaintext_dropped` AuditLog. **Irreversible.**
+
+**To actually go live:** (1) hit the readiness endpoint / run the dry run; (2) owner's device re-encrypts any stragglers (records lacking `enc`); (3) run the dry run again → 0 stragglers; (4) **on a staging copy, `--commit` then verify on-device** that an unlocked member still reads everything; (5) then commit in prod. Still to build: a **min-app-version signal** for the readiness gate, an in-app **migration UI** (the script is operator-run), and the client **straggler re-encrypt pass**. Live-verification checklist once flipped: calendar expansion over `/calendar/raw` (all-dates path), on-device reminders, all five AI surfaces with client-supplied context, encrypted-manual extract, client weather via open-meteo, encrypted self-Person seed, encrypted home-location decrypt.
 
 *Still-open blocked items (resurface at P6/4c): cross-household trip attachments (outside the single-household HDK model) and mobile-full attachments (needs `expo-file-system` + dev-client rebuild).*
 
