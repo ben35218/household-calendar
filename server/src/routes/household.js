@@ -47,6 +47,7 @@ router.get('/', async (req, res) => {
       joinCode: req.household.joinCode,
       ownerId: req.household.ownerId,
       isOwner: String(req.household.ownerId) === String(req.user._id),
+      e2eeActive: !!req.household.e2eeActive,
       members,
     });
   } catch (err) {

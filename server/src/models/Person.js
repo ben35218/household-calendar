@@ -25,6 +25,15 @@ const personSchema = new mongoose.Schema({
 personSchema.statics.ensureSelf = async function (user) {
   let self = await this.findOne({ accountId: user._id });
   if (!self) {
+    // Under E2EE the server can't create readable content. Once the household's
+    // plaintext has been dropped, the client owns seeding an *encrypted* self-
+    // Person after first unlock — so the server must not create a plaintext one.
+    // Pre-drop (e2eeActive false, the default), behavior is unchanged.
+    const Household = mongoose.model('Household');
+    const hh = user.householdId
+      ? await Household.findById(user.householdId).select('e2eeActive').lean()
+      : null;
+    if (hh?.e2eeActive) return null; // client seeds the encrypted self-Person
     self = await this.create({
       userId:    user._id,
       accountId: user._id,

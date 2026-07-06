@@ -20,7 +20,7 @@ Author: exploration + design pass over the current monorepo.
 - **Phase 5b** — mobile **AI consent enforcement + transparency** in `FormAssist` (the `aiEnabled`/`aiUsePersonalInfo` prefs were stored but unenforced). §11.
 
 **Not started / blocked / gated:**
-- **§9 plaintext drop** — the real milestone (records actually private). Point-of-no-return migration; not started. Prereq: onboarding-seed moves client-side (entangled with the pervasive `Person.ensureSelf` safety net).
+- **§9 plaintext drop** — the real milestone (records actually private). Point-of-no-return migration; **gated behind a prerequisite stack P1–P7** (§9), because the server still reads plaintext content in live paths (`calendarData.js` recurrence, `scheduler.js` cron, AI chat/scan routes, `weather.js` location, `Person.ensureSelf`). **P1 (onboarding self-Person seed → client-side) landed** (build/test-verified, dormant behind `Household.e2eeActive`); P2–P7 remain.
 - **Phase 4c remaining** — mobile-full attachments (needs `expo-file-system` native dep + dev-client rebuild); item photos (AI-scan flow → Phase 5 ephemeral, not stored); **trip attachments** (hit **cross-household** sharing — collaborators outside your household don't hold your HDK; out of the single-household E2EE model, needs a design decision).
 - **Phase 5 remaining** — client-side weather (blocked: home location still plaintext on `Household`); extend AI enforce+indicator to other AI surfaces (chat, scans, manual-extract); on-device notif background-refresh + user toggle.
 - **Phases 6, 7** — storage-mode toggle + download-first + 7-day purge; member removal / HDK rotation + whole-household migration. Not started.
@@ -296,6 +296,20 @@ Leaving a household creates a fresh solo household (existing `/leave`) — user 
 3. **Verify:** manifest compare (like §6.2) confirms every record has a valid `enc` blob decryptable by every member's envelope.
 4. **Drop server plaintext:** only after verification, null out plaintext content fields and drop plaintext indexes.
 5. **Rollback safety:** until the drop step, plaintext remains authoritative; a failure rolls back to plaintext with no data loss. The drop is the point of no return and is gated behind explicit confirmation + verification.
+
+### 9.1 Prerequisite stack (dependency-ordered — the real path to the drop) — decided 2026-07-06
+
+The drop can't run while the server still reads plaintext content in live code paths (they'd silently break at null-out). Traced readers: `services/calendarData.js` (recurrence expansion of `startDate/endDate/title`), `jobs/scheduler.js` cron (`task.title`, `chore.title`, `person.name/birthday`, `event.title/startDate`), the AI routes (`calendarChat/maintenanceChat/vacationChat/recipes/manuals`), `routes/weather.js` (`Household` location), and `Person.ensureSelf` (creates a plaintext self-Person). There's also a field-coverage gap: calendar `startDate` and `Person.birthday` are deliberately kept plaintext *because* the server needs them.
+
+- **P1 — onboarding self-Person seed → client-side + neutralize `ensureSelf`.** ✅ **DONE** (build/test-verified; dormant). `Household.e2eeActive` flag (default false, flips true only at the drop). `Person.ensureSelf` skips plaintext creation when `e2eeActive` (covers all 6 call sites); `routes/settings.js` self-sync guarded the same way; `GET /household` exposes `e2eeActive`. New idempotent `POST /people/self` stamps `accountId`/`type` server-side and stores the client's encrypted blob. Web (`PeopleView`) + mobile (`PeopleScreen`) seed an **encrypted** self-Person on roster load when `e2eeActive && HDK held && no self` — dormant until the flag flips, so zero behavior change today. *Decided: default Categories stay server-seeded plaintext (low-sensitivity; `Category` isn't in the dual-write set) — revisit under P6.* *Honest note: the client-seed path can't be end-to-end-run until the drop sets `e2eeActive`; the server safety-net neutralization is the substantive, reviewable part. Not unit-tested (the server suite has no DB harness).*
+- **P2 — client-side recurrence + range engine (Phase 3b).** Port `calendarData.js` expansion to a shared module; retire server calendar expansion. Unblocks encrypting calendar dates.
+- **P3 — retire/gate the reminder cron** once a household's members are all on-device-notifying (5a). Accept the web-push regression.
+- **P4 — AI routes → ephemeral-consent** for the remaining surfaces (calendar/maintenance/vacation chat, recipe/receipt scan, manual-extract).
+- **P5 — location encryption + client weather** (D2 as-built). ✅ *Decided 2026-07-06: encrypt `Household` location + move weather client-side.*
+- **P6 — close dual-write field/collection gaps** (full-field coverage on the 9 collections; deferred thin collections; `Household` location; possibly `Category`).
+- **P7 — replica at-rest = ciphertext** (store `enc`, decrypt-in-memory; D5 expo-sqlite).
+
+*Still-open blocked items (resurface at P6/4c): cross-household trip attachments (outside the single-household HDK model) and mobile-full attachments (needs `expo-file-system` + dev-client rebuild).*
 
 ---
 

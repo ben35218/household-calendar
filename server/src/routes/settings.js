@@ -56,15 +56,21 @@ router.put('/', async (req, res) => {
     ]);
 
     // Keep the user's self-record in the People roster in sync with their
-    // account identity (name / birthday / home address).
-    const self = await Person.ensureSelf(user);
-    const selfUpdate = {};
-    if (userUpdate.firstName !== undefined || userUpdate.lastName !== undefined) {
-      selfUpdate.name = [user.firstName, user.lastName].filter(Boolean).join(' ').trim() || user.firstName;
+    // account identity (name / birthday / home address). Post-drop the client
+    // maintains the *encrypted* self-Person, so the server skips this to avoid
+    // writing plaintext content onto an encrypted record.
+    if (!req.household?.e2eeActive) {
+      const self = await Person.ensureSelf(user);
+      if (self) {
+        const selfUpdate = {};
+        if (userUpdate.firstName !== undefined || userUpdate.lastName !== undefined) {
+          selfUpdate.name = [user.firstName, user.lastName].filter(Boolean).join(' ').trim() || user.firstName;
+        }
+        if (userUpdate.birthday !== undefined) selfUpdate.birthday = user.birthday;
+        if (hhUpdate.homeAddress !== undefined) selfUpdate.address = hhUpdate.homeAddress;
+        if (Object.keys(selfUpdate).length) await Person.updateOne({ _id: self._id }, { $set: selfUpdate });
+      }
     }
-    if (userUpdate.birthday !== undefined) selfUpdate.birthday = user.birthday;
-    if (hhUpdate.homeAddress !== undefined) selfUpdate.address = hhUpdate.homeAddress;
-    if (Object.keys(selfUpdate).length) await Person.updateOne({ _id: self._id }, { $set: selfUpdate });
 
     res.json(user);
   } catch (err) {

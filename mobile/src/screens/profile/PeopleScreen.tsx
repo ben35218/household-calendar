@@ -3,16 +3,23 @@ import { View, Text, ScrollView, StyleSheet, TouchableOpacity, ActivityIndicator
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useAuth } from '../../store/auth';
-import { peopleApi, Person } from '../../api';
-import { openRecord } from '../../lib/e2ee';
+import { peopleApi, householdApi, Person } from '../../api';
+import { openRecord, getHDK, sealNew } from '../../lib/e2ee';
 import * as replica from '../../lib/replica';
 import { Card, Chip } from '../../components/ui';
 import { colors, spacing } from '../../theme';
 import type { ProfileStackParamList } from '../../navigation/ProfileNavigator';
 
 type Nav = NativeStackNavigationProp<ProfileStackParamList>;
+
+// Encrypted person content (mirrors PersonFormScreen); type stays plaintext for
+// roster grouping, birthday plaintext during dual-write for the calendar.
+const PERSON_ENC = (p: Record<string, unknown>) => ({
+  name: p.name, relationship: p.relationship, interests: p.interests,
+  notes: p.notes, address: p.address, phone: p.phone, email: p.email,
+});
 
 // Mirrors client/src/views/PeopleView.vue: a "You" card, Family Members, and
 // Friends, each tappable to edit. (Contacts/VCF import is tracked as a
@@ -39,6 +46,27 @@ export default function PeopleScreen() {
       }
     },
   });
+
+  const qc = useQueryClient();
+  const { data: household } = useQuery({
+    queryKey: ['household'],
+    queryFn: async () => (await householdApi.get()).data,
+  });
+
+  // Post-drop the server no longer creates a plaintext self-record (ensureSelf
+  // no-ops once e2eeActive), so seed an *encrypted* one on first unlock. Dormant
+  // pre-drop and when locked — never writes a plaintext self-record.
+  React.useEffect(() => {
+    if (!people || !household?.e2eeActive || !getHDK()) return;
+    if (people.some((p) => p.accountId && String(p.accountId) === selfId)) return;
+    const name = [user?.firstName, user?.lastName].filter(Boolean).join(' ').trim() || user?.firstName || '';
+    if (!name) return;
+    (async () => {
+      const payload = { type: 'family', name, address: household.homeAddress || undefined };
+      await peopleApi.createSelf(await sealNew('Person', payload, PERSON_ENC(payload)));
+      qc.invalidateQueries({ queryKey: ['people'] });
+    })().catch(() => {});
+  }, [people, household, selfId, user, qc]);
 
   if (isLoading || !people) {
     return (

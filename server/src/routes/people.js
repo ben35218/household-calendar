@@ -102,6 +102,37 @@ router.post('/', async (req, res) => {
   }
 });
 
+// Client-driven self-Person seed. Post-drop the server can't create readable
+// content, so ensureSelf stops creating a plaintext self-record (see Person.js);
+// the client instead seeds an *encrypted* one and posts it here. Idempotent, and
+// accountId/type are stamped server-side (never trusted from the client) so this
+// is the undeletable "You" card. Mirrors POST / for the plaintext/enc columns.
+router.post('/self', async (req, res) => {
+  try {
+    let self = await Person.findOne({ accountId: req.user._id });
+    if (!self) {
+      let enc;
+      try { enc = pickRecordEnc(req.body); }
+      catch (msg) { return res.status(400).json({ error: msg }); }
+      const { name, relationship, birthday, interests, notes, address, phone, email } = req.body;
+      self = await Person.create({
+        ...(isObjectId(req.body._id) ? { _id: req.body._id } : {}),
+        userId:    req.user._id,
+        accountId: req.user._id,
+        type:      'family',
+        name, relationship, birthday, interests, notes, address, phone, email,
+        ...enc,
+      });
+    }
+    if (!req.user.personId || String(req.user.personId) !== String(self._id)) {
+      await require('../models/User').updateOne({ _id: req.user._id }, { $set: { personId: self._id } });
+    }
+    res.status(201).json(self);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
 router.put('/:id', async (req, res) => {
   try {
     const existing = await Person.findOne({ _id: req.params.id, userId: { $in: req.scopeIds } });

@@ -450,6 +450,7 @@ export interface Person {
 export const peopleApi = {
   list: (params?: Record<string, unknown>) => api.get<Person[]>('/people', { params }),
   create: (data: Record<string, unknown>) => api.post<Person>('/people', data),
+  createSelf: (data: Record<string, unknown>) => api.post<Person>('/people/self', data),
   update: (id: string, data: Record<string, unknown>) => api.put<Person>(`/people/${id}`, data),
   delete: (id: string) => api.delete(`/people/${id}`),
   bulk: (people: Record<string, unknown>[]) => api.post('/people/bulk', { people }),
@@ -469,6 +470,10 @@ export interface Household {
   name: string;
   joinCode: string;
   ownerId: string;
+  homeAddress?: string;
+  // True once the household's plaintext has been dropped (§9). Gates the
+  // client-side encrypted self-Person seed.
+  e2eeActive?: boolean;
   members: HouseholdMember[];
 }
 

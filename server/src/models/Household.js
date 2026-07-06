@@ -17,6 +17,11 @@ const householdSchema = new mongoose.Schema({
   // Current Household Data Key version. 0 = no HDK minted yet; the owner mints
   // v1 (self-wrapped envelope) on first unlock. Bumped on lazy rotation (Phase 7).
   currentKeyVersion: { type: Number, default: 0 },
+  // Per-household "plaintext is dead" signal. Flips true only at the §9 plaintext
+  // drop, after which the server must not create readable content (the client
+  // seeds encrypted records instead). Gates Person.ensureSelf + the onboarding
+  // self-Person seed. Defaults false → identical pre-drop behavior.
+  e2eeActive: { type: Boolean, default: false },
   // Shared (household-level) settings — moved off User in Phase 3.
   timezone:           { type: String, default: 'America/Toronto' },
   homeAddress:        { type: String, default: '' },

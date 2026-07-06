@@ -268,8 +268,8 @@
 
 <script setup>
 import { ref, computed, watch, onMounted } from 'vue';
-import { peopleApi, settingsApi, placesApi } from '../services/api';
-import { sealNew, sealUpdate, openRecord } from '../services/e2ee';
+import { peopleApi, settingsApi, placesApi, householdApi } from '../services/api';
+import { sealNew, sealUpdate, openRecord, getHDK } from '../services/e2ee';
 import * as replica from '../services/replica';
 
 // Encrypted person content (type stays plaintext for roster grouping; birthday
@@ -497,8 +497,29 @@ async function load() {
   replica.upsert('Person', data).catch(() => {}); // best-effort cache
 }
 
+// Post-drop the server no longer creates a plaintext self-record (Person.ensureSelf
+// no-ops once the household is e2eeActive), so seed an *encrypted* one here on first
+// unlock. Dormant pre-drop (e2eeActive false) and when locked (no HDK) — it never
+// writes a plaintext self-record.
+async function seedSelfIfNeeded(e2eeActive) {
+  if (!e2eeActive || !getHDK() || selfPerson.value) return;
+  const u = auth.user || {};
+  const payload = {
+    type:     'family',
+    name:     [u.firstName, u.lastName].filter(Boolean).join(' ').trim() || u.firstName || '',
+    birthday: u.birthday || undefined,
+    address:  homeAddress.value || undefined,
+  };
+  if (!payload.name) return;
+  await peopleApi.createSelf(await sealNew('Person', payload, PERSON_ENC(payload)));
+  await load();
+}
+
 onMounted(async () => {
-  const [, settRes] = await Promise.all([load(), settingsApi.get()]);
+  const [, settRes, hhRes] = await Promise.all([
+    load(), settingsApi.get(), householdApi.get().catch(() => null),
+  ]);
   homeAddress.value = settRes.data.homeAddress ?? '';
+  await seedSelfIfNeeded(!!hhRes?.data?.e2eeActive);
 });
 </script>

@@ -184,6 +184,7 @@ export const weatherApi = {
 export const peopleApi = {
   list:      ()          => api.get('/people'),
   create:    (data)      => api.post('/people', data),
+  createSelf:(data)      => api.post('/people/self', data),
   update:    (id, data)  => api.put(`/people/${id}`, data),
   delete:    (id)        => api.delete(`/people/${id}`),
   importVcf: (file)      => { const fd = new FormData(); fd.append('file', file); return api.post('/people/import', fd); },
