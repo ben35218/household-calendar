@@ -8,6 +8,7 @@ const { requireAuth } = require('../middleware/auth');
 const { rateLimit } = require('../middleware/rateLimit');
 const { dedupeCategoriesForScope } = require('../services/dedupeCategories');
 const { validateHDKEnvelope } = require('../services/householdKey');
+const { computeReadiness } = require('../services/dropReadiness');
 
 const router = express.Router();
 router.use(requireAuth);
@@ -49,6 +50,25 @@ router.get('/', async (req, res) => {
       isOwner: String(req.household.ownerId) === String(req.user._id),
       e2eeActive: !!req.household.e2eeActive,
       members,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// §9 drop readiness gate (read-only): is every member enrolled + holding a
+// current-version key envelope? Powers the household-wide readiness checklist
+// before the plaintext drop. See docs/E2EE-SYNC-PLAN.md §9.2.
+router.get('/e2ee/readiness', async (req, res) => {
+  try {
+    if (!req.household) return res.status(404).json({ error: 'No household' });
+    const [members, envelopes] = await Promise.all([
+      User.find({ householdId: req.household._id }).select('email identityPublicKey').lean(),
+      HouseholdKeyEnvelope.find({ householdId: req.household._id }).select('userId keyVersion').lean(),
+    ]);
+    res.json({
+      e2eeActive: !!req.household.e2eeActive,
+      ...computeReadiness({ members, envelopes, currentKeyVersion: req.household.currentKeyVersion }),
     });
   } catch (err) {
     res.status(500).json({ error: err.message });

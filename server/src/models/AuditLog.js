@@ -13,6 +13,7 @@ const auditLogSchema = new mongoose.Schema({
     enum: [
       'hdk_minted', 'member_approved', 'hdk_rotated', 'key_enrolled',
       'deletion_scheduled', 'deletion_canceled', 'deletion_purged',
+      'plaintext_dropped', // §9 point-of-no-return: household went E2EE-live
     ],
   },
   meta: { type: mongoose.Schema.Types.Mixed, default: () => ({}) },
