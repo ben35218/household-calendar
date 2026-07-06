@@ -4,9 +4,15 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import { choresApi, peopleApi, settingsApi } from '../../api';
+import { choresApi, peopleApi, settingsApi, FormAssistField } from '../../api';
+import { sealNew, sealUpdate, openRecord } from '../../lib/e2ee';
+
+// Encrypted chore content (assignedTo/icon/dates stay plaintext).
+const CHORE_ENC = (p: Record<string, unknown>) => ({ title: p.title, instructions: p.instructions });
 import { useAuth } from '../../store/auth';
-import { Button, Input, Select, Screen, SectionTitle, DateField } from '../../components/ui';
+import { Input, Select, Screen, SectionTitle, DateField, useHeaderCheckButton } from '../../components/ui';
+import FormAssist from '../../components/FormAssist';
+import { useFormAssist } from '../../hooks/useFormAssist';
 import RecurrenceFields from '../../components/RecurrenceFields';
 import {
   RecurrenceForm,
@@ -18,6 +24,7 @@ import {
   AUDIENCE_OPTIONS,
   mdiName,
 } from '../../lib/recurrence';
+import { useCalendarColors } from '../../lib/calendarPrefs';
 import { MaintenanceStackParamList } from '../../navigation/MaintenanceNavigator';
 import { colors, radius, spacing } from '../../theme';
 
@@ -57,6 +64,7 @@ const EMPTY: ChoreFormState = {
 
 export default function ChoreFormScreen() {
   const navigation = useNavigation<Nav>();
+  const accent = useCalendarColors().colors.chores;
   const { id } = useRoute<Rt>().params || {};
   const isEdit = !!id;
   const qc = useQueryClient();
@@ -66,12 +74,16 @@ export default function ChoreFormScreen() {
   const [rec, setRec] = useState<RecurrenceForm>(makeRecurrenceForm({ intervalValue: 1, intervalUnit: 'weeks' }));
   const [monthlyMode, setMonthlyMode] = useState<MonthlyMode>('day');
   const [error, setError] = useState('');
+  const assist = useFormAssist();
 
   useEffect(() => {
     navigation.setOptions({ title: isEdit ? 'Edit Chore' : 'Add Chore' });
   }, [navigation, isEdit]);
 
-  const set = (patch: Partial<ChoreFormState>) => setForm((f) => ({ ...f, ...patch }));
+  const set = (patch: Partial<ChoreFormState>) => {
+    setForm((f) => ({ ...f, ...patch }));
+    assist.clear(Object.keys(patch));
+  };
 
   const peopleQ = useQuery({ queryKey: ['people'], queryFn: async () => (await peopleApi.list()).data });
   const settingsQ = useQuery({ queryKey: ['settings'], queryFn: async () => (await settingsApi.get()).data });
@@ -85,6 +97,25 @@ export default function ChoreFormScreen() {
       label: p.accountId && String(p.accountId) === myId ? `${p.name} (You)` : p.name,
     }));
 
+  const assistFields: FormAssistField[] = [
+    { name: 'title', type: 'text', label: 'Chore title' },
+    { name: 'instructions', type: 'text', label: 'Instructions' },
+    { name: 'assignedTo', type: 'select', label: 'Assigned to', options: familyOptions },
+    { name: 'nextDueDate', type: 'date', label: 'Next due date' },
+  ];
+
+  const applyPatch = (patch: Record<string, unknown>) => {
+    const next: Partial<ChoreFormState> = {};
+    const changedKeys: string[] = [];
+    for (const [k, v] of Object.entries(patch)) {
+      if (!(k in EMPTY)) continue;
+      if ((form as any)[k] !== v) changedKeys.push(k);
+      (next as any)[k] = v;
+    }
+    setForm((f) => ({ ...f, ...next }));
+    assist.mark(changedKeys);
+  };
+
   const choreQ = useQuery({
     queryKey: ['chores', id],
     queryFn: async () => (await choresApi.get(id!)).data,
@@ -93,7 +124,10 @@ export default function ChoreFormScreen() {
 
   useEffect(() => {
     if (!choreQ.data) return;
-    const c = choreQ.data;
+    let cancelled = false;
+    (async () => {
+    const c = await openRecord('Chore', choreQ.data); // decrypt content over plaintext
+    if (cancelled) return;
     const assignedTo =
       typeof c.assignedTo === 'object' && c.assignedTo ? c.assignedTo._id ?? null : (c.assignedTo as string) ?? null;
     setForm({
@@ -109,10 +143,12 @@ export default function ChoreFormScreen() {
     const { form: rf, monthlyMode: mm } = recurrenceToForm(c.recurrence, { intervalValue: 1, intervalUnit: 'weeks' });
     setRec(rf);
     setMonthlyMode(mm);
+    })();
+    return () => { cancelled = true; };
   }, [choreQ.data]);
 
   const save = useMutation({
-    mutationFn: () => {
+    mutationFn: async () => {
       const payload: Record<string, unknown> = {
         title: form.title,
         instructions: form.instructions,
@@ -124,7 +160,9 @@ export default function ChoreFormScreen() {
         recurrence: buildRecurrencePayload(rec, monthlyMode),
       };
       if (form.nextDueDate) payload.nextDueDate = form.nextDueDate;
-      return isEdit ? choresApi.update(id!, payload) : choresApi.create(payload);
+      return isEdit
+        ? choresApi.update(id!, await sealUpdate('Chore', id!, payload, CHORE_ENC(payload)))
+        : choresApi.create(await sealNew('Chore', payload, CHORE_ENC(payload)));
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['chores'] });
@@ -142,6 +180,8 @@ export default function ChoreFormScreen() {
     save.mutate();
   };
 
+  useHeaderCheckButton(navigation, { onPress: onSave, loading: save.isPending, color: accent });
+
   if (isEdit && choreQ.isLoading) {
     return (
       <View style={styles.center}>
@@ -152,8 +192,17 @@ export default function ChoreFormScreen() {
 
   return (
     <Screen>
-      <Input label="Chore Title *" value={form.title} onChangeText={(v) => set({ title: v })} />
-      <Input label="Instructions" value={form.instructions} onChangeText={(v) => set({ instructions: v })} multiline />
+      <FormAssist
+        formType="household chore"
+        title="AI Assistant"
+        placeholder={'Describe the chore, e.g. "take out the recycling every Sunday, assign to Alex"'}
+        fields={assistFields}
+        current={{ ...form }}
+        onApply={applyPatch}
+      />
+
+      <Input label="Chore Title *" value={form.title} onChangeText={(v) => set({ title: v })} highlight={assist.changed.has('title')} />
+      <Input label="Instructions" value={form.instructions} onChangeText={(v) => set({ instructions: v })} multiline highlight={assist.changed.has('instructions')} />
 
       <Select
         label="Assigned to"
@@ -162,6 +211,7 @@ export default function ChoreFormScreen() {
         value={form.assignedTo ?? undefined}
         options={familyOptions}
         onChange={(v) => set({ assignedTo: (v as string) ?? null })}
+        highlight={assist.changed.has('assignedTo')}
       />
 
       <Text style={styles.fieldLabel}>Icon</Text>
@@ -171,7 +221,7 @@ export default function ChoreFormScreen() {
           return (
             <TouchableOpacity
               key={name}
-              style={[styles.iconOption, selected && styles.iconOptionSelected]}
+              style={[styles.iconOption, selected && { backgroundColor: accent, borderColor: accent }]}
               onPress={() => set({ icon: `mdi-${name}` })}
             >
               <MaterialCommunityIcons
@@ -196,6 +246,7 @@ export default function ChoreFormScreen() {
         clearable
         value={form.nextDueDate}
         onChange={(v) => set({ nextDueDate: v })}
+        highlight={assist.changed.has('nextDueDate')}
       />
 
       <SectionTitle>Alerts</SectionTitle>
@@ -223,18 +274,10 @@ export default function ChoreFormScreen() {
       ) : null}
 
       {error ? <Text style={styles.error}>{error}</Text> : null}
-
-      <View style={styles.footer}>
-        <Button title="Cancel" variant="ghost" onPress={() => navigation.goBack()} />
-        <View style={{ flex: 1 }}>
-          <Button title={isEdit ? 'Save Changes' : 'Create Chore'} loading={save.isPending} onPress={onSave} />
-        </View>
-      </View>
     </Screen>
   );
 }
 
-const CHORE_ORANGE = '#F57C00';
 
 const styles = StyleSheet.create({
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.background },
@@ -249,7 +292,5 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  iconOptionSelected: { backgroundColor: CHORE_ORANGE, borderColor: CHORE_ORANGE },
   error: { color: colors.error, marginVertical: spacing.sm },
-  footer: { flexDirection: 'row', gap: spacing.sm, marginTop: spacing.md, marginBottom: spacing.xl, alignItems: 'center' },
 });

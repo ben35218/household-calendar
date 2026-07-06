@@ -14,9 +14,12 @@ import { Ionicons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { tripsApi, Trip } from '../../api';
-import { Card, Badge, Input, Button } from '../../components/ui';
-import { tripStatusLabel, tripStatusColor, TRIP_PURPLE } from '../../lib/tripTypes';
+import { openRecord } from '../../lib/e2ee';
+import * as replica from '../../lib/replica';
+import { Card, Badge, Input, Button, RoundIconButton } from '../../components/ui';
+import { tripStatusLabel, tripStatusColor } from '../../lib/tripTypes';
 import { formatCalendarDate } from '../../lib/recurrence';
+import { useCalendarColors } from '../../lib/calendarPrefs';
 import { TripsStackParamList } from '../../navigation/TripsNavigator';
 import { colors, spacing } from '../../theme';
 
@@ -45,10 +48,19 @@ function dateSummary(t: Trip) {
 
 export default function VacationsScreen() {
   const navigation = useNavigation<Nav>();
+  const accent = useCalendarColors().colors.vacations;
   const [joinOpen, setJoinOpen] = useState(false);
   const [joinCode, setJoinCode] = useState('');
 
-  const tripsQ = useQuery({ queryKey: ['trips'], queryFn: async () => (await tripsApi.list()).data });
+  const tripsQ = useQuery({
+    queryKey: ['trips'],
+    // Offline-first (Phase 4b): sync the replica, fall back to cache offline,
+    // then decrypt content over the plaintext rows.
+    queryFn: async () => {
+      const rows = await replica.syncedList<Trip>('Trip', async () => (await tripsApi.list()).data);
+      return Promise.all(rows.map((t) => openRecord('Trip', t)));
+    },
+  });
 
   const join = useMutation({
     mutationFn: () => tripsApi.joinShare(joinCode.trim().toUpperCase()),
@@ -63,17 +75,10 @@ export default function VacationsScreen() {
   useLayoutEffect(() => {
     navigation.setOptions({
       headerRight: () => (
-        <View style={styles.headerActions}>
-          <TouchableOpacity onPress={() => setJoinOpen(true)} style={styles.headerBtn}>
-            <Ionicons name="enter-outline" size={22} color="#fff" />
-          </TouchableOpacity>
-          <TouchableOpacity onPress={() => navigation.navigate('TripForm', {})} style={styles.headerBtn}>
-            <Ionicons name="add" size={24} color="#fff" />
-          </TouchableOpacity>
-        </View>
+        <RoundIconButton icon="add" onPress={() => navigation.navigate('TripForm', {})} bg={accent} />
       ),
     });
-  }, [navigation]);
+  }, [navigation, accent]);
 
   const groups = useMemo(() => {
     const trips = tripsQ.data ?? [];
@@ -92,7 +97,7 @@ export default function VacationsScreen() {
   if (tripsQ.isLoading) {
     return (
       <View style={styles.center}>
-        <ActivityIndicator size="large" color={TRIP_PURPLE} />
+        <ActivityIndicator size="large" color={accent} />
       </View>
     );
   }
@@ -103,6 +108,10 @@ export default function VacationsScreen() {
         contentContainerStyle={styles.content}
         refreshControl={<RefreshControl refreshing={tripsQ.isRefetching} onRefresh={tripsQ.refetch} />}
       >
+        <TouchableOpacity style={styles.joinLink} onPress={() => setJoinOpen(true)}>
+          <Ionicons name="enter-outline" size={18} color={accent} />
+          <Text style={[styles.joinLinkText, { color: accent }]}>Join a shared trip</Text>
+        </TouchableOpacity>
         {groups.length === 0 ? (
           <View style={styles.empty}>
             <Ionicons name="briefcase-outline" size={48} color={colors.textMuted} />
@@ -115,7 +124,7 @@ export default function VacationsScreen() {
               {g.items.map((t) => (
                 <TouchableOpacity key={t._id} activeOpacity={0.8} onPress={() => navigation.navigate('TripDetail', { id: t._id })}>
                   <Card style={styles.tripCard}>
-                    <View style={[styles.bar, { backgroundColor: t.color || TRIP_PURPLE }]} />
+                    <View style={[styles.bar, { backgroundColor: t.color || accent }]} />
                     <View style={{ flex: 1, paddingLeft: spacing.md }}>
                       <View style={styles.titleRow}>
                         <Text style={styles.name}>{t.name}</Text>
@@ -156,6 +165,8 @@ const styles = StyleSheet.create({
   content: { padding: spacing.md },
   headerActions: { flexDirection: 'row' },
   headerBtn: { paddingHorizontal: 6 },
+  joinLink: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingTop: 0, paddingBottom: spacing.md },
+  joinLinkText: { fontSize: 15, fontWeight: '600' },
   group: { marginBottom: spacing.lg },
   groupTitle: { fontSize: 13, fontWeight: '700', color: colors.textMuted, textTransform: 'uppercase', marginBottom: spacing.sm },
   tripCard: { flexDirection: 'row', padding: 0, paddingVertical: spacing.md, paddingRight: spacing.md, overflow: 'hidden', marginBottom: spacing.sm },

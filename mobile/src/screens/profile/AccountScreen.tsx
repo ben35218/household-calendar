@@ -4,6 +4,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useAuth } from '../../store/auth';
 import { settingsApi, authApi } from '../../api';
 import { registerForPushNotifications } from '../../lib/push';
+import { rewrapForNewPassword, regenerateRecoveryCode } from '../../lib/e2ee';
 import { Button, Card, Input, DateField, Select, SectionTitle, Divider } from '../../components/ui';
 import PlacesAutocomplete from '../../components/PlacesAutocomplete';
 import { colors, spacing } from '../../theme';
@@ -108,6 +109,9 @@ export default function AccountScreen() {
         currentPassword: pwForm.currentPassword,
         newPassword: pwForm.newPassword,
       });
+      // Re-wrap the E2EE key under the new password so it still unlocks the
+      // account. Best-effort — a locked session keeps the old password factor.
+      await rewrapForNewPassword(pwForm.newPassword).catch(() => {});
       setPwOpen(false);
       setPwForm({ currentPassword: '', newPassword: '', confirm: '' });
       Alert.alert('Updated', 'Password updated.');
@@ -115,6 +119,21 @@ export default function AccountScreen() {
       setPwError(e?.response?.data?.error || 'Failed to update password');
     } finally {
       setPwSaving(false);
+    }
+  }
+
+  // ── Encryption & recovery ─────────────────────────────────────────────────
+  const [recoveryBusy, setRecoveryBusy] = useState(false);
+  async function regenerate() {
+    setRecoveryBusy(true);
+    try {
+      // Surfaces the new code via the one-time RecoveryCodeModal; null = locked.
+      const code = await regenerateRecoveryCode();
+      if (!code) Alert.alert('Sign in again', 'Sign out and back in to manage your recovery code.');
+    } catch (e: any) {
+      Alert.alert('Error', e?.message || 'Could not regenerate your recovery code');
+    } finally {
+      setRecoveryBusy(false);
     }
   }
 
@@ -239,6 +258,21 @@ export default function AccountScreen() {
             <Button title="Save password" onPress={savePassword} loading={pwSaving} disabled={!pwReady} />
           </View>
         ) : null}
+      </Card>
+
+      <Card style={styles.card}>
+        <SectionTitle>Encryption & recovery</SectionTitle>
+        <Text style={styles.cardNote}>
+          Your account has an end-to-end encryption key. Your recovery code is a
+          backup way to unlock it if you lose your password — resetting your
+          password restores sign-in only, not your data.
+        </Text>
+        <Button
+          title="Regenerate recovery code"
+          variant="ghost"
+          loading={recoveryBusy}
+          onPress={regenerate}
+        />
       </Card>
 
       <Card style={styles.card}>

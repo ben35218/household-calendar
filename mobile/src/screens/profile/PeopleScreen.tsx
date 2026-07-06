@@ -1,11 +1,13 @@
 import React from 'react';
 import { View, Text, ScrollView, StyleSheet, TouchableOpacity, ActivityIndicator } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
+import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useQuery } from '@tanstack/react-query';
 import { useAuth } from '../../store/auth';
 import { peopleApi, Person } from '../../api';
+import { openRecord } from '../../lib/e2ee';
+import * as replica from '../../lib/replica';
 import { Card, Chip } from '../../components/ui';
 import { colors, spacing } from '../../theme';
 import type { ProfileStackParamList } from '../../navigation/ProfileNavigator';
@@ -22,7 +24,20 @@ export default function PeopleScreen() {
 
   const { data: people, isLoading } = useQuery({
     queryKey: ['people'],
-    queryFn: async () => (await peopleApi.list()).data,
+    // Offline-first (Phase 4b): fetch + sync the local replica, falling back to
+    // the cached copy when the network is unavailable. Decrypt content over
+    // plaintext (dual-write); no-op without an HDK.
+    queryFn: async () => {
+      try {
+        const rows = (await peopleApi.list()).data;
+        replica.upsert('Person', rows as any).catch(() => {});
+        return Promise.all(rows.map((p) => openRecord('Person', p)));
+      } catch (e) {
+        const cached = await replica.getAll<Person>('Person');
+        if (cached.length) return Promise.all(cached.map((p) => openRecord('Person', p)));
+        throw e;
+      }
+    },
   });
 
   if (isLoading || !people) {
@@ -36,6 +51,7 @@ export default function PeopleScreen() {
   const selfPerson = people.find((p) => p.accountId && String(p.accountId) === selfId);
   const family = people.filter((p) => p.type === 'family' && p !== selfPerson);
   const friends = people.filter((p) => p.type === 'friend');
+  const providers = people.filter((p) => p.type === 'service');
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
@@ -78,17 +94,35 @@ export default function PeopleScreen() {
         <PersonCard key={p._id} person={p} onPress={() => nav.navigate('PersonForm', { id: p._id })} />
       ))}
       {friends.length === 0 ? <Empty label="No friends added yet." /> : null}
+
+      <View style={[styles.sectionHeader, { marginTop: spacing.lg }]}>
+        <Text style={styles.sectionTitle}>Service Providers</Text>
+        <TouchableOpacity onPress={() => nav.navigate('PersonForm', { type: 'service' })}>
+          <Text style={styles.addBtn}>+ Add Provider</Text>
+        </TouchableOpacity>
+      </View>
+      {providers.map((p) => (
+        <PersonCard key={p._id} person={p} onPress={() => nav.navigate('PersonForm', { id: p._id })} />
+      ))}
+      {providers.length === 0 ? <Empty label="No service providers added yet." /> : null}
     </ScrollView>
   );
 }
 
 function PersonCard({ person, self, onPress }: { person: Person; self?: boolean; onPress: () => void }) {
-  const icon = self ? 'person-circle' : person.type === 'friend' ? 'heart' : 'person';
+  // Service providers get MaterialCommunityIcons' "account-tie" (a person in a
+  // suit); everyone else uses the matching Ionicons person glyph.
+  const isService = !self && person.type === 'service';
+  const icon = self ? 'person-circle' : 'person';
   return (
     <TouchableOpacity activeOpacity={0.7} onPress={onPress}>
       <Card style={[styles.personCard, self && styles.selfCard]}>
         <View style={styles.personHead}>
-          <Ionicons name={icon as any} size={20} color={colors.primary} />
+          {isService ? (
+            <MaterialCommunityIcons name="account-tie" size={20} color={colors.primary} />
+          ) : (
+            <Ionicons name={icon as any} size={20} color={colors.primary} />
+          )}
           <Text style={styles.personName}>{person.name}</Text>
           {self ? <Text style={styles.youChip}>You</Text> : person.accountId ? <Text style={styles.memberChip}>Member</Text> : null}
         </View>

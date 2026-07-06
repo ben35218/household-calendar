@@ -1,13 +1,20 @@
 import React, { useEffect, useState } from 'react';
-import { View, Text, StyleSheet, ActivityIndicator, TouchableOpacity } from 'react-native';
+import { View, Text, StyleSheet, ActivityIndicator, TouchableOpacity, Alert } from 'react-native';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Ionicons } from '@expo/vector-icons';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import { tripsApi, placesApi, CandidateRange, TripStatus } from '../../api';
-import { Button, Input, Select, Screen, SectionTitle, DateField } from '../../components/ui';
+import { tripsApi, placesApi, CandidateRange, TripStatus, Trip, FormAssistField } from '../../api';
+import { sealNew, sealUpdate, openRecord } from '../../lib/e2ee';
+
+// Encrypted trip content (dates/candidateRanges/color stay plaintext).
+const TRIP_ENC = (p: Record<string, unknown>) => ({ name: p.name, destination: p.destination, notes: p.notes });
+import { Button, Input, Select, Screen, SectionTitle, DateField, useHeaderCheckButton } from '../../components/ui';
+import FormAssist from '../../components/FormAssist';
+import { useFormAssist } from '../../hooks/useFormAssist';
 import PlacesAutocomplete from '../../components/PlacesAutocomplete';
 import { TRIP_PURPLE } from '../../lib/tripTypes';
+import { useCalendarColors } from '../../lib/calendarPrefs';
 import { TripsStackParamList } from '../../navigation/TripsNavigator';
 import { colors, spacing } from '../../theme';
 
@@ -22,11 +29,22 @@ const STATUS_OPTIONS = [
 
 const COLORS = ['#5E35B1', '#1565C0', '#2E7D32', '#C62828', '#EF6C00', '#00838F', '#6A1B9A'];
 
+// Schema the AI form assistant fills. Names match the form-state keys.
+const ASSIST_FIELDS: FormAssistField[] = [
+  { name: 'name', type: 'text', label: 'Trip name' },
+  { name: 'destination', type: 'text', label: 'Destination (city)' },
+  { name: 'status', type: 'select', label: 'Status', options: STATUS_OPTIONS },
+  { name: 'startDate', type: 'date', label: 'Start date' },
+  { name: 'endDate', type: 'date', label: 'End date' },
+  { name: 'notes', type: 'text', label: 'Notes' },
+];
+
 export default function TripFormScreen() {
   const navigation = useNavigation<Nav>();
   const { id } = useRoute<Rt>().params || {};
   const isEdit = !!id;
   const qc = useQueryClient();
+  const accent = useCalendarColors().colors.vacations;
 
   const [form, setForm] = useState({
     name: '',
@@ -40,8 +58,25 @@ export default function TripFormScreen() {
   });
   const [ranges, setRanges] = useState<CandidateRange[]>([]);
   const [error, setError] = useState('');
+  const assist = useFormAssist();
 
-  const set = (patch: Partial<typeof form>) => setForm((f) => ({ ...f, ...patch }));
+  const set = (patch: Partial<typeof form>) => {
+    setForm((f) => ({ ...f, ...patch }));
+    assist.clear(Object.keys(patch));
+  };
+
+  const applyPatch = (patch: Record<string, unknown>) => {
+    const next: Partial<typeof form> = {};
+    const changedKeys: string[] = [];
+    for (const [k, v] of Object.entries(patch)) {
+      if (!(k in form)) continue;
+      const val = v == null ? '' : v;
+      if ((form as any)[k] !== val) changedKeys.push(k);
+      (next as any)[k] = val;
+    }
+    setForm((f) => ({ ...f, ...next }));
+    assist.mark(changedKeys);
+  };
 
   useEffect(() => {
     navigation.setOptions({ title: isEdit ? 'Edit Trip' : 'New Trip' });
@@ -54,7 +89,12 @@ export default function TripFormScreen() {
   });
   useEffect(() => {
     if (!tripQ.data) return;
-    const t = tripQ.data;
+    let cancelled = false;
+    (async () => {
+    // GET /trips/:id returns { trip, items, isOwner }; older callers expect a flat trip.
+    const data = tripQ.data as unknown as { trip?: Trip };
+    const t = await openRecord('Trip', data.trip ?? (tripQ.data as Trip)); // decrypt content over plaintext
+    if (cancelled || !t || !t.name) return;
     setForm({
       name: t.name ?? '',
       destination: t.destination ?? '',
@@ -66,10 +106,12 @@ export default function TripFormScreen() {
       notes: t.notes ?? '',
     });
     setRanges(t.candidateRanges ?? []);
+    })();
+    return () => { cancelled = true; };
   }, [tripQ.data]);
 
   const save = useMutation({
-    mutationFn: () => {
+    mutationFn: async () => {
       const payload: Record<string, unknown> = {
         name: form.name.trim(),
         destination: form.destination || undefined,
@@ -84,7 +126,9 @@ export default function TripFormScreen() {
         payload.startDate = form.startDate || undefined;
         payload.endDate = form.endDate || undefined;
       }
-      return isEdit ? tripsApi.update(id!, payload) : tripsApi.create(payload);
+      return isEdit
+        ? tripsApi.update(id!, await sealUpdate('Trip', id!, payload, TRIP_ENC(payload)))
+        : tripsApi.create(await sealNew('Trip', payload, TRIP_ENC(payload)));
     },
     onSuccess: (res) => {
       qc.invalidateQueries({ queryKey: ['trips'] });
@@ -95,6 +139,22 @@ export default function TripFormScreen() {
     onError: (e: any) => setError(e.response?.data?.error || 'Save failed'),
   });
 
+  const del = useMutation({
+    mutationFn: () => tripsApi.remove(id!),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['trips'] });
+      navigation.navigate('Vacations');
+    },
+    onError: (e: any) => setError(e.response?.data?.error || 'Delete failed'),
+  });
+
+  const onDelete = () => {
+    Alert.alert('Delete trip?', `Delete "${form.name || 'this trip'}"? This can't be undone.`, [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Delete', style: 'destructive', onPress: () => del.mutate() },
+    ]);
+  };
+
   const onSave = () => {
     if (!form.name.trim()) {
       setError('Name is required');
@@ -104,25 +164,38 @@ export default function TripFormScreen() {
     save.mutate();
   };
 
+  useHeaderCheckButton(navigation, { onPress: onSave, loading: save.isPending, color: accent });
+
   if (isEdit && tripQ.isLoading) {
     return (
       <View style={styles.center}>
-        <ActivityIndicator size="large" color={TRIP_PURPLE} />
+        <ActivityIndicator size="large" color={accent} />
       </View>
     );
   }
 
   return (
     <Screen>
-      <Input label="Trip Name *" value={form.name} onChangeText={(v) => set({ name: v })} placeholder="e.g. Rome 2026" />
+      <FormAssist
+        formType="trip / vacation"
+        title="Trip Assistant"
+        placeholder={'Describe the trip, e.g. "10-day trip to Rome in May, booked"'}
+        fields={ASSIST_FIELDS}
+        current={{ ...form }}
+        onApply={applyPatch}
+      />
+
+      <Input label="Trip Name *" value={form.name} onChangeText={(v) => set({ name: v })} placeholder="e.g. Rome 2026" highlight={assist.changed.has('name')} />
       <PlacesAutocomplete
         label="Destination"
+        type="city"
         value={form.destination}
         onChangeText={(v) => set({ destination: v })}
         onSelect={(p) => placesApi.getTimezone(p.place_id).then((r) => r.data.timeZoneId && set({ destinationTz: r.data.timeZoneId })).catch(() => {})}
+        highlight={assist.changed.has('destination')}
       />
       <Input label="Destination timezone (IANA)" value={form.destinationTz} onChangeText={(v) => set({ destinationTz: v })} placeholder="e.g. Europe/Rome" autoCapitalize="none" />
-      <Select label="Status" value={form.status} options={STATUS_OPTIONS} onChange={(v) => set({ status: (v as TripStatus) ?? 'considering' })} />
+      <Select label="Status" value={form.status} options={STATUS_OPTIONS} onChange={(v) => set({ status: (v as TripStatus) ?? 'considering' })} highlight={assist.changed.has('status')} />
 
       {form.status === 'considering' ? (
         <>
@@ -145,10 +218,10 @@ export default function TripFormScreen() {
       ) : (
         <View style={styles.cols}>
           <View style={styles.col}>
-            <DateField label="Start date" clearable value={form.startDate} onChange={(v) => set({ startDate: v })} />
+            <DateField label="Start date" clearable value={form.startDate} onChange={(v) => set({ startDate: v })} highlight={assist.changed.has('startDate')} />
           </View>
           <View style={styles.col}>
-            <DateField label="End date" clearable value={form.endDate} onChange={(v) => set({ endDate: v })} />
+            <DateField label="End date" clearable value={form.endDate} onChange={(v) => set({ endDate: v })} highlight={assist.changed.has('endDate')} />
           </View>
         </View>
       )}
@@ -165,16 +238,15 @@ export default function TripFormScreen() {
       </View>
 
       <View style={{ height: spacing.md }} />
-      <Input label="Notes" value={form.notes} onChangeText={(v) => set({ notes: v })} multiline />
+      <Input label="Notes" value={form.notes} onChangeText={(v) => set({ notes: v })} multiline highlight={assist.changed.has('notes')} />
 
       {error ? <Text style={styles.error}>{error}</Text> : null}
 
-      <View style={styles.footer}>
-        <Button title="Cancel" variant="ghost" onPress={() => navigation.goBack()} />
-        <View style={{ flex: 1 }}>
-          <Button title={isEdit ? 'Save Changes' : 'Create Trip'} loading={save.isPending} onPress={onSave} />
-        </View>
-      </View>
+      {isEdit ? (
+        <TouchableOpacity onPress={onDelete} disabled={del.isPending} style={styles.deleteBtn}>
+          <Text style={styles.deleteText}>{del.isPending ? 'Deleting…' : 'Delete Trip'}</Text>
+        </TouchableOpacity>
+      ) : null}
     </Screen>
   );
 }
@@ -189,5 +261,6 @@ const styles = StyleSheet.create({
   swatch: { width: 36, height: 36, borderRadius: 18 },
   swatchActive: { borderWidth: 3, borderColor: colors.text },
   error: { color: colors.error, marginVertical: spacing.sm },
-  footer: { flexDirection: 'row', gap: spacing.sm, marginTop: spacing.md, marginBottom: spacing.xl, alignItems: 'center' },
+  deleteBtn: { alignItems: 'center', paddingVertical: spacing.md, marginTop: spacing.md, marginBottom: spacing.xl },
+  deleteText: { color: colors.error, fontWeight: '600', fontSize: 16 },
 });

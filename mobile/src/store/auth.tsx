@@ -2,6 +2,19 @@ import React, { createContext, useContext, useEffect, useState, useCallback } fr
 import { authApi, User } from '../api';
 import { setUnauthorizedHandler } from '../api/client';
 import { loadToken, saveToken, clearToken } from '../lib/secureToken';
+import { ensureEnrolledOnLogin, ensureHouseholdKey, lock as lockE2EE } from '../lib/e2ee';
+
+// Enroll (or unlock) the E2EE keypair after auth, then make sure this session
+// holds the household key (owner mints it lazily on first unlock). Additive and
+// best-effort: a crypto/enrollment failure must not block sign-in.
+async function initE2EE(password: string) {
+  try {
+    const status = await ensureEnrolledOnLogin(password);
+    if (status !== 'locked') await ensureHouseholdKey();
+  } catch (err) {
+    console.warn('[e2ee] enrollment/unlock skipped:', (err as Error)?.message ?? err);
+  }
+}
 
 // Session store (React context). Equivalent to client/src/stores/auth.js, but
 // token persistence is async (SecureStore) so we expose a `bootstrapping` flag
@@ -23,6 +36,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [bootstrapping, setBootstrapping] = useState(true);
 
   const logout = useCallback(async () => {
+    lockE2EE(); // drop the in-memory private key
     await clearToken();
     setUser(null);
   }, []);
@@ -54,6 +68,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const { data } = await authApi.login(creds);
     await saveToken(data.token);
     setUser(data.user);
+    await initE2EE(creds.password); // token stored → keysApi is authed
   }, []);
 
   const register = useCallback(
@@ -61,6 +76,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const { data } = await authApi.register(payload);
       await saveToken(data.token);
       setUser(data.user);
+      await initE2EE(payload.password);
     },
     []
   );

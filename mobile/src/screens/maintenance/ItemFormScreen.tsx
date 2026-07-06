@@ -4,8 +4,18 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import { itemsApi, categoriesApi, Item, CustomField } from '../../api';
-import { Button, Input, Select, Screen, SectionTitle, SwitchRow, Card, DateField } from '../../components/ui';
+import { itemsApi, categoriesApi, Item, CustomField, FormAssistField } from '../../api';
+import { sealNew, sealUpdate, openRecord } from '../../lib/e2ee';
+
+// Encrypted item content (categoryId/type/dates stay plaintext).
+const ITEM_ENC = (p: Record<string, unknown>) => ({
+  name: p.name, manufacturer: p.manufacturer, modelNumber: p.modelNumber,
+  serialNumber: p.serialNumber, location: p.location, notes: p.notes, customFields: p.customFields,
+});
+import { Input, Select, Screen, SectionTitle, SwitchRow, Card, DateField, useHeaderCheckButton } from '../../components/ui';
+import { useCalendarColors } from '../../lib/calendarPrefs';
+import FormAssist from '../../components/FormAssist';
+import { useFormAssist } from '../../hooks/useFormAssist';
 import { mdiName } from '../../lib/recurrence';
 import { ITEM_TYPES, itemTypeConfig, TYPE_CATEGORY_MATCH, ItemField } from '../../lib/itemTypes';
 import { MaintenanceStackParamList } from '../../navigation/MaintenanceNavigator';
@@ -48,14 +58,19 @@ export default function ItemFormScreen() {
   const { id, prefill } = useRoute<Rt>().params || {};
   const isEdit = !!id;
   const qc = useQueryClient();
+  const accent = useCalendarColors().colors.maintenance;
 
   const [step, setStep] = useState<1 | 2>(isEdit || prefill ? 2 : 1);
   const [form, setForm] = useState<CoreForm>(EMPTY);
   const [customMap, setCustomMap] = useState<Record<string, string>>({});
   const [userFields, setUserFields] = useState<CustomField[]>([]);
   const [error, setError] = useState('');
+  const assist = useFormAssist();
 
-  const set = (patch: Partial<CoreForm>) => setForm((f) => ({ ...f, ...patch }));
+  const set = (patch: Partial<CoreForm>) => {
+    setForm((f) => ({ ...f, ...patch }));
+    assist.clear(Object.keys(patch));
+  };
   const cfg = itemTypeConfig(form.type);
 
   // Keys this type renders as preset slots (so loaded customFields split correctly).
@@ -65,6 +80,35 @@ export default function ItemFormScreen() {
   );
 
   const categoriesQ = useQuery({ queryKey: ['categories', 'all'], queryFn: async () => (await categoriesApi.list()).data });
+
+  const assistFields: FormAssistField[] = useMemo(
+    () => [
+      { name: 'name', type: 'text', label: 'Item name' },
+      { name: 'type', type: 'select', label: 'Type', options: ITEM_TYPES.map((t) => ({ label: t.label, value: t.value })) },
+      { name: 'categoryId', type: 'select', label: 'Category', options: (categoriesQ.data ?? []).map((c) => ({ label: c.name, value: c._id })) },
+      { name: 'location', type: 'text', label: 'Location' },
+      { name: 'manufacturer', type: 'text', label: 'Manufacturer / brand' },
+      { name: 'modelNumber', type: 'text', label: 'Model number' },
+      { name: 'serialNumber', type: 'text', label: 'Serial number' },
+      { name: 'purchaseDate', type: 'date', label: 'Purchase date' },
+      { name: 'warrantyExpiry', type: 'date', label: 'Warranty expiry' },
+      { name: 'notes', type: 'text', label: 'Notes' },
+    ],
+    [categoriesQ.data]
+  );
+
+  const applyPatch = (patch: Record<string, unknown>) => {
+    const next: Partial<CoreForm> = {};
+    const changedKeys: string[] = [];
+    for (const [k, v] of Object.entries(patch)) {
+      if (!(k in EMPTY)) continue;
+      const val = v == null ? '' : v;
+      if ((form as any)[k] !== val) changedKeys.push(k);
+      (next as any)[k] = val;
+    }
+    setForm((f) => ({ ...f, ...next }));
+    assist.mark(changedKeys);
+  };
 
   const applyCustomFields = (fields: CustomField[] | undefined, keys: Set<string>) => {
     const map: Record<string, string> = {};
@@ -106,7 +150,10 @@ export default function ItemFormScreen() {
 
   useEffect(() => {
     if (!itemQ.data) return;
-    const it = itemQ.data;
+    let cancelled = false;
+    (async () => {
+    const it = await openRecord('Item', itemQ.data); // decrypt content over plaintext
+    if (cancelled) return;
     const catId = it.categoryId && typeof it.categoryId === 'object' ? it.categoryId._id : (it.categoryId as string) || null;
     set({
       name: it.name ?? '',
@@ -124,6 +171,8 @@ export default function ItemFormScreen() {
       itemTypeConfig(it.type).fieldGroups.flatMap((g) => g.fields.filter((f) => f.customKey).map((f) => f.customKey!))
     );
     applyCustomFields(it.customFields, keys);
+    })();
+    return () => { cancelled = true; };
   }, [itemQ.data]);
 
   useEffect(() => {
@@ -141,7 +190,7 @@ export default function ItemFormScreen() {
   };
 
   const save = useMutation({
-    mutationFn: () => {
+    mutationFn: async () => {
       const presetFields = Object.entries(customMap)
         .filter(([, v]) => v !== undefined && v !== '')
         .map(([key, value]) => ({ key, value }));
@@ -160,7 +209,9 @@ export default function ItemFormScreen() {
       if (form.serialNumber) payload.serialNumber = form.serialNumber;
       if (form.purchaseDate) payload.purchaseDate = form.purchaseDate;
       if (form.warrantyExpiry) payload.warrantyExpiry = form.warrantyExpiry;
-      return isEdit ? itemsApi.update(id!, payload) : itemsApi.create(payload);
+      return isEdit
+        ? itemsApi.update(id!, await sealUpdate('Item', id!, payload, ITEM_ENC(payload)))
+        : itemsApi.create(await sealNew('Item', payload, ITEM_ENC(payload)));
     },
     onSuccess: (res) => {
       qc.invalidateQueries({ queryKey: ['items'] });
@@ -179,6 +230,9 @@ export default function ItemFormScreen() {
     setError('');
     save.mutate();
   };
+
+  // No save on the step-1 type picker (new items) — only once the form is shown.
+  useHeaderCheckButton(navigation, { onPress: onSave, loading: save.isPending, color: accent, enabled: step === 2 });
 
   if (isEdit && itemQ.isLoading) {
     return (
@@ -225,15 +279,25 @@ export default function ItemFormScreen() {
         </View>
       ) : null}
 
+      <FormAssist
+        formType={`${cfg.label.toLowerCase()} (home item)`}
+        title="AI Assistant"
+        placeholder={'Describe the item, e.g. "Samsung fridge, model RF28R, bought last March, 2-year warranty"'}
+        fields={assistFields}
+        current={{ ...form }}
+        onApply={applyPatch}
+      />
+
       <SectionTitle>Basic Info</SectionTitle>
-      <Input label={`${cfg.label} Name *`} value={form.name} onChangeText={(v) => set({ name: v })} placeholder={cfg.namePlaceholder} />
-      <Input label="Location" value={form.location} onChangeText={(v) => set({ location: v })} placeholder="e.g. Home, Garage" />
+      <Input label={`${cfg.label} Name *`} value={form.name} onChangeText={(v) => set({ name: v })} placeholder={cfg.namePlaceholder} highlight={assist.changed.has('name')} />
+      <Input label="Location" value={form.location} onChangeText={(v) => set({ location: v })} placeholder="e.g. Home, Garage" highlight={assist.changed.has('location')} />
       <Select
         label="Category"
         clearable
         value={form.categoryId ?? undefined}
         options={(categoriesQ.data ?? []).map((c) => ({ label: c.name, value: c._id }))}
         onChange={(v) => set({ categoryId: (v as string) ?? null })}
+        highlight={assist.changed.has('categoryId')}
       />
 
       {cfg.fieldGroups.map((group) => (
@@ -245,6 +309,7 @@ export default function ItemFormScreen() {
               field={field}
               coreValue={field.model ? (form as any)[field.model] : undefined}
               customValue={field.customKey ? customMap[field.customKey] : undefined}
+              highlight={!!field.model && assist.changed.has(field.model)}
               onChangeCore={(v) => field.model && set({ [field.model]: v } as any)}
               onChangeCustom={(v) => field.customKey && setCustomMap((m) => ({ ...m, [field.customKey!]: v }))}
             />
@@ -253,7 +318,7 @@ export default function ItemFormScreen() {
       ))}
 
       <SectionTitle>Notes & Additional Fields</SectionTitle>
-      <Input label="Notes" value={form.notes} onChangeText={(v) => set({ notes: v })} multiline />
+      <Input label="Notes" value={form.notes} onChangeText={(v) => set({ notes: v })} multiline highlight={assist.changed.has('notes')} />
       {userFields.map((f, i) => (
         <View key={i} style={styles.customRow}>
           <View style={{ flex: 1 }}>
@@ -275,7 +340,6 @@ export default function ItemFormScreen() {
           </TouchableOpacity>
         </View>
       ))}
-      <Button title="+ Add Field" variant="ghost" onPress={() => setUserFields((arr) => [...arr, { key: '', value: '' }])} />
 
       {!isEdit ? (
         <View style={{ marginTop: spacing.md }}>
@@ -288,13 +352,6 @@ export default function ItemFormScreen() {
       ) : null}
 
       {error ? <Text style={styles.error}>{error}</Text> : null}
-
-      <View style={styles.footer}>
-        <Button title="Cancel" variant="ghost" onPress={() => navigation.goBack()} />
-        <View style={{ flex: 1 }}>
-          <Button title={isEdit ? 'Save Changes' : `Add ${cfg.label}`} loading={save.isPending} onPress={onSave} />
-        </View>
-      </View>
     </Screen>
   );
 }
@@ -303,12 +360,14 @@ function FieldRenderer({
   field,
   coreValue,
   customValue,
+  highlight,
   onChangeCore,
   onChangeCustom,
 }: {
   field: ItemField;
   coreValue?: string;
   customValue?: string;
+  highlight?: boolean;
   onChangeCore: (v: string) => void;
   onChangeCustom: (v: string) => void;
 }) {
@@ -317,7 +376,7 @@ function FieldRenderer({
 
   if (field.type === 'date') {
     return (
-      <DateField label={field.label} clearable value={value ?? ''} onChange={onChange} />
+      <DateField label={field.label} clearable value={value ?? ''} onChange={onChange} highlight={highlight} />
     );
   }
   if ((field.type === 'select' || field.type === 'autocomplete') && field.options) {
@@ -328,6 +387,7 @@ function FieldRenderer({
         value={value || undefined}
         options={field.options.map((o) => ({ label: o, value: o }))}
         onChange={(v) => onChange((v as string) ?? '')}
+        highlight={highlight}
       />
     );
   }
@@ -339,6 +399,7 @@ function FieldRenderer({
       placeholder={field.placeholder}
       keyboardType={field.type === 'number' ? 'numeric' : 'default'}
       multiline={field.type === 'textarea'}
+      highlight={highlight}
     />
   );
 }
@@ -357,5 +418,4 @@ const styles = StyleSheet.create({
   customRow: { flexDirection: 'row', alignItems: 'flex-start', gap: spacing.sm },
   removeBtn: { paddingTop: 12 },
   error: { color: colors.error, marginVertical: spacing.sm },
-  footer: { flexDirection: 'row', gap: spacing.sm, marginTop: spacing.md, marginBottom: spacing.xl, alignItems: 'center' },
 });

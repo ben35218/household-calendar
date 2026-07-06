@@ -5,12 +5,22 @@ import { Ionicons } from '@expo/vector-icons';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { recipesApi, Recipe, Ingredient } from '../../api';
-import { Button, Input, Screen, SectionTitle, Card } from '../../components/ui';
+import { sealNew, sealUpdate, openRecord } from '../../lib/e2ee';
+
+// Encrypted recipe content (imageUrl/sourceUrl/instructionIngredients stay plaintext).
+const RECIPE_ENC = (p: Record<string, unknown>) => ({
+  title: p.title, description: p.description, ingredients: p.ingredients,
+  instructions: p.instructions, tags: p.tags,
+  servings: p.servings, prepTimeMins: p.prepTimeMins, cookTimeMins: p.cookTimeMins,
+});
+import { Button, Input, Screen, SectionTitle, Card, useHeaderCheckButton } from '../../components/ui';
 import StepIngredientLinker from '../../components/StepIngredientLinker';
+import AssistantIcon from '../../components/AssistantIcon';
 import { takePhoto, pickImage } from '../../lib/media';
 import { uploadFile } from '../../lib/upload';
 import { KitchenStackParamList } from '../../navigation/KitchenNavigator';
-import { colors, spacing } from '../../theme';
+import { useCalendarColors } from '../../lib/calendarPrefs';
+import { colors, spacing, radius } from '../../theme';
 
 type Nav = NativeStackNavigationProp<KitchenStackParamList, 'RecipeForm'>;
 type Rt = RouteProp<KitchenStackParamList, 'RecipeForm'>;
@@ -23,9 +33,11 @@ interface FormState {
   servings: string;
   prepTimeMins: string;
   cookTimeMins: string;
-  tags: string;
+  tags: string[];
   ingredients: Ingredient[];
   instructions: string[];
+  // Per-step timer in minutes (parallel to instructions); '' = no timer.
+  timers: string[];
   // Per-ingredient stable client IDs (aligned to ingredients[]) + per-step links.
   lids: string[];
   linkedIds: string[][];
@@ -39,9 +51,10 @@ const EMPTY: FormState = {
   servings: '',
   prepTimeMins: '',
   cookTimeMins: '',
-  tags: '',
+  tags: [],
   ingredients: [],
   instructions: [],
+  timers: [],
   lids: [],
   linkedIds: [],
 };
@@ -51,17 +64,31 @@ export default function RecipeFormScreen() {
   const { id } = useRoute<Rt>().params || {};
   const isEdit = !!id;
   const qc = useQueryClient();
+  // Meals/recipes calendar colour (respects user overrides) — the section accent.
+  const accent = useCalendarColors().colors.recipes;
 
-  const [form, setForm] = useState<FormState>(EMPTY);
+  const lidCounter = useRef(0);
+  const makeLid = () => `_l${++lidCounter.current}`;
+
+  // New recipes start with a single blank ingredient row; edits populate from data.
+  const [form, setForm] = useState<FormState>(() =>
+    isEdit ? EMPTY : { ...EMPTY, ingredients: [{ amount: '', unit: '', name: '' }], lids: [makeLid()] }
+  );
   const [urlInput, setUrlInput] = useState('');
+  const [tagInput, setTagInput] = useState('');
   const [aiInput, setAiInput] = useState('');
-  const [importer, setImporter] = useState<'url' | 'ai' | null>(null);
+  const [importer, setImporter] = useState<'url' | null>(null);
   const [error, setError] = useState('');
 
   const set = (patch: Partial<FormState>) => setForm((f) => ({ ...f, ...patch }));
 
-  const lidCounter = useRef(0);
-  const makeLid = () => `_l${++lidCounter.current}`;
+  const addTag = () => {
+    const t = tagInput.trim();
+    if (!t) return;
+    if (!form.tags.includes(t)) set({ tags: [...form.tags, t] });
+    setTagInput('');
+  };
+  const removeTag = (i: number) => set({ tags: form.tags.filter((_, j) => j !== i) });
 
   // _lid -> [1-based step numbers it appears in] (recipe-wide).
   const assignmentsById = useMemo(() => {
@@ -93,11 +120,17 @@ export default function RecipeFormScreen() {
       const lids = data.ingredients ? data.ingredients.map(() => makeLid()) : f.lids;
       // Build per-step linkedIds from incoming instructionIngredients (indices).
       let linkedIds = f.linkedIds;
+      let timers = f.timers;
       if (data.instructions) {
         const incoming = data.instructionIngredients;
         linkedIds = incoming
           ? instructions.map((_, si) => (incoming[si] || []).map((idx) => lids[idx]).filter(Boolean))
           : instructions.map(() => []);
+        const incomingTimers = data.instructionTimers;
+        timers = instructions.map((_, si) => {
+          const t = incomingTimers?.[si];
+          return t != null && t > 0 ? String(t) : '';
+        });
       }
       return {
         ...f,
@@ -108,16 +141,20 @@ export default function RecipeFormScreen() {
         servings: data.servings != null ? String(data.servings) : f.servings,
         prepTimeMins: data.prepTimeMins != null ? String(data.prepTimeMins) : f.prepTimeMins,
         cookTimeMins: data.cookTimeMins != null ? String(data.cookTimeMins) : f.cookTimeMins,
-        tags: data.tags ? data.tags.join(', ') : f.tags,
+        tags: data.tags ? data.tags : f.tags,
         ingredients,
         instructions,
+        timers,
         lids,
         linkedIds,
       };
     });
 
   useEffect(() => {
-    if (recipeQ.data) populate(recipeQ.data);
+    if (!recipeQ.data) return;
+    let cancelled = false;
+    openRecord('Recipe', recipeQ.data).then((r) => { if (!cancelled) populate(r); }); // decrypt over plaintext
+    return () => { cancelled = true; };
   }, [recipeQ.data]);
 
   const fromUrl = useMutation({
@@ -128,16 +165,6 @@ export default function RecipeFormScreen() {
       setUrlInput('');
     },
     onError: (e: any) => setError(e.response?.data?.error || 'Could not import from that URL.'),
-  });
-
-  const fromAi = useMutation({
-    mutationFn: () => recipesApi.generateFromAi(aiInput.trim()),
-    onSuccess: (res) => {
-      populate(res.data);
-      setImporter(null);
-      setAiInput('');
-    },
-    onError: (e: any) => setError(e.response?.data?.error || 'AI generation failed.'),
   });
 
   const fromPhoto = useMutation({
@@ -151,16 +178,20 @@ export default function RecipeFormScreen() {
   });
 
   const save = useMutation({
-    mutationFn: () => {
+    mutationFn: async () => {
       // Keep only named ingredients / non-empty steps, then remap the _lid links
       // to indices in the pruned ingredient list.
       const keptIngIdx = form.ingredients.map((ing, i) => ({ ing, lid: form.lids[i] })).filter((x) => x.ing.name.trim());
       const lidToIdx: Record<string, number> = {};
       keptIngIdx.forEach((x, idx) => { lidToIdx[x.lid] = idx; });
-      const keptSteps = form.instructions.map((s, i) => ({ s, links: form.linkedIds[i] || [] })).filter((x) => x.s.trim());
+      const keptSteps = form.instructions
+        .map((s, i) => ({ s, links: form.linkedIds[i] || [], timer: form.timers[i] || '' }))
+        .filter((x) => x.s.trim());
       const instructionIngredients = keptSteps.map((x) =>
         x.links.map((lid) => lidToIdx[lid]).filter((n) => n != null)
       );
+      const instructionTimers = keptSteps.map((x) => (x.timer.trim() ? Number(x.timer) : null));
+      const hasTimers = instructionTimers.some((t) => t != null);
       const payload = {
         title: form.title,
         description: form.description,
@@ -169,12 +200,17 @@ export default function RecipeFormScreen() {
         servings: form.servings ? Number(form.servings) : null,
         prepTimeMins: form.prepTimeMins ? Number(form.prepTimeMins) : null,
         cookTimeMins: form.cookTimeMins ? Number(form.cookTimeMins) : null,
-        tags: form.tags.split(',').map((t) => t.trim()).filter(Boolean),
+        tags: form.tags.map((t) => t.trim()).filter(Boolean),
         ingredients: keptIngIdx.map((x) => x.ing),
         instructions: keptSteps.map((x) => x.s),
         instructionIngredients,
+        // Persist the timers array when any step has one; null clears a
+        // previously-saved set so removing every timer sticks on update.
+        instructionTimers: hasTimers ? instructionTimers : null,
       };
-      return isEdit ? recipesApi.update(id!, payload) : recipesApi.create(payload);
+      return isEdit
+        ? recipesApi.update(id!, await sealUpdate('Recipe', id!, payload, RECIPE_ENC(payload)))
+        : recipesApi.create(await sealNew('Recipe', payload, RECIPE_ENC(payload)));
     },
     onSuccess: (res) => {
       qc.invalidateQueries({ queryKey: ['recipes'] });
@@ -184,6 +220,19 @@ export default function RecipeFormScreen() {
     },
     onError: (e: any) => setError(e.response?.data?.error || 'Save failed'),
   });
+
+  const del = useMutation({
+    mutationFn: () => recipesApi.delete(id!),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['recipes'] });
+      navigation.goBack();
+    },
+  });
+  const confirmDelete = () =>
+    Alert.alert('Delete Recipe', `Delete "${form.title || 'this recipe'}"? This cannot be undone.`, [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Delete', style: 'destructive', onPress: () => del.mutate() },
+    ]);
 
   const addIngredient = () =>
     set({ ingredients: [...form.ingredients, { amount: '', unit: '', name: '' }], lids: [...form.lids, makeLid()] });
@@ -195,11 +244,42 @@ export default function RecipeFormScreen() {
       linkedIds: form.linkedIds.map((ls) => ls.filter((x) => x !== lid)),
     });
   };
-  const addStep = () => set({ instructions: [...form.instructions, ''], linkedIds: [...form.linkedIds, []] });
+  const addStep = () =>
+    set({ instructions: [...form.instructions, ''], linkedIds: [...form.linkedIds, []], timers: [...form.timers, ''] });
   const removeStep = (i: number) =>
-    set({ instructions: form.instructions.filter((_, j) => j !== i), linkedIds: form.linkedIds.filter((_, j) => j !== i) });
+    set({
+      instructions: form.instructions.filter((_, j) => j !== i),
+      linkedIds: form.linkedIds.filter((_, j) => j !== i),
+      timers: form.timers.filter((_, j) => j !== i),
+    });
   const setStepLinks = (i: number, lids: string[]) =>
     set({ linkedIds: form.linkedIds.map((ls, j) => (j === i ? lids : ls)) });
+  const setStepTimer = (i: number, v: string) =>
+    set({ timers: form.timers.map((t, j) => (j === i ? v.replace(/[^0-9]/g, '') : t)) });
+
+  // AI edit: describe a change ("make it vegan", "double the servings") and let
+  // the server rewrite the recipe, then repopulate the form from the result.
+  const editWithAi = useMutation({
+    mutationFn: () =>
+      recipesApi.editWithAi(
+        {
+          title: form.title,
+          description: form.description,
+          servings: form.servings ? Number(form.servings) : null,
+          prepTimeMins: form.prepTimeMins ? Number(form.prepTimeMins) : null,
+          cookTimeMins: form.cookTimeMins ? Number(form.cookTimeMins) : null,
+          tags: form.tags,
+          ingredients: form.ingredients,
+          instructions: form.instructions,
+        },
+        aiInput.trim()
+      ),
+    onSuccess: (res) => {
+      populate(res.data);
+      setAiInput('');
+    },
+    onError: (e: any) => setError(e.response?.data?.error || 'Failed to apply changes.'),
+  });
 
   // AI auto-link: ask the server which ingredients each step uses.
   const autoLink = useMutation({
@@ -226,6 +306,8 @@ export default function RecipeFormScreen() {
     save.mutate();
   };
 
+  useHeaderCheckButton(navigation, { onPress: onSave, loading: save.isPending, color: accent });
+
   const onPhoto = () =>
     Alert.alert('Import from Photo', 'Scan a recipe card or cookbook page.', [
       { text: 'Take Photo', onPress: () => fromPhoto.mutate('camera') },
@@ -241,29 +323,80 @@ export default function RecipeFormScreen() {
     );
   }
 
-  const importing = fromUrl.isPending || fromAi.isPending || fromPhoto.isPending;
+  const importing = fromUrl.isPending || fromPhoto.isPending;
 
   return (
     <Screen>
+      {/* AI Assistant — describe changes to apply, or tag ingredients to steps */}
+      {isEdit ? (
+        <View style={styles.aiCard}>
+          <View style={styles.aiHeader}>
+            <Ionicons name="sparkles" size={16} color={accent} />
+            <Text style={styles.aiTitle}>AI Assistant</Text>
+          </View>
+          <Input
+            value={aiInput}
+            onChangeText={setAiInput}
+            placeholder="Describe the changes you want, e.g. make it vegan, double the servings, add more spice"
+            multiline
+            editable={!editWithAi.isPending}
+            style={styles.aiInput}
+          />
+          <View style={styles.aiActions}>
+            <Button
+              title="Apply changes"
+              color={accent}
+              loading={editWithAi.isPending}
+              disabled={!aiInput.trim()}
+              onPress={() => editWithAi.mutate()}
+            />
+            <TouchableOpacity
+              style={[
+                styles.tagBtn,
+                { borderColor: accent },
+                (autoLink.isPending || !form.ingredients.length || !form.instructions.length) && styles.tagBtnDisabled,
+              ]}
+              activeOpacity={0.8}
+              disabled={autoLink.isPending || !form.ingredients.length || !form.instructions.length}
+              onPress={() => autoLink.mutate()}
+            >
+              {autoLink.isPending ? (
+                <ActivityIndicator size="small" color={accent} />
+              ) : (
+                <Text style={[styles.tagBtnText, { color: accent }]}>Tag ingredients to instructions</Text>
+              )}
+            </TouchableOpacity>
+          </View>
+        </View>
+      ) : null}
+
       {/* Import bar */}
       {!isEdit ? (
         <Card style={styles.importCard}>
           <Text style={styles.importTitle}>Quick import</Text>
           <View style={styles.importBtns}>
-            <Button title="From URL" variant="ghost" onPress={() => setImporter((x) => (x === 'url' ? null : 'url'))} />
-            <Button title="From AI" variant="ghost" onPress={() => setImporter((x) => (x === 'ai' ? null : 'ai'))} />
-            <Button title="Photo" variant="ghost" onPress={onPhoto} />
+            <TouchableOpacity
+              style={[styles.iconBtn, { backgroundColor: accent }, importer === 'url' && styles.iconBtnActive]}
+              onPress={() => setImporter((x) => (x === 'url' ? null : 'url'))}
+              accessibilityLabel="Import from URL"
+            >
+              <Ionicons name="link-outline" size={20} color="#fff" />
+            </TouchableOpacity>
+            <TouchableOpacity style={[styles.iconBtn, { backgroundColor: accent }]} onPress={onPhoto} accessibilityLabel="Import from photo">
+              <Ionicons name="camera-outline" size={20} color="#fff" />
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.iconBtn, { backgroundColor: accent }]}
+              onPress={() => navigation.navigate('RecipeAssistant')}
+              accessibilityLabel="AI Assistant"
+            >
+              <AssistantIcon size={20} color="#fff" />
+            </TouchableOpacity>
           </View>
           {importer === 'url' ? (
             <View style={styles.importPad}>
               <Input placeholder="https://…" value={urlInput} onChangeText={setUrlInput} autoCapitalize="none" />
-              <Button title="Import" loading={fromUrl.isPending} disabled={!urlInput.trim()} onPress={() => fromUrl.mutate()} />
-            </View>
-          ) : null}
-          {importer === 'ai' ? (
-            <View style={styles.importPad}>
-              <Input placeholder="Describe a dish, e.g. 'quick weeknight chicken curry'" value={aiInput} onChangeText={setAiInput} multiline />
-              <Button title="Generate" loading={fromAi.isPending} disabled={!aiInput.trim()} onPress={() => fromAi.mutate()} />
+              <Button title="Import" color={accent} loading={fromUrl.isPending} disabled={!urlInput.trim()} onPress={() => fromUrl.mutate()} />
             </View>
           ) : null}
           {importing && importer === null ? <ActivityIndicator color={colors.primary} style={{ marginTop: spacing.sm }} /> : null}
@@ -278,13 +411,39 @@ export default function RecipeFormScreen() {
           <Input label="Servings" keyboardType="numeric" value={form.servings} onChangeText={(v) => set({ servings: v })} />
         </View>
         <View style={styles.col}>
-          <Input label="Prep (min)" keyboardType="numeric" value={form.prepTimeMins} onChangeText={(v) => set({ prepTimeMins: v })} />
+          <Input label="Prep (minutes)" keyboardType="numeric" value={form.prepTimeMins} onChangeText={(v) => set({ prepTimeMins: v })} />
         </View>
         <View style={styles.col}>
-          <Input label="Cook (min)" keyboardType="numeric" value={form.cookTimeMins} onChangeText={(v) => set({ cookTimeMins: v })} />
+          <Input label="Cook (minutes)" keyboardType="numeric" value={form.cookTimeMins} onChangeText={(v) => set({ cookTimeMins: v })} />
         </View>
       </View>
-      <Input label="Tags (comma-separated)" value={form.tags} onChangeText={(v) => set({ tags: v })} />
+      <Text style={styles.tagLabel}>Tags</Text>
+      {form.tags.length ? (
+        <View style={styles.chipsWrap}>
+          {form.tags.map((t, i) => (
+            <View key={i} style={styles.chip}>
+              <Text style={styles.chipText}>{t}</Text>
+              <TouchableOpacity onPress={() => removeTag(i)} accessibilityLabel={`Remove tag ${t}`}>
+                <Ionicons name="close" size={16} color={colors.textMuted} />
+              </TouchableOpacity>
+            </View>
+          ))}
+        </View>
+      ) : null}
+      <View style={styles.tagInputRow}>
+        <View style={{ flex: 1 }}>
+          <Input
+            placeholder="Add a tag"
+            value={tagInput}
+            onChangeText={setTagInput}
+            onSubmitEditing={addTag}
+            returnKeyType="done"
+            blurOnSubmit={false}
+            autoCapitalize="none"
+          />
+        </View>
+        <Button title="Add" color={accent} disabled={!tagInput.trim()} onPress={addTag} />
+      </View>
 
       <SectionTitle>Ingredients</SectionTitle>
       {form.ingredients.map((ing, i) => (
@@ -303,16 +462,16 @@ export default function RecipeFormScreen() {
           </TouchableOpacity>
         </View>
       ))}
-      <Button title="+ Add Ingredient" variant="ghost" onPress={addIngredient} />
+      <Button title="+ Add Ingredient" color={accent} onPress={addIngredient} />
 
       <View style={styles.instrHead}>
         <SectionTitle>Instructions</SectionTitle>
-        {form.ingredients.length && form.instructions.length ? (
-          <Button title="Auto-link" variant="ghost" loading={autoLink.isPending} onPress={() => autoLink.mutate()} />
+        {!isEdit && form.ingredients.length && form.instructions.length ? (
+          <Button title="Auto-link" color={accent} loading={autoLink.isPending} onPress={() => autoLink.mutate()} />
         ) : null}
       </View>
       {form.instructions.map((step, i) => (
-        <View key={i}>
+        <View key={i} style={styles.stepBlock}>
           <View style={styles.stepRow}>
             <Text style={styles.stepNum}>{i + 1}.</Text>
             <View style={{ flex: 1 }}>
@@ -322,6 +481,17 @@ export default function RecipeFormScreen() {
               <Ionicons name="close" size={20} color={colors.textMuted} />
             </TouchableOpacity>
           </View>
+          <View style={styles.timerRow}>
+            <Ionicons name="timer-outline" size={16} color={accent} />
+            <View style={styles.timerField}>
+              <Input
+                placeholder="Timer (minutes)"
+                keyboardType="numeric"
+                value={form.timers[i] || ''}
+                onChangeText={(v) => setStepTimer(i, v)}
+              />
+            </View>
+          </View>
           {form.ingredients.length ? (
             <StepIngredientLinker
               value={form.linkedIds[i] || []}
@@ -330,40 +500,75 @@ export default function RecipeFormScreen() {
               stepNumber={i + 1}
               stepText={step}
               onChange={(lids) => setStepLinks(i, lids)}
+              accent={accent}
             />
           ) : null}
         </View>
       ))}
-      <Button title="+ Add Step" variant="ghost" onPress={addStep} />
+      <View style={{ marginTop: spacing.md }}>
+        <Button title="+ Add Step" color={accent} onPress={addStep} />
+      </View>
 
       {error ? <Text style={styles.error}>{error}</Text> : null}
 
-      <View style={styles.footer}>
-        <Button title="Cancel" variant="ghost" onPress={() => navigation.goBack()} />
-        <View style={{ flex: 1 }}>
-          <Button title={isEdit ? 'Save Changes' : 'Create Recipe'} loading={save.isPending} onPress={onSave} />
+      {isEdit ? (
+        <View style={styles.deleteWrap}>
+          <Button title="Delete recipe" variant="danger" loading={del.isPending} onPress={confirmDelete} />
         </View>
-      </View>
+      ) : null}
     </Screen>
   );
 }
 
 const styles = StyleSheet.create({
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.background },
+  aiCard: {
+    backgroundColor: colors.primary + '14',
+    borderRadius: radius.lg,
+    borderWidth: 1,
+    borderColor: colors.primary + '55',
+    padding: spacing.md,
+    marginBottom: spacing.md,
+  },
+  aiHeader: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: spacing.sm },
+  aiTitle: { fontSize: 15, fontWeight: '700', color: colors.text },
+  aiInput: { minHeight: 68, textAlignVertical: 'top' },
+  aiActions: { gap: spacing.sm, marginTop: spacing.sm },
+  tagBtn: {
+    backgroundColor: '#fff',
+    borderWidth: 1,
+    borderRadius: radius.md,
+    paddingVertical: 14,
+    paddingHorizontal: spacing.md,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  tagBtnDisabled: { opacity: 0.6 },
+  tagBtnText: { fontSize: 16, fontWeight: '600' },
   importCard: { marginBottom: spacing.md },
   importTitle: { fontSize: 14, fontWeight: '700', color: colors.text, marginBottom: spacing.sm },
-  importBtns: { flexDirection: 'row', gap: spacing.sm },
+  importBtns: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: spacing.sm },
+  iconBtn: { backgroundColor: colors.primary, borderRadius: radius.md, paddingVertical: 14, paddingHorizontal: 16, alignItems: 'center', justifyContent: 'center' },
+  iconBtnActive: { opacity: 0.75 },
   importPad: { marginTop: spacing.sm, gap: spacing.sm },
   cols: { flexDirection: 'row', gap: spacing.sm },
   col: { flex: 1 },
+  tagLabel: { fontSize: 13, color: colors.textMuted, marginBottom: 6, fontWeight: '500' },
+  chipsWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm, marginBottom: spacing.sm },
+  chip: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: colors.surface, borderRadius: radius.md, paddingVertical: 6, paddingHorizontal: 10 },
+  chipText: { color: colors.text, fontSize: 14 },
+  tagInputRow: { flexDirection: 'row', alignItems: 'flex-start', gap: spacing.sm, marginBottom: spacing.md },
   ingRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 4 },
   ingAmount: { width: 56 },
   ingUnit: { width: 64 },
   ingName: { flex: 1 },
   instrHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  stepBlock: { marginBottom: spacing.lg },
   stepRow: { flexDirection: 'row', alignItems: 'flex-start', gap: spacing.sm },
+  timerRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, paddingLeft: 20, marginTop: spacing.xs },
+  timerField: { width: 150 },
   stepNum: { fontSize: 15, fontWeight: '700', color: colors.primary, paddingTop: 12 },
   removeBtn: { paddingTop: 12 },
   error: { color: colors.error, marginVertical: spacing.sm },
-  footer: { flexDirection: 'row', gap: spacing.sm, marginTop: spacing.md, marginBottom: spacing.xl, alignItems: 'center' },
+  deleteWrap: { marginTop: spacing.md, marginBottom: spacing.xl },
 });

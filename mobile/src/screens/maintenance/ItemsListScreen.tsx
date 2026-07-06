@@ -14,6 +14,8 @@ import { MaterialCommunityIcons, Ionicons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { itemsApi, Item } from '../../api';
+import { openRecord } from '../../lib/e2ee';
+import * as replica from '../../lib/replica';
 import { Card } from '../../components/ui';
 import { mdiName } from '../../lib/recurrence';
 import { itemTypeConfig } from '../../lib/itemTypes';
@@ -29,7 +31,15 @@ export default function ItemsListScreen() {
   const qc = useQueryClient();
   const [scanning, setScanning] = useState(false);
 
-  const itemsQ = useQuery({ queryKey: ['items', 'list'], queryFn: async () => (await itemsApi.list()).data });
+  const itemsQ = useQuery({
+    queryKey: ['items', 'list'],
+    // Offline-first (Phase 4b): sync the replica, fall back to cache offline,
+    // then decrypt content over the plaintext rows.
+    queryFn: async () => {
+      const rows = await replica.syncedList<Item>('Item', async () => (await itemsApi.list()).data);
+      return Promise.all(rows.map((r) => openRecord('Item', r)));
+    },
+  });
 
   const groups = useMemo(() => {
     const g: Record<string, Item[]> = {};

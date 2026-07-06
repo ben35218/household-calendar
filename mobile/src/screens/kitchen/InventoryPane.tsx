@@ -7,17 +7,21 @@ import {
   ScrollView,
   TouchableOpacity,
   RefreshControl,
-  Alert,
+  Modal,
+  Pressable,
 } from 'react-native';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Ionicons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { inventoryApi, InventoryItem } from '../../api';
+import { openRecord } from '../../lib/e2ee';
+import * as replica from '../../lib/replica';
 import { Card, SegmentedControl, Input, Badge } from '../../components/ui';
 import { daysUntilExpiry, expiryColor, expiryLabel } from './constants';
+import { useCalendarColors } from '../../lib/calendarPrefs';
 import { KitchenStackParamList } from '../../navigation/KitchenNavigator';
-import { colors, spacing } from '../../theme';
+import { colors, radius, spacing } from '../../theme';
 
 type Nav = NativeStackNavigationProp<KitchenStackParamList, 'KitchenHome'>;
 type Tab = 'active' | 'history';
@@ -34,10 +38,19 @@ export default function InventoryPane() {
   const qc = useQueryClient();
   const [tab, setTab] = useState<Tab>('active');
   const [search, setSearch] = useState('');
+  // The item whose action sheet is open (three-dot / long-press menu).
+  const [menuItem, setMenuItem] = useState<InventoryItem | null>(null);
+  // "Mark Used" is tinted with the Meals calendar colour (user-overridable).
+  const mealsColor = useCalendarColors().colors.recipes;
 
   const activeQ = useQuery({
     queryKey: ['inventory', 'active'],
-    queryFn: async () => (await inventoryApi.list({ status: 'active' })).data,
+    // Offline-first (Phase 4b): sync the replica, fall back to cache offline,
+    // then decrypt content over the plaintext rows.
+    queryFn: async () => {
+      const rows = await replica.syncedList<InventoryItem>('FoodInventory', async () => (await inventoryApi.list({ status: 'active' })).data);
+      return Promise.all(rows.map((r) => openRecord('FoodInventory', r)));
+    },
   });
   const historyQ = useQuery({
     queryKey: ['inventory', 'history'],
@@ -80,14 +93,7 @@ export default function InventoryPane() {
     })).filter((g) => g.items.length > 0);
   }, [activeQ.data, search]);
 
-  const rowActions = (item: InventoryItem) =>
-    Alert.alert(item.name, undefined, [
-      { text: 'Mark Used', onPress: () => consume.mutate({ id: item._id, action: 'used' }) },
-      { text: 'Throw Out', onPress: () => consume.mutate({ id: item._id, action: 'thrown_out' }) },
-      { text: 'Edit', onPress: () => navigation.navigate('InventoryItemForm', { id: item._id }) },
-      { text: 'Delete', style: 'destructive', onPress: () => del.mutate(item._id) },
-      { text: 'Cancel', style: 'cancel' },
-    ]);
+  const rowActions = (item: InventoryItem) => setMenuItem(item);
 
   const loading = tab === 'active' ? activeQ.isLoading : historyQ.isLoading;
 
@@ -168,9 +174,62 @@ export default function InventoryPane() {
         </ScrollView>
       )}
 
-      <TouchableOpacity style={styles.fab} activeOpacity={0.85} onPress={() => navigation.navigate('InventoryItemForm', {})}>
-        <Ionicons name="add" size={28} color="#fff" />
-      </TouchableOpacity>
+      <Modal
+        visible={!!menuItem}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setMenuItem(null)}
+      >
+        <Pressable style={styles.sheetBackdrop} onPress={() => setMenuItem(null)}>
+          <Pressable style={styles.sheet} onPress={(e) => e.stopPropagation()}>
+            <Text style={styles.sheetTitle} numberOfLines={2}>{menuItem?.name}</Text>
+            <TouchableOpacity
+              style={[styles.sheetPrimary, { backgroundColor: mealsColor }]}
+              activeOpacity={0.8}
+              onPress={() => {
+                if (menuItem) consume.mutate({ id: menuItem._id, action: 'used' });
+                setMenuItem(null);
+              }}
+            >
+              <Text style={styles.sheetPrimaryText}>Mark Used</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.sheetRow}
+              activeOpacity={0.7}
+              onPress={() => {
+                if (menuItem) consume.mutate({ id: menuItem._id, action: 'thrown_out' });
+                setMenuItem(null);
+              }}
+            >
+              <Text style={styles.sheetRowText}>Throw Out</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.sheetRow}
+              activeOpacity={0.7}
+              onPress={() => {
+                const id = menuItem?._id;
+                setMenuItem(null);
+                if (id) navigation.navigate('InventoryItemForm', { id });
+              }}
+            >
+              <Text style={styles.sheetRowText}>Edit</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.sheetRow}
+              activeOpacity={0.7}
+              onPress={() => {
+                if (menuItem) del.mutate(menuItem._id);
+                setMenuItem(null);
+              }}
+            >
+              <Text style={styles.sheetRowText}>Delete</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.sheetCancel} activeOpacity={0.7} onPress={() => setMenuItem(null)}>
+              <Text style={styles.sheetCancelText}>Cancel</Text>
+            </TouchableOpacity>
+          </Pressable>
+        </Pressable>
+      </Modal>
     </View>
   );
 }
@@ -188,20 +247,40 @@ const styles = StyleSheet.create({
   sub: { fontSize: 13, color: colors.textMuted, marginTop: 2 },
   menuBtn: { padding: 4 },
   empty: { textAlign: 'center', color: colors.textMuted, marginTop: spacing.xl },
-  fab: {
-    position: 'absolute',
-    right: spacing.lg,
-    bottom: spacing.lg,
-    width: 56,
-    height: 56,
-    borderRadius: 28,
-    backgroundColor: colors.primary,
-    alignItems: 'center',
-    justifyContent: 'center',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.25,
-    shadowRadius: 4,
-    elevation: 5,
+
+  // Bottom action sheet opened from the three-dot / long-press menu.
+  sheetBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
+  sheet: {
+    backgroundColor: colors.surface,
+    borderTopLeftRadius: radius.lg,
+    borderTopRightRadius: radius.lg,
+    padding: spacing.md,
+    paddingBottom: spacing.xl,
   },
+  sheetTitle: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: colors.text,
+    textAlign: 'center',
+    paddingVertical: spacing.sm,
+    marginBottom: spacing.sm,
+  },
+  // The primary, most-frequent action — solid fill (tinted with the Meals
+  // calendar colour, set inline) to draw attention.
+  sheetPrimary: {
+    paddingVertical: 14,
+    borderRadius: radius.md,
+    alignItems: 'center',
+    marginBottom: spacing.sm,
+  },
+  sheetPrimaryText: { fontSize: 16, fontWeight: '700', color: '#fff' },
+  sheetRow: {
+    paddingVertical: 14,
+    alignItems: 'center',
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
+  },
+  sheetRowText: { fontSize: 16, color: colors.text, fontWeight: '500' },
+  sheetCancel: { marginTop: spacing.sm, paddingVertical: 14, alignItems: 'center' },
+  sheetCancelText: { fontSize: 16, fontWeight: '600', color: colors.textMuted },
 });

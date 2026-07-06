@@ -31,6 +31,26 @@ export const authApi = {
     api.put('/auth/password', data),
 };
 
+// E2EE key material (Phase 1). The server is a blind store: it only sees the
+// identity PUBLIC key and the private key wrapped as opaque factor envelopes.
+// All crypto happens on-device in lib/e2ee.ts.
+export interface StoredKeyMaterial {
+  enrolled: boolean;
+  identityPublicKey: string | null;
+  wrappedPrivateKey: unknown[];
+  keyEnrolledAt: string | null;
+  keySchemaVersion: number;
+}
+
+export const keysApi = {
+  me: () => api.get<StoredKeyMaterial>('/keys/me'),
+  enroll: (data: { identityPublicKey: string; factors: unknown[] }) => api.post('/keys/enroll', data),
+  putFactor: (envelope: unknown) => api.put('/keys/factors', envelope),
+  removeFactor: (factor: string, credentialId?: string) =>
+    api.delete(`/keys/factors/${factor}`, { params: credentialId ? { credentialId } : {} }),
+  publicKey: (userId: string) => api.get<{ userId: string; identityPublicKey: string }>(`/keys/public/${userId}`),
+};
+
 // ----- Recurrence (shared by tasks, chores, and their templates) -------------
 
 export type RecurrenceType = 'interval' | 'calendar' | 'one-time';
@@ -187,6 +207,7 @@ export interface Manual {
   title: string;
   source: string;
   fileSizeBytes: number;
+  encrypted?: boolean; // E2EE (Phase 4c): opaque ciphertext; view on web for now
 }
 
 export interface Item {
@@ -291,6 +312,8 @@ export interface Recipe {
   instructions?: string[];
   // Per-step ingredient links: instructionIngredients[stepIdx] = ingredient indices.
   instructionIngredients?: number[][];
+  // Per-step timer in minutes (parallel to instructions); null = no timer.
+  instructionTimers?: (number | null)[];
 }
 
 export const recipesApi = {
@@ -329,14 +352,13 @@ export const recipeScheduleApi = {
   forRecipe: (recipeId: string) => api.get<RecipeSchedule[]>(`/recipe-schedule/for-recipe/${recipeId}`),
   groceryList: (weekStart: string) =>
     api.get<{ groceryList: GroceryItem[] }>('/recipe-schedule/grocery-list', { params: { weekStart } }),
-  organizeGroceryList: (items: GroceryItem[], store?: string, sectionOrder?: string[]) =>
+  organizeGroceryList: (items: GroceryItem[], sectionOrder?: string[]) =>
     api.post<OrganizedGroceryList>('/recipe-schedule/organize-grocery-list', {
       items,
-      store: store || undefined,
       sectionOrder: sectionOrder?.length ? sectionOrder : undefined,
     }),
   sessionGet: (weekStart: string) =>
-    api.get<{ state?: GrocerySessionState }>('/recipe-schedule/session', { params: { weekStart } }),
+    api.get<GrocerySessionState>('/recipe-schedule/session', { params: { weekStart } }),
   sessionPut: (weekStart: string, state: GrocerySessionState) =>
     api.put('/recipe-schedule/session', { weekStart, state }),
 };
@@ -350,7 +372,8 @@ export interface GrocerySessionState {
   checked?: Record<string, boolean>;
   substitutions?: Record<string, string>;
   notFound?: Record<string, boolean>;
-  store?: string;
+  haveHome?: Record<string, boolean>;
+  organizedList?: OrganizedGroceryList | null;
 }
 
 export const inventoryApi = {
@@ -362,8 +385,8 @@ export const inventoryApi = {
   delete: (id: string) => api.delete(`/inventory/${id}`),
   fromText: (text: string) => api.post<ReceiptExtraction>('/inventory/from-receipt-text', { text }),
   batch: (items: Record<string, unknown>[]) => api.post('/inventory/batch', { items }),
-  suggestRecipes: (itemNames: string[], ingredientMode?: boolean) =>
-    api.post('/inventory/suggest-recipes', { itemNames, ingredientMode }),
+  suggestRecipes: (params: { itemNames?: string[]; ingredientMode?: string; query?: string }) =>
+    api.post('/inventory/suggest-recipes', params),
   // fromPhoto (receipt) handled via lib/upload (field 'photo'):
   //   POST /inventory/from-receipt-photo
 };
@@ -413,7 +436,7 @@ export const odometerApi = {
 export interface Person {
   _id: string;
   name: string;
-  type: 'family' | 'friend' | string;
+  type: 'family' | 'friend' | 'service' | string;
   accountId?: string;
   relationship?: string;
   birthday?: string;
@@ -449,10 +472,43 @@ export interface Household {
   members: HouseholdMember[];
 }
 
+// Approve-on-device join (Phase 2).
+export interface JoinRequestMine {
+  status: 'none' | 'pending' | 'approved' | 'rejected';
+  requestId?: string;
+  name?: string | null;
+}
+export interface JoinRequestForApprover {
+  _id: string;
+  requesterUserId: string;
+  requesterPublicKey: string;
+  firstName?: string | null;
+  lastName?: string | null;
+  email?: string | null;
+  createdAt: string;
+}
+export interface HDKEnvelopePayload {
+  wrappedHDK: string;
+  keyVersion: number;
+}
+export interface HouseholdKeyState {
+  householdId: string;
+  currentKeyVersion: number;
+  isOwner: boolean;
+  envelopes: { keyVersion: number; wrappedHDK: string }[];
+}
+
 export const householdApi = {
   get: () => api.get<Household>('/household'),
   rename: (name: string) => api.put<Household>('/household', { name }),
-  join: (joinCode: string) => api.post('/household/join', { joinCode }),
+  join: (joinCode: string) => api.post<{ status: string; requestId?: string; name?: string; householdId?: string }>('/household/join', { joinCode }),
+  myJoinRequest: () => api.get<JoinRequestMine>('/household/join-requests/mine'),
+  cancelJoinRequest: () => api.delete('/household/join-requests/mine'),
+  joinRequests: () => api.get<JoinRequestForApprover[]>('/household/join-requests'),
+  approveJoin: (id: string, envelope: HDKEnvelopePayload) => api.post(`/household/join-requests/${id}/approve`, envelope),
+  rejectJoin: (id: string) => api.post(`/household/join-requests/${id}/reject`),
+  getKey: () => api.get<HouseholdKeyState>('/household/key'),
+  mintKey: (envelope: HDKEnvelopePayload) => api.post('/household/key', envelope),
   leave: () => api.post('/household/leave'),
 };
 
@@ -473,7 +529,9 @@ export const placesApi = {
   getDetails: (placeId: string) => api.get(`/places/details/${placeId}`),
   getTimezone: (placeId: string) => api.get<{ timeZoneId?: string }>(`/places/timezone/${placeId}`),
   getTravelTime: (destination: string, origin?: string) =>
-    api.get('/places/travel-time', { params: { destination, origin: origin || undefined } }),
+    api.get<{ minutes: number; distanceKm: string }>('/places/travel-time', {
+      params: { destination, origin: origin || undefined },
+    }),
   routeLeg: (payload: Record<string, unknown>) => api.post('/places/route-leg', payload),
 };
 
@@ -615,8 +673,15 @@ export interface CalendarEvent {
   endDate?: string;
   description?: string;
   location?: string;
+  phone?: string;
+  travelMinutes?: number | null;
+  travelDistanceKm?: string | null;
   reminderMinutes?: number | null;
+  alert2Minutes?: number | null;
   recurrence?: { freq: string; interval?: number; until?: string };
+  // E2EE dual-write (Phase 3a): opaque ciphertext of the content + its key version.
+  keyVersion?: number;
+  enc?: { alg: string; nonce: string; ct: string };
 }
 
 export interface CalendarBirthday {
@@ -663,6 +728,7 @@ export interface BillingStatus {
   planLabel: string;
   usage: Record<string, number>;
   quotas: Record<string, number | null>;
+  resetsAt?: string; // ISO instant of the next weekly usage reset (Wed 5PM ET)
   hasHousehold: boolean;
   catalog: { key: string; label: string; price: number }[];
 }
@@ -673,10 +739,20 @@ export const billingApi = {
 
 // ----- Weather ---------------------------------------------------------------
 
+export interface WeatherHour {
+  time: string;
+  hour: number;
+  temperature: number;
+  precipProbability: number;
+  precipitation: number;
+  weatherCode: number;
+  description?: string;
+}
+
 export interface WeatherData {
   current: { temperature: number; weatherCode: number; description: string; humidity: number; windSpeed: number; precipitation: number };
   units: { temperature: string; wind: string; precipitation: string };
-  forecast: { date: string; weatherCode: number; tempMax: number; tempMin: number; precipProbability: number; precipSum: number; goodWeather?: boolean }[];
+  forecast: { date: string; weatherCode: number; tempMax: number; tempMin: number; precipProbability: number; precipSum: number; goodWeather?: boolean; hours?: WeatherHour[] }[];
 }
 
 export interface OutlookWeek {
@@ -701,4 +777,47 @@ export const notificationsApi = {
     api.post('/notifications/push/register-native', { expoToken, platform, label }),
   unregisterNative: (expoToken: string) =>
     api.post('/notifications/push/unregister-native', { expoToken }),
+  // Tell the server this device schedules reminders on-device, so its push cron
+  // skips this user (Phase 5).
+  setLocalReminders: (enabled: boolean) =>
+    api.post('/notifications/local-reminders', { enabled }),
+};
+
+// ----- AI form-fill assistant (server: routes/formAssist.js) -----------------
+// A form describes its fields; the server asks Claude to map a plain-language
+// request onto them and returns a patch keyed by field name.
+
+export type FormAssistFieldType =
+  | 'text'
+  | 'number'
+  | 'date'
+  | 'time'
+  | 'boolean'
+  | 'select'
+  | 'multiselect';
+
+export interface FormAssistField {
+  name: string;
+  type: FormAssistFieldType;
+  label: string;
+  description?: string;
+  options?: { label: string; value: string | number }[];
+}
+
+export interface FormAssistResponse {
+  patch: Record<string, unknown>;
+  note?: string;
+}
+
+export const formAssistApi = {
+  fill: (data: {
+    formType: string;
+    fields: FormAssistField[];
+    current: Record<string, unknown>;
+    prompt: string;
+    // When true, the server injects the household's saved contacts (name +
+    // address for friends/family; name/service/address/phone for services) so
+    // the assistant can resolve people/businesses the user names.
+    includeContacts?: boolean;
+  }) => api.post<FormAssistResponse>('/form-assist', data),
 };

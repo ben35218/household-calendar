@@ -1,6 +1,11 @@
 {
   "extends": "expo/tsconfig.base",
   "compilerOptions": {
-    "strict": true
+    "strict": true,
+    // The shared @household/crypto package is consumed as TypeScript source; its
+    // internal imports use explicit .ts extensions (required by Node's test
+    // runner). Metro transpiles them fine; this lets tsc typecheck them too.
+    "allowImportingTsExtensions": true,
+    "noEmit": true
   }
 }
