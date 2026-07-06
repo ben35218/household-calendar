@@ -4,6 +4,8 @@ import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import { useQueryClient } from '@tanstack/react-query';
 import { useChat } from '../../hooks/useChat';
 import ChatScreen from '../chat/ChatScreen';
+import { itemsApi, householdApi } from '../../api';
+import { getHDK, openRecord } from '../../lib/e2ee';
 import { MaintenanceStackParamList } from '../../navigation/MaintenanceNavigator';
 import { colors, radius, spacing } from '../../theme';
 
@@ -18,10 +20,14 @@ export default function MaintenanceChatScreen() {
   const qc = useQueryClient();
   const [createdTasks, setCreatedTasks] = useState<{ id: string; title: string }[]>([]);
 
+  // Ephemeral-consent (§9.1 P4a): post-drop send the decrypted item so the server
+  // needn't read stored plaintext for the system prompt. Dormant pre-drop.
+  const ephemeralRef = React.useRef<Record<string, unknown> | null>(null);
+
   const chat = useChat({
     endpoint: '/maintenance/chat',
     contextEndpoint: `/maintenance/chat/context?itemId=${itemId}`,
-    buildBody: (messages) => ({ itemId, messages }),
+    buildBody: (messages) => ({ itemId, messages, ...(ephemeralRef.current || {}) }),
     onResult: (data) => {
       if (data.tasksCreated?.length) {
         setCreatedTasks((prev) => prev.concat(data.tasksCreated!));
@@ -37,6 +43,15 @@ export default function MaintenanceChatScreen() {
 
   useEffect(() => {
     chat.loadContext();
+    (async () => {
+      try {
+        let e2eeActive = false;
+        try { e2eeActive = !!(await householdApi.get()).data.e2eeActive; } catch { /* solo/offline */ }
+        if (!e2eeActive || !getHDK()) return;
+        const item = await openRecord('Item', (await itemsApi.get(itemId)).data as any);
+        ephemeralRef.current = { item };
+      } catch { /* non-fatal */ }
+    })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 

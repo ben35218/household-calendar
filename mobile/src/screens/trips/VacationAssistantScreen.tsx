@@ -4,6 +4,8 @@ import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import { useQueryClient } from '@tanstack/react-query';
 import { useChat } from '../../hooks/useChat';
 import ChatScreen from '../chat/ChatScreen';
+import { tripsApi, householdApi } from '../../api';
+import { getHDK, openRecord } from '../../lib/e2ee';
 import { TripsStackParamList } from '../../navigation/TripsNavigator';
 
 type Rt = RouteProp<TripsStackParamList, 'VacationAssistant'>;
@@ -17,10 +19,14 @@ export default function VacationAssistantScreen() {
   const { tripId, tripName } = useRoute<Rt>().params;
   const qc = useQueryClient();
 
+  // Ephemeral-consent (§9.1 P4a): post-drop the server can't read trip content,
+  // so send the decrypted trip + itinerary per request. Dormant pre-drop.
+  const ephemeralRef = React.useRef<Record<string, unknown> | null>(null);
+
   const chat = useChat({
     endpoint: '/vacation/chat',
     contextEndpoint: `/vacation/chat/context?tripId=${tripId}`,
-    buildBody: (messages) => ({ tripId, messages }),
+    buildBody: (messages) => ({ tripId, messages, ...(ephemeralRef.current || {}) }),
     onResult: () => qc.invalidateQueries({ queryKey: ['trips', tripId] }),
     toolLabels: {
       open_trip: 'Opening the trip…',
@@ -30,6 +36,17 @@ export default function VacationAssistantScreen() {
 
   useEffect(() => {
     chat.loadContext();
+    (async () => {
+      try {
+        let e2eeActive = false;
+        try { e2eeActive = !!(await householdApi.get()).data.e2eeActive; } catch { /* solo/offline */ }
+        if (!e2eeActive || !getHDK()) return;
+        const { data } = await tripsApi.get(tripId);
+        const trip = await openRecord('Trip', (data as any).trip);
+        const items = await Promise.all(((data as any).items || []).map((i: any) => openRecord('TripItem', i)));
+        ephemeralRef.current = { trip, items };
+      } catch { /* non-fatal */ }
+    })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
