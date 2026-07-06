@@ -7,18 +7,18 @@ import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { choresApi } from '../../api';
 import { Button, Card, Screen, Divider, Badge, ListRow } from '../../components/ui';
 import { recurrenceLabel, formatCalendarDate, alertSummary, mdiName } from '../../lib/recurrence';
+import { useCalendarColors } from '../../lib/calendarPrefs';
 import { MaintenanceStackParamList } from '../../navigation/MaintenanceNavigator';
 import { colors, spacing } from '../../theme';
 
 type Nav = NativeStackNavigationProp<MaintenanceStackParamList, 'ChoreDetail'>;
 type Rt = RouteProp<MaintenanceStackParamList, 'ChoreDetail'>;
 
-const CHORE_ORANGE = '#F57C00';
-
 export default function ChoreDetailScreen() {
   const navigation = useNavigation<Nav>();
   const { id } = useRoute<Rt>().params;
   const qc = useQueryClient();
+  const accent = useCalendarColors().colors.chores;
 
   const choreQ = useQuery({
     queryKey: ['chores', id],
@@ -49,14 +49,9 @@ export default function ChoreDetailScreen() {
   useLayoutEffect(() => {
     navigation.setOptions({
       headerRight: () => (
-        <View style={styles.headerActions}>
-          <TouchableOpacity onPress={() => navigation.navigate('ChoreForm', { id })} style={styles.headerBtn}>
-            <Ionicons name="create-outline" size={22} color="#fff" />
-          </TouchableOpacity>
-          <TouchableOpacity onPress={confirmDelete} style={styles.headerBtn}>
-            <Ionicons name="trash-outline" size={22} color="#fff" />
-          </TouchableOpacity>
-        </View>
+        <TouchableOpacity onPress={() => navigation.navigate('ChoreForm', { id })} style={styles.headerBtn}>
+          <Ionicons name="pencil" size={22} color="#fff" />
+        </TouchableOpacity>
       ),
     });
   }, [navigation, id, chore?.title]);
@@ -77,7 +72,7 @@ export default function ChoreDetailScreen() {
   return (
     <Screen>
       <View style={styles.titleRow}>
-        <View style={styles.avatar}>
+        <View style={[styles.avatar, { backgroundColor: accent }]}>
           <MaterialCommunityIcons name={mdiName(chore.icon) as any} size={24} color="#fff" />
         </View>
         <View style={{ flex: 1 }}>
@@ -110,6 +105,10 @@ export default function ChoreDetailScreen() {
           <Text style={styles.body}>{instructions}</Text>
         </Card>
       ) : null}
+
+      <View style={styles.deleteWrap}>
+        <Button title="Delete chore" variant="danger" loading={del.isPending} onPress={confirmDelete} />
+      </View>
     </Screen>
   );
 }
@@ -123,7 +122,6 @@ const styles = StyleSheet.create({
     width: 48,
     height: 48,
     borderRadius: 12,
-    backgroundColor: CHORE_ORANGE,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -131,6 +129,7 @@ const styles = StyleSheet.create({
   actions: { flexDirection: 'row', gap: spacing.sm, marginBottom: spacing.md },
   infoCard: { padding: 0, paddingVertical: spacing.xs, marginBottom: spacing.md },
   textCard: { marginBottom: spacing.md },
+  deleteWrap: { marginTop: spacing.sm, marginBottom: spacing.xl },
   overline: { fontSize: 12, fontWeight: '700', color: colors.textMuted, textTransform: 'uppercase', marginBottom: 4 },
   body: { fontSize: 15, color: colors.text, lineHeight: 21 },
 });

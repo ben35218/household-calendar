@@ -200,7 +200,7 @@ export function useChat(options: UseChatOptions) {
         setStreamingText('');
         setError(
           e instanceof ChatQuotaError
-            ? 'You’ve reached your monthly chat limit. Upgrade for more messages.'
+            ? 'You’ve reached your weekly chat limit. Upgrade for more messages.'
             : 'Sorry, something went wrong.'
         );
       } finally {

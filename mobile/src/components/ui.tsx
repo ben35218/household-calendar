@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   Text,
   TextInput,
@@ -25,12 +25,14 @@ export function Button({
   loading,
   disabled,
   variant = 'primary',
+  color,
 }: {
   title: string;
   onPress: () => void;
   loading?: boolean;
   disabled?: boolean;
   variant?: 'primary' | 'ghost' | 'danger';
+  color?: string;
 }) {
   const isGhost = variant === 'ghost';
   const isDanger = variant === 'danger';
@@ -43,24 +45,157 @@ export function Button({
         styles.btn,
         isGhost && styles.btnGhost,
         isDanger && styles.btnDanger,
+        // Solid-variant colour override (e.g. section/calendar accent).
+        color && !isGhost && !isDanger ? { backgroundColor: color } : null,
+        // Ghost-variant colour override tints the outline instead of the fill.
+        color && isGhost ? { borderColor: color } : null,
         (disabled || loading) && styles.btnDisabled,
       ]}
     >
       {loading ? (
-        <ActivityIndicator color={isGhost ? colors.primary : '#fff'} />
+        <ActivityIndicator color={isGhost ? color || colors.primary : '#fff'} />
       ) : (
-        <Text style={[styles.btnText, isGhost && styles.btnTextGhost]}>{title}</Text>
+        <Text style={[styles.btnText, isGhost && styles.btnTextGhost, isGhost && color ? { color } : null]}>{title}</Text>
       )}
     </TouchableOpacity>
   );
 }
 
-export function Input(props: TextInputProps & { label?: string }) {
-  const { label, style, ...rest } = props;
+// A uniform solid-fill circular icon button. The circle is derived entirely
+// from `size` (borderRadius = size/2 guarantees a true circle) and the icon is
+// sized proportionally (~55%) so the fill always reads as a filled disc rather
+// than a thin ring. Use size 36 for header buttons, 56 for FABs.
+export function RoundIconButton({
+  icon,
+  onPress,
+  size = 36,
+  bg = colors.primary,
+  color = '#fff',
+  disabled,
+  style,
+}: {
+  icon: keyof typeof Ionicons.glyphMap;
+  onPress: () => void;
+  size?: number;
+  bg?: string;
+  color?: string;
+  disabled?: boolean;
+  style?: StyleProp<ViewStyle>;
+}) {
+  return (
+    <TouchableOpacity
+      onPress={onPress}
+      disabled={disabled}
+      activeOpacity={0.8}
+      style={[
+        {
+          width: size,
+          height: size,
+          borderRadius: size / 2,
+          backgroundColor: bg,
+          alignItems: 'center',
+          justifyContent: 'center',
+        },
+        style,
+      ]}
+    >
+      <Ionicons name={icon} size={Math.round(size * 0.55)} color={color} />
+    </TouchableOpacity>
+  );
+}
+
+// The checkmark that replaces a form's Save/Create button. A solid-fill circular
+// disc — tinted with the view's calendar/section accent colour — with a white
+// checkmark, living in the header's top-right (`headerRight`). While the save
+// mutation runs it shows a spinner; `disabled` dims it.
+export function HeaderCheckButton({
+  onPress,
+  loading,
+  color = colors.primary,
+  disabled,
+}: {
+  onPress: () => void;
+  loading?: boolean;
+  color?: string;
+  disabled?: boolean;
+}) {
+  return (
+    <TouchableOpacity
+      onPress={onPress}
+      disabled={disabled || loading}
+      activeOpacity={0.8}
+      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+      accessibilityRole="button"
+      accessibilityLabel="Save"
+      style={[styles.headerCheck, { backgroundColor: color }, (disabled || loading) && styles.btnDisabled]}
+    >
+      {loading ? (
+        <ActivityIndicator size="small" color="#fff" />
+      ) : (
+        <Ionicons name="checkmark-sharp" size={22} color="#fff" />
+      )}
+    </TouchableOpacity>
+  );
+}
+
+// The plain white X that dismisses a form. Replaces the native back chevron in
+// the header's top-left (`headerLeft`); tapping it goes back like the chevron.
+export function HeaderCloseButton({ onPress }: { onPress: () => void }) {
+  return (
+    <TouchableOpacity
+      onPress={onPress}
+      activeOpacity={0.6}
+      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+      accessibilityRole="button"
+      accessibilityLabel="Close"
+      style={styles.headerClose}
+    >
+      <Ionicons name="close" size={28} color="#fff" />
+    </TouchableOpacity>
+  );
+}
+
+// Installs a form's header chrome: a white X close button on the left (in place
+// of the native back chevron) and the tinted checkmark save button on the right.
+// `onPress` is called via a ref so the check always sees the latest form state
+// (no stale closure), while the header only re-renders when its visuals change.
+export function useHeaderCheckButton(
+  navigation: {
+    setOptions: (o: { headerLeft: () => React.ReactNode; headerRight: () => React.ReactNode }) => void;
+    goBack: () => void;
+  },
+  {
+    onPress,
+    loading,
+    color,
+    disabled,
+    // Set false to hide the checkmark entirely (e.g. a multi-step form's first
+    // step where there is nothing to save yet). The X close button always shows.
+    enabled = true,
+  }: { onPress: () => void; loading?: boolean; color?: string; disabled?: boolean; enabled?: boolean }
+) {
+  const onPressRef = useRef(onPress);
+  onPressRef.current = onPress;
+  useEffect(() => {
+    navigation.setOptions({
+      headerLeft: () => <HeaderCloseButton onPress={() => navigation.goBack()} />,
+      headerRight: enabled
+        ? () => <HeaderCheckButton onPress={() => onPressRef.current()} loading={loading} color={color} disabled={disabled} />
+        : () => null,
+    });
+  }, [navigation, loading, color, disabled, enabled]);
+}
+
+export function Input(props: TextInputProps & { label?: string; highlight?: boolean }) {
+  const { label, style, highlight, ...rest } = props;
   return (
     <View style={styles.inputWrap}>
       {label ? <Text style={styles.label}>{label}</Text> : null}
-      <TextInput placeholderTextColor={colors.textMuted} style={[styles.input, style]} {...rest} />
+      <TextInput
+        placeholderTextColor={colors.textMuted}
+        style={[styles.input, highlight && styles.inputHighlight, style]}
+        {...rest}
+      />
     </View>
   );
 }
@@ -161,13 +296,28 @@ export function SwitchRow({
   label,
   value,
   onValueChange,
+  highlight,
+  boxed,
 }: {
   label: string;
   value: boolean;
   onValueChange: (v: boolean) => void;
+  highlight?: boolean;
+  // Render like the other form fields: a small label above a bordered box.
+  boxed?: boolean;
 }) {
+  if (boxed) {
+    return (
+      <View style={styles.inputWrap}>
+        <View style={[styles.input, styles.selectField, highlight && styles.inputHighlight]}>
+          <Text style={styles.selectValue}>{label}</Text>
+          <RNSwitch value={value} onValueChange={onValueChange} trackColor={{ true: colors.primary }} />
+        </View>
+      </View>
+    );
+  }
   return (
-    <View style={styles.switchRow}>
+    <View style={[styles.switchRow, highlight && styles.switchRowHighlight]}>
       <Text style={styles.switchLabel}>{label}</Text>
       <RNSwitch
         value={value}
@@ -228,6 +378,7 @@ export function Select<T extends string | number>({
   multiple,
   values,
   onChangeMultiple,
+  highlight,
 }: {
   label?: string;
   value?: T | null;
@@ -239,6 +390,7 @@ export function Select<T extends string | number>({
   multiple?: boolean;
   values?: T[];
   onChangeMultiple?: (v: T[]) => void;
+  highlight?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const selectedLabel = multiple
@@ -256,7 +408,7 @@ export function Select<T extends string | number>({
     <View style={styles.inputWrap}>
       {label ? <Text style={styles.label}>{label}</Text> : null}
       <TouchableOpacity
-        style={[styles.input, styles.selectField, disabled && styles.btnDisabled]}
+        style={[styles.input, styles.selectField, highlight && styles.inputHighlight, disabled && styles.btnDisabled]}
         onPress={() => !disabled && setOpen(true)}
         activeOpacity={0.7}
         disabled={disabled}
@@ -368,6 +520,8 @@ function DateTimeField({
   clearable,
   minimumDate,
   maximumDate,
+  defaultValue,
+  highlight,
 }: {
   mode: 'date' | 'time';
   label?: string;
@@ -377,6 +531,8 @@ function DateTimeField({
   clearable?: boolean;
   minimumDate?: Date;
   maximumDate?: Date;
+  defaultValue?: string;
+  highlight?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [temp, setTemp] = useState<Date>(new Date());
@@ -391,7 +547,7 @@ function DateTimeField({
   const emit = (d: Date) => onChange(isDate ? formatDateValue(d) : formatTimeValue(d));
 
   const openPicker = () => {
-    setTemp(isDate ? parseDateValue(value) : parseTimeValue(value));
+    setTemp(isDate ? parseDateValue(value || defaultValue) : parseTimeValue(value || defaultValue));
     setOpen(true);
   };
 
@@ -404,7 +560,7 @@ function DateTimeField({
     <View style={styles.inputWrap}>
       {label ? <Text style={styles.label}>{label}</Text> : null}
       <TouchableOpacity
-        style={[styles.input, styles.selectField]}
+        style={[styles.input, styles.selectField, highlight && styles.inputHighlight]}
         onPress={openPicker}
         activeOpacity={0.7}
       >
@@ -440,10 +596,13 @@ function DateTimeField({
               <DateTimePicker
                 value={temp}
                 mode={mode}
-                display="spinner"
+                // Apple Calendar-style: a month grid for dates, a wheel for time.
+                display={isDate ? 'inline' : 'spinner'}
                 onChange={(_, d) => d && setTemp(d)}
                 minimumDate={minimumDate}
                 maximumDate={maximumDate}
+                themeVariant="dark"
+                accentColor={colors.primary}
                 style={styles.iosPicker}
               />
               <Button
@@ -469,6 +628,8 @@ export function DateField(props: {
   clearable?: boolean;
   minimumDate?: Date;
   maximumDate?: Date;
+  defaultValue?: string;
+  highlight?: boolean;
 }) {
   return <DateTimeField mode="date" {...props} />;
 }
@@ -479,6 +640,8 @@ export function TimeField(props: {
   onChange: (v: string) => void;
   placeholder?: string;
   clearable?: boolean;
+  defaultValue?: string;
+  highlight?: boolean;
 }) {
   return <DateTimeField mode="time" {...props} />;
 }
@@ -495,6 +658,8 @@ const styles = StyleSheet.create({
   btnGhost: { backgroundColor: 'transparent', borderWidth: 1, borderColor: colors.primary },
   btnDanger: { backgroundColor: colors.error },
   btnDisabled: { opacity: 0.6 },
+  headerCheck: { width: 32, height: 32, borderRadius: 16, alignItems: 'center', justifyContent: 'center' },
+  headerClose: { width: 32, height: 32, alignItems: 'center', justifyContent: 'center' },
   btnText: { color: '#fff', fontSize: 16, fontWeight: '600' },
   btnTextGhost: { color: colors.primary },
   inputWrap: { marginBottom: spacing.md },
@@ -508,6 +673,20 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     fontSize: 16,
     color: colors.text,
+  },
+  // Applied to fields the AI form assistant just changed, so the user can spot
+  // them at a glance. Accent border + a subtle primary tint over the surface.
+  inputHighlight: {
+    borderColor: colors.primary,
+    borderWidth: 1.5,
+    backgroundColor: colors.primary + '22',
+  },
+  switchRowHighlight: {
+    borderRadius: radius.md,
+    borderWidth: 1.5,
+    borderColor: colors.primary,
+    backgroundColor: colors.primary + '22',
+    paddingHorizontal: spacing.sm,
   },
   card: {
     backgroundColor: colors.surface,

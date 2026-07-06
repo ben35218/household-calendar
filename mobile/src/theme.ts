@@ -1,12 +1,13 @@
-// Shared design tokens mirroring the web app's Vuetify palette.
+// Shared design tokens — dark theme. Every screen reads these, so flipping the
+// values here flips the whole app.
 export const colors = {
-  primary: '#1976D2',
-  primaryDark: '#1565C0',
-  background: '#F5F6F8',
-  surface: '#FFFFFF',
-  text: '#212121',
-  textMuted: '#6B7280',
-  border: '#E0E0E0',
+  primary: '#4F9DF5',
+  primaryDark: '#3B82D6',
+  background: '#121212',
+  surface: '#1E1E1E',
+  text: '#ECEDEE',
+  textMuted: '#9BA1A6',
+  border: '#2C2C2E',
   error: '#EF5350',
   success: '#4CAF50',
   warning: '#FFA726',

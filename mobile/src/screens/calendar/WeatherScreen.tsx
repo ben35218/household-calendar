@@ -4,7 +4,8 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useQuery } from '@tanstack/react-query';
 import { weatherApi, OutlookWeek } from '../../api';
 import { Card, Divider } from '../../components/ui';
-import { wmoIcon } from '../../lib/weatherIcons';
+import HourlyForecast from '../../components/HourlyForecast';
+import { wmoIcon, weatherColor } from '../../lib/weatherIcons';
 import { colors, spacing } from '../../theme';
 
 const BLUE = '#0288D1';
@@ -35,6 +36,8 @@ export default function WeatherScreen() {
   }, [outlookQ.data]);
 
   const w = weatherQ.data;
+  const todayStr = `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}-${String(new Date().getDate()).padStart(2, '0')}`;
+  const hourlyDay = w?.forecast?.find((d) => d.date === todayStr) ?? w?.forecast?.[0];
 
   return (
     <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
@@ -45,7 +48,7 @@ export default function WeatherScreen() {
       ) : (
         <Card style={styles.card}>
           <View style={styles.currentRow}>
-            <MaterialCommunityIcons name={wmoIcon(w.current.weatherCode) as any} size={48} color={BLUE} />
+            <MaterialCommunityIcons name={wmoIcon(w.current.weatherCode) as any} size={48} color={weatherColor(w.current.weatherCode)} />
             <View style={{ marginLeft: spacing.md }}>
               <Text style={styles.temp}>{Math.round(w.current.temperature)}{w.units.temperature}</Text>
               <Text style={styles.desc}>{w.current.description}</Text>
@@ -60,7 +63,7 @@ export default function WeatherScreen() {
             {w.forecast.map((day) => (
               <View key={day.date} style={[styles.fday, day.goodWeather && styles.fdayGood]}>
                 <Text style={styles.fdayLabel}>{new Date(day.date + 'T12:00:00').toLocaleDateString(undefined, { weekday: 'short' })}</Text>
-                <MaterialCommunityIcons name={wmoIcon(day.weatherCode) as any} size={22} color={BLUE} />
+                <MaterialCommunityIcons name={wmoIcon(day.weatherCode) as any} size={22} color={weatherColor(day.weatherCode)} />
                 <Text style={styles.fdayHigh}>{Math.round(day.tempMax)}°</Text>
                 <Text style={styles.fdayLow}>{Math.round(day.tempMin)}°</Text>
                 {day.precipProbability > 10 ? <Text style={styles.fdayPrecip}>{day.precipProbability}%</Text> : null}
@@ -69,6 +72,12 @@ export default function WeatherScreen() {
           </ScrollView>
         </Card>
       )}
+
+      {hourlyDay?.hours?.length ? (
+        <Card style={styles.card}>
+          <HourlyForecast hours={hourlyDay.hours} date={hourlyDay.date} />
+        </Card>
+      ) : null}
 
       <Card style={styles.card}>
         <Text style={styles.outlookTitle}>90-Day Seasonal Outlook</Text>

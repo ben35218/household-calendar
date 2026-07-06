@@ -21,6 +21,7 @@ export default function StepIngredientLinker({
   stepNumber,
   stepText,
   onChange,
+  accent = colors.primary,
 }: {
   value: string[];
   ingredients: LidIngredient[];
@@ -28,6 +29,8 @@ export default function StepIngredientLinker({
   stepNumber: number;
   stepText: string;
   onChange: (lids: string[]) => void;
+  // Section/calendar accent colour for the add-chip outline + plus icon.
+  accent?: string;
 }) {
   const [showBrowse, setShowBrowse] = useState(false);
   const [query, setQuery] = useState('');
@@ -87,10 +90,10 @@ export default function StepIngredientLinker({
           unassignedSorted.map((ing) => (
             <TouchableOpacity
               key={ing._lid}
-              style={[styles.addChip, isMentioned(ing) && styles.addChipHot]}
+              style={[styles.addChip, { borderColor: accent }]}
               onPress={() => link(ing._lid)}
             >
-              <MaterialCommunityIcons name={isMentioned(ing) ? 'creation' : 'plus'} size={13} color={isMentioned(ing) ? colors.warning : colors.textMuted} />
+              <MaterialCommunityIcons name="plus" size={13} color={accent} />
               <Text style={styles.addText}>{ing.name}</Text>
             </TouchableOpacity>
           ))
@@ -137,7 +140,6 @@ const styles = StyleSheet.create({
   amount: { color: colors.primary, opacity: 0.6, fontSize: 11 },
   empty: { fontSize: 12, fontStyle: 'italic', color: colors.textMuted },
   addChip: { flexDirection: 'row', alignItems: 'center', gap: 3, borderWidth: 1, borderColor: colors.border, borderRadius: 14, paddingHorizontal: 8, paddingVertical: 3 },
-  addChipHot: { borderColor: colors.warning },
   addText: { fontSize: 12, color: colors.text },
   doneRow: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   doneText: { fontSize: 12, color: colors.success },

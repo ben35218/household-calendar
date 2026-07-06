@@ -14,17 +14,17 @@ import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { choresApi, ChoreTemplate } from '../../api';
 import { Input, SegmentedControl, Badge } from '../../components/ui';
 import { recurrenceLabelShort, mdiName } from '../../lib/recurrence';
+import { useCalendarColors } from '../../lib/calendarPrefs';
 import { MaintenanceStackParamList } from '../../navigation/MaintenanceNavigator';
 import { colors, radius, spacing } from '../../theme';
 
 type Nav = NativeStackNavigationProp<MaintenanceStackParamList, 'ChoreTemplates'>;
 type Filter = 'available' | 'all';
 
-const CHORE_ORANGE = '#F57C00';
-
 export default function ChoreTemplatesScreen() {
   const navigation = useNavigation<Nav>();
   const qc = useQueryClient();
+  const accent = useCalendarColors().colors.chores;
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState<Filter>('available');
 
@@ -104,7 +104,7 @@ export default function ChoreTemplatesScreen() {
                 onPress={() => create.mutate(tpl.id)}
                 activeOpacity={0.7}
               >
-                <View style={styles.avatar}>
+                <View style={[styles.avatar, { backgroundColor: accent }]}>
                   <MaterialCommunityIcons name={mdiName(tpl.icon) as any} size={20} color="#fff" />
                 </View>
                 <View style={{ flex: 1 }}>
@@ -154,7 +154,6 @@ const styles = StyleSheet.create({
     width: 40,
     height: 40,
     borderRadius: 20,
-    backgroundColor: CHORE_ORANGE,
     alignItems: 'center',
     justifyContent: 'center',
   },

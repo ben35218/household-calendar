@@ -37,7 +37,6 @@ export const HOLIDAY_DEFS: HolidayDef[] = [
 ];
 
 const ALL_IDS = new Set(HOLIDAY_DEFS.map((d) => d.id));
-const STATUTORY = new Set(HOLIDAY_DEFS.filter((d) => d.group === 'statutory').map((d) => d.id));
 
 const LUNAR_NEW_YEAR: Record<number, string> = {
   2024: '2024-02-10', 2025: '2025-01-29', 2026: '2026-02-17', 2027: '2027-02-06',
@@ -112,12 +111,12 @@ export interface Holiday {
 function getHolidaysForYear(year: number, enabledSet: Set<string>): Holiday[] {
   const list: Holiday[] = [];
   const add = (d: Date, id: string) => {
-    if (!STATUTORY.has(id) && !enabledSet.has(id)) return;
+    if (!enabledSet.has(id)) return;
     const def = HOLIDAY_DEFS.find((h) => h.id === id)!;
     list.push({ date: fmt(d), name: def.name, id });
   };
   const addStr = (dateStr: string | undefined, id: string) => {
-    if (!dateStr || (!STATUTORY.has(id) && !enabledSet.has(id))) return;
+    if (!dateStr || !enabledSet.has(id)) return;
     const def = HOLIDAY_DEFS.find((h) => h.id === id)!;
     list.push({ date: dateStr, name: def.name, id });
   };

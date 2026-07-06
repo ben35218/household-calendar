@@ -12,26 +12,17 @@ import { Ionicons } from '@expo/vector-icons';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { tasksApi, historyApi, odometerApi } from '../../api';
-import { Button, Card, Screen, Input, Divider, Badge, ListRow, DateField } from '../../components/ui';
+import { Button, Card, Screen, Input, Divider, ListRow, DateField } from '../../components/ui';
 import {
   recurrenceLabel,
   formatCalendarDate,
   alertSummary,
-  dueStatus,
-  DueStatus,
 } from '../../lib/recurrence';
 import { MaintenanceStackParamList } from '../../navigation/MaintenanceNavigator';
-import { colors, spacing } from '../../theme';
+import { colors, spacing, radius } from '../../theme';
 
 type Nav = NativeStackNavigationProp<MaintenanceStackParamList, 'TaskDetail'>;
 type Rt = RouteProp<MaintenanceStackParamList, 'TaskDetail'>;
-
-const STATUS_COLOR: Record<DueStatus, string> = {
-  overdue: colors.error,
-  soon: colors.warning,
-  upcoming: colors.success,
-  none: colors.textMuted,
-};
 
 function todayISO() {
   return new Date().toISOString().slice(0, 10);
@@ -107,20 +98,10 @@ export default function TaskDetailScreen() {
       { text: 'Delete', style: 'destructive', onPress: () => del.mutate() },
     ]);
 
+  const isPaused = task?.active === false;
   useLayoutEffect(() => {
-    navigation.setOptions({
-      headerRight: () => (
-        <View style={styles.headerActions}>
-          <TouchableOpacity onPress={() => navigation.navigate('TaskForm', { id })} style={styles.headerBtn}>
-            <Ionicons name="create-outline" size={22} color="#fff" />
-          </TouchableOpacity>
-          <TouchableOpacity onPress={confirmDelete} style={styles.headerBtn}>
-            <Ionicons name="trash-outline" size={22} color="#fff" />
-          </TouchableOpacity>
-        </View>
-      ),
-    });
-  }, [navigation, id, task?.title]);
+    if (task) navigation.setOptions({ title: task.title });
+  }, [navigation, task?.title]);
 
   if (taskQ.isLoading || !task) {
     return (
@@ -130,8 +111,6 @@ export default function TaskDetailScreen() {
     );
   }
 
-  const paused = task.active === false;
-  const status = dueStatus(task.nextDueDate);
   const remainingKm =
     task.intervalKm && task.nextDueKm != null && currentKm != null ? task.nextDueKm - currentKm : null;
   const kmColor =
@@ -140,19 +119,28 @@ export default function TaskDetailScreen() {
 
   return (
     <Screen>
-      <View style={styles.titleRow}>
-        <Text style={styles.title}>{task.title}</Text>
-        {paused ? <Badge label="Paused" /> : <Badge label={status.label} color={STATUS_COLOR[status.status]} />}
-      </View>
-
-      <View style={styles.actions}>
-        <Button
-          title={paused ? 'Resume' : 'Pause'}
-          variant="ghost"
-          loading={togglePause.isPending}
+      <View style={styles.actionBar}>
+        <TouchableOpacity
           onPress={() => togglePause.mutate()}
-        />
-        {!paused ? <Button title="Mark Done" onPress={() => setCompleteOpen((o) => !o)} /> : null}
+          disabled={togglePause.isPending}
+          style={[styles.actionBtn, styles.actionBtnGhost]}
+          activeOpacity={0.8}
+        >
+          {togglePause.isPending ? (
+            <ActivityIndicator color={colors.primary} />
+          ) : (
+            <Text style={styles.actionBtnGhostText}>{isPaused ? 'Resume' : 'Pause'}</Text>
+          )}
+        </TouchableOpacity>
+        {!isPaused ? (
+          <TouchableOpacity
+            onPress={() => setCompleteOpen((o) => !o)}
+            style={[styles.actionBtn, styles.actionBtnPrimary]}
+            activeOpacity={0.8}
+          >
+            <Text style={styles.actionBtnPrimaryText}>Mark Done</Text>
+          </TouchableOpacity>
+        ) : null}
       </View>
 
       {completeOpen ? (
@@ -263,17 +251,23 @@ export default function TaskDetailScreen() {
           <Text style={styles.muted}>No history yet</Text>
         )}
       </Card>
+
+      <View style={styles.deleteWrap}>
+        <Button title="Delete task" variant="danger" loading={del.isPending} onPress={confirmDelete} />
+      </View>
     </Screen>
   );
 }
 
 const styles = StyleSheet.create({
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.background },
-  headerActions: { flexDirection: 'row' },
-  headerBtn: { paddingHorizontal: 6 },
-  titleRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, flexWrap: 'wrap', marginBottom: spacing.sm },
-  title: { fontSize: 24, fontWeight: '700', color: colors.text },
-  actions: { flexDirection: 'row', gap: spacing.sm, marginBottom: spacing.md },
+  actionBar: { flexDirection: 'row', gap: spacing.sm, marginBottom: spacing.md },
+  actionBtn: { flex: 1, height: 48, borderRadius: radius.md, alignItems: 'center', justifyContent: 'center' },
+  actionBtnPrimary: { backgroundColor: colors.primary },
+  actionBtnPrimaryText: { color: '#fff', fontSize: 16, fontWeight: '600' },
+  actionBtnGhost: { borderWidth: 1.5, borderColor: colors.primary, backgroundColor: 'transparent' },
+  actionBtnGhostText: { color: colors.primary, fontSize: 16, fontWeight: '600' },
+  actions: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
   completeCard: { marginBottom: spacing.md },
   cardTitle: { fontSize: 16, fontWeight: '700', color: colors.text, marginBottom: spacing.sm },
   kmCard: { flexDirection: 'row', alignItems: 'center', marginBottom: spacing.md, borderWidth: 1.5 },
@@ -284,4 +278,5 @@ const styles = StyleSheet.create({
   overline: { fontSize: 12, fontWeight: '700', color: colors.textMuted, textTransform: 'uppercase', marginBottom: 4 },
   body: { fontSize: 15, color: colors.text, lineHeight: 21 },
   muted: { color: colors.textMuted, padding: spacing.md },
+  deleteWrap: { marginTop: spacing.sm, marginBottom: spacing.xl },
 });

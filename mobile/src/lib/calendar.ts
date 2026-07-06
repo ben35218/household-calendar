@@ -1,6 +1,6 @@
 import { CalendarData, CalendarEvent, Task, Chore } from '../api';
 
-// Calendar category colors (mirrors CalendarView's `calendars`).
+// Default calendar category colors (mirrors CalendarView's `calendars`).
 export const CALENDAR_COLORS: Record<string, string> = {
   maintenance: '#1976D2',
   activities: '#388E3C',
@@ -12,17 +12,44 @@ export const CALENDAR_COLORS: Record<string, string> = {
   'canadian-holidays': '#D32F2F',
 };
 
+// User colour overrides (loaded/persisted by calendarPrefs). `colorOf` resolves
+// the effective colour for a calendar id so chips/bars/icons reflect overrides.
+let colorOverrides: Record<string, string> = {};
+export function applyCalendarColorOverrides(o: Record<string, string>) {
+  colorOverrides = o || {};
+}
+export function colorOf(id: string): string {
+  return colorOverrides[id] ?? CALENDAR_COLORS[id] ?? '#9E9E9E';
+}
+
 export const EVENT_CALENDAR_TYPES = [
   { label: 'Activities', value: 'activities' },
   { label: 'Appointments', value: 'appointments' },
 ];
 
 export function eventColor(e: CalendarEvent): string {
-  return CALENDAR_COLORS[e.calendarType] || '#388E3C';
+  return colorOf(e.calendarType);
 }
 
+// yyyy-MM-dd in the device's local timezone (uses local calendar components,
+// so it never rolls over to the next UTC day the way toISOString() does).
+export function ymd(d: Date): string {
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+// Date portion of a stored date-only / all-day record. These are stored at
+// noon UTC (see EventFormScreen), so the calendar date is timezone-stable and
+// reading it in UTC is correct — do NOT convert to local here or west-of-UTC
+// users would see the date shift back a day.
 function localDate(d: string): string {
   return new Date(d).toISOString().slice(0, 10);
+}
+
+// Date an event lands on. All-day events are timezone-stable (noon UTC), but
+// timed events are real instants and must be read in the device's local zone.
+function eventDate(e: CalendarEvent, iso: string): string {
+  return e.allDay ? localDate(iso) : ymd(new Date(iso));
 }
 
 export interface DayItems {
@@ -42,8 +69,8 @@ export function itemsForDate(data: CalendarData | undefined, dateStr: string): D
   }
 
   const events = (data.events ?? []).filter((e) => {
-    const start = localDate(e.startDate);
-    const end = e.endDate ? localDate(e.endDate) : start;
+    const start = eventDate(e, e.startDate);
+    const end = e.endDate ? eventDate(e, e.endDate) : start;
     return dateStr >= start && dateStr <= end;
   });
 
@@ -59,7 +86,7 @@ export function itemsForDate(data: CalendarData | undefined, dateStr: string): D
 
   const trips = (data.trips ?? [])
     .filter((t) => (t.ranges ?? []).some((r) => dateStr >= localDate(r.start) && dateStr <= localDate(r.end)))
-    .map((t) => ({ id: t.id, name: t.name, color: t.color || CALENDAR_COLORS.vacations, status: t.status }));
+    .map((t) => ({ id: t.id, name: t.name, color: t.color || colorOf('vacations'), status: t.status }));
 
   const birthdays = (data.birthdays ?? []).filter((b) => localDate(b.date) === dateStr).map((b) => ({ id: b.id, name: b.name }));
 
@@ -107,12 +134,12 @@ export function weekBars(data: CalendarData | undefined, weekDates: string[], ma
     for (const r of t.ranges ?? []) {
       const s = localDate(r.start);
       const e = localDate(r.end);
-      if (e >= weekStart && s <= weekEnd) spans.push({ color: t.color || CALENDAR_COLORS.vacations, label: t.name, start: s, end: e });
+      if (e >= weekStart && s <= weekEnd) spans.push({ color: t.color || colorOf('vacations'), label: t.name, start: s, end: e });
     }
   }
   for (const ev of data.events ?? []) {
-    const s = localDate(ev.startDate);
-    const e = ev.endDate ? localDate(ev.endDate) : s;
+    const s = eventDate(ev, ev.startDate);
+    const e = ev.endDate ? eventDate(ev, ev.endDate) : s;
     if (e > s && e >= weekStart && s <= weekEnd) spans.push({ color: eventColor(ev), label: ev.title, start: s, end: e });
   }
 
@@ -139,7 +166,7 @@ export interface MonthGrid {
 
 export function buildMonth(year: number, month: number): MonthGrid {
   const first = new Date(year, month, 1);
-  const todayStr = new Date().toISOString().slice(0, 10);
+  const todayStr = ymd(new Date());
   const startOffset = first.getDay(); // 0=Sun
   const gridStart = new Date(year, month, 1 - startOffset);
 
@@ -147,8 +174,7 @@ export function buildMonth(year: number, month: number): MonthGrid {
   for (let i = 0; i < 42; i++) {
     const d = new Date(gridStart);
     d.setDate(gridStart.getDate() + i);
-    const pad = (n: number) => String(n).padStart(2, '0');
-    const dateStr = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+    const dateStr = ymd(d);
     cells.push({
       date: dateStr,
       day: d.getDate(),

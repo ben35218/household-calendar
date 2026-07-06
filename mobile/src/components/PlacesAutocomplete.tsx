@@ -16,6 +16,7 @@ export default function PlacesAutocomplete({
   onSelect,
   placeholder,
   type,
+  highlight,
 }: {
   label?: string;
   value: string;
@@ -23,15 +24,21 @@ export default function PlacesAutocomplete({
   onSelect?: (p: PlacePrediction) => void;
   placeholder?: string;
   type?: string;
+  highlight?: boolean;
 }) {
   const [suggestions, setSuggestions] = useState<PlacePrediction[]>([]);
   const [loading, setLoading] = useState(false);
   const [open, setOpen] = useState(false);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const justSelected = useRef(false);
+  // Only autocomplete once the user has actually typed. Guards against the
+  // field being pre-filled from saved settings (e.g. the Account home address),
+  // which would otherwise pop the dropdown open on load without any input.
+  const userTyped = useRef(false);
 
   useEffect(() => {
     if (justSelected.current) { justSelected.current = false; return; }
+    if (!userTyped.current) return;
     if (timer.current) clearTimeout(timer.current);
     const q = value.trim();
     if (q.length < 3) { setSuggestions([]); setOpen(false); return; }
@@ -50,6 +57,11 @@ export default function PlacesAutocomplete({
     return () => { if (timer.current) clearTimeout(timer.current); };
   }, [value, type]);
 
+  function handleChange(text: string) {
+    userTyped.current = true;
+    onChangeText(text);
+  }
+
   function pick(p: PlacePrediction) {
     justSelected.current = true;
     onChangeText(p.description);
@@ -63,9 +75,10 @@ export default function PlacesAutocomplete({
       <Input
         label={label}
         value={value}
-        onChangeText={onChangeText}
+        onChangeText={handleChange}
         placeholder={placeholder}
         autoCapitalize="none"
+        highlight={highlight}
       />
       {loading ? <ActivityIndicator size="small" color={colors.primary} style={styles.spinner} /> : null}
       {open && suggestions.length > 0 ? (

@@ -7,16 +7,17 @@ import { Card } from '../../components/ui';
 import { colors, spacing } from '../../theme';
 
 const GROUP_LABELS: Record<string, string> = {
+  statutory: 'Canadian Holidays',
   cultural: 'Cultural Holidays',
   multicultural: 'Multicultural & Religious Holidays',
 };
 
-// Mirrors client/src/views/HolidaysView.vue. Statutory holidays are always on;
-// only cultural + multicultural groups are toggleable.
+// Mirrors client/src/views/HolidaysView.vue. Every group (incl. Canadian/federal
+// statutory holidays) is toggleable.
 export default function HolidaysScreen() {
   const { isEnabled, toggle, setGroup } = useHolidayPrefs();
 
-  const groups = (['cultural', 'multicultural'] as const).map((key) => ({
+  const groups = (['statutory', 'cultural', 'multicultural'] as const).map((key) => ({
     key,
     label: GROUP_LABELS[key],
     defs: HOLIDAY_DEFS.filter((d) => d.group === key),
@@ -24,7 +25,7 @@ export default function HolidaysScreen() {
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
-      <Text style={styles.intro}>Choose which cultural holidays to display on your calendar.</Text>
+      <Text style={styles.intro}>Choose which holidays to display on your calendar.</Text>
 
       {groups.map((group) => (
         <Card key={group.key} style={styles.card}>

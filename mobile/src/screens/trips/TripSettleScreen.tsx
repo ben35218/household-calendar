@@ -6,7 +6,8 @@ import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { tripsApi, SettlementBalance, SettlementLine } from '../../api';
 import { Button, Card, Input, Select } from '../../components/ui';
-import { tripTypeMeta, TRIP_PURPLE } from '../../lib/tripTypes';
+import { tripTypeMeta } from '../../lib/tripTypes';
+import { useCalendarColors } from '../../lib/calendarPrefs';
 import { TripsStackParamList } from '../../navigation/TripsNavigator';
 import { colors, spacing } from '../../theme';
 
@@ -36,6 +37,7 @@ export default function TripSettleScreen() {
   const { id } = useRoute<Rt>().params;
   const navigation = useNavigation<Nav>();
   const qc = useQueryClient();
+  const accent = useCalendarColors().colors.vacations;
 
   const settleQ = useQuery({
     queryKey: ['trips', id, 'settlement'],
@@ -66,7 +68,7 @@ export default function TripSettleScreen() {
   if (settleQ.isLoading || !settleQ.data) {
     return (
       <View style={styles.center}>
-        <ActivityIndicator size="large" color={TRIP_PURPLE} />
+        <ActivityIndicator size="large" color={accent} />
       </View>
     );
   }
@@ -127,7 +129,7 @@ export default function TripSettleScreen() {
     <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
       {/* Balances */}
       <Card style={styles.card}>
-        <Text style={styles.sectionLabel}>Balances</Text>
+        <Text style={[styles.sectionLabel, { color: accent }]}>Balances</Text>
         {balances.length === 0 ? (
           <View style={styles.allSettled}>
             <Ionicons name="checkmark-circle" size={20} color={colors.success} />
@@ -137,7 +139,7 @@ export default function TripSettleScreen() {
           balances.map((b, i) => (
             <View key={i} style={[styles.balanceGroup, i > 0 && styles.balanceGroupSep]}>
               <View style={styles.balanceHead}>
-                <Ionicons name="arrow-forward-circle-outline" size={18} color={TRIP_PURPLE} />
+                <Ionicons name="arrow-forward-circle-outline" size={18} color={accent} />
                 <Text style={styles.balanceText}>
                   <Text style={styles.bold}>{b.fromName}</Text> owes <Text style={styles.bold}>{b.toName}</Text>
                 </Text>
@@ -200,7 +202,7 @@ export default function TripSettleScreen() {
       {/* History */}
       {payments && payments.length > 0 ? (
         <Card style={styles.card}>
-          <Text style={styles.sectionLabel}>Recorded payments</Text>
+          <Text style={[styles.sectionLabel, { color: accent }]}>Recorded payments</Text>
           {payments.map((p) => (
             <View key={p._id} style={styles.payRow}>
               <View style={styles.flex1}>
@@ -226,7 +228,7 @@ const styles = StyleSheet.create({
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.background },
   content: { padding: spacing.md },
   card: { marginBottom: spacing.md },
-  sectionLabel: { fontSize: 11, fontWeight: '700', letterSpacing: 0.5, textTransform: 'uppercase', color: TRIP_PURPLE, marginBottom: spacing.sm },
+  sectionLabel: { fontSize: 11, fontWeight: '700', letterSpacing: 0.5, textTransform: 'uppercase', marginBottom: spacing.sm },
   allSettled: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, paddingVertical: spacing.sm },
   settledText: { fontSize: 14, color: colors.textMuted },
   balanceGroup: { marginBottom: spacing.sm },

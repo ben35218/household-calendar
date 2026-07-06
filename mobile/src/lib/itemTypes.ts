@@ -52,19 +52,6 @@ const vehicleMakes = [
   'Husqvarna', 'Toro', 'Troy-Bilt', 'Cub Cadet', 'Craftsman', 'Simplicity', 'MTD', 'Snapper', 'Other',
 ].sort();
 
-const canadianProvinces = [
-  'AB – Alberta', 'BC – British Columbia', 'MB – Manitoba', 'NB – New Brunswick',
-  'NL – Newfoundland & Labrador', 'NS – Nova Scotia', 'NT – Northwest Territories',
-  'NU – Nunavut', 'ON – Ontario', 'PE – Prince Edward Island', 'QC – Quebec',
-  'SK – Saskatchewan', 'YT – Yukon',
-];
-const usStates = [
-  'AL', 'AK', 'AZ', 'AR', 'CA', 'CO', 'CT', 'DE', 'FL', 'GA', 'HI', 'ID', 'IL', 'IN', 'IA', 'KS', 'KY',
-  'LA', 'ME', 'MD', 'MA', 'MI', 'MN', 'MS', 'MO', 'MT', 'NE', 'NV', 'NH', 'NJ', 'NM', 'NY', 'NC', 'ND',
-  'OH', 'OK', 'OR', 'PA', 'RI', 'SC', 'SD', 'TN', 'TX', 'UT', 'VT', 'VA', 'WA', 'WV', 'WI', 'WY',
-];
-const regionsOptions = [...canadianProvinces, ...usStates];
-
 export const ITEM_TYPES: ItemType[] = [
   {
     value: 'appliance',
@@ -109,38 +96,6 @@ export const ITEM_TYPES: ItemType[] = [
           { model: 'modelNumber', label: 'Model', placeholder: 'e.g. F-150, CR-V, 1025R' },
           { customKey: 'Trim / Package', label: 'Trim / Package', placeholder: 'e.g. XLT, Sport, Lariat' },
           { customKey: 'Colour', label: 'Colour', type: 'select', options: ['Black', 'White', 'Silver / Grey', 'Red', 'Blue', 'Dark Blue / Navy', 'Green', 'Yellow', 'Orange', 'Brown / Beige / Tan', 'Gold', 'Other'] },
-        ],
-      },
-      {
-        title: 'Identification',
-        fields: [
-          { model: 'serialNumber', label: 'VIN / Serial Number', placeholder: '17-character Vehicle Identification Number' },
-          { customKey: 'License Plate', label: 'License Plate' },
-          { customKey: 'Province / State', label: 'Province / State', type: 'autocomplete', options: regionsOptions },
-          { customKey: 'Fuel Type', label: 'Fuel Type', type: 'select', options: ['Gasoline (Regular)', 'Gasoline (Premium)', 'Diesel', 'Hybrid – Gas/Electric', 'Plug-in Hybrid (PHEV)', 'Full Electric (BEV)', 'Propane / LPG', 'Natural Gas', 'Other'] },
-          { customKey: 'Transmission', label: 'Transmission', type: 'select', options: ['Automatic', 'Manual / Standard', 'CVT', 'Dual-Clutch (DCT)', 'N/A'] },
-          { customKey: 'Drive Type', label: 'Drive Type', type: 'select', options: ['FWD – Front-Wheel Drive', 'RWD – Rear-Wheel Drive', 'AWD – All-Wheel Drive', '4WD / 4x4', '2WD', 'N/A'] },
-          { customKey: 'Number of Doors', label: 'Doors', type: 'select', options: ['2', '3', '4', '5', 'N/A'] },
-        ],
-      },
-      {
-        title: 'Mileage & Purchase',
-        fields: [
-          { customKey: 'Odometer (km)', label: 'Odometer (km)', placeholder: 'e.g. 87 500' },
-          { customKey: 'Engine Hours', label: 'Engine Hours', placeholder: 'For tractors / equipment' },
-          { customKey: 'Engine Size', label: 'Engine Size', placeholder: 'e.g. 2.0L, 5.0L, 250cc' },
-          { model: 'purchaseDate', label: 'Purchase Date', type: 'date' },
-          { customKey: 'Purchase Price', label: 'Purchase Price ($)', placeholder: 'e.g. 32 000' },
-          { customKey: 'Purchased From', label: 'Purchased From', placeholder: 'Dealer or private seller' },
-        ],
-      },
-      {
-        title: 'Insurance & Registration',
-        fields: [
-          { customKey: 'Insurance Provider', label: 'Insurance Provider', type: 'select', options: ['Intact Insurance', 'Aviva Canada', 'Desjardins', 'Co-operators', 'Wawanesa', 'Economical Insurance', 'Belairdirect', 'TD Insurance', 'CAA Insurance', 'Johnson Insurance', 'Other'] },
-          { customKey: 'Policy Number', label: 'Policy Number' },
-          { customKey: 'Insurance Expiry', label: 'Insurance Expiry', type: 'date' },
-          { customKey: 'Registration Expiry', label: 'Registration Expiry', type: 'date' },
         ],
       },
     ],

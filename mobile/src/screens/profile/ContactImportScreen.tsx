@@ -3,7 +3,9 @@ import { View, Text, FlatList, StyleSheet, TouchableOpacity, ActivityIndicator }
 import { Ionicons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
 import { useQueryClient } from '@tanstack/react-query';
-import * as Contacts from 'expo-contacts';
+// expo-contacts 56 deprecated its function API on the package root; the same
+// functions (getContactsAsync/requestPermissionsAsync/Fields) live under /legacy.
+import * as Contacts from 'expo-contacts/legacy';
 import { peopleApi } from '../../api';
 import { Button, Input, SegmentedControl } from '../../components/ui';
 import { colors, spacing } from '../../theme';

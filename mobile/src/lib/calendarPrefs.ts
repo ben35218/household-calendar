@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { HOLIDAY_DEFS } from './holidays';
+import { applyCalendarColorOverrides } from './calendar';
 
 // AsyncStorage-backed equivalents of the web's localStorage singletons
 // (hc_calendar_visibility / hc_holiday_enabled). A tiny subscriber store keeps
@@ -9,6 +10,7 @@ import { HOLIDAY_DEFS } from './holidays';
 
 const VIS_KEY = 'hc_calendar_visibility';
 const HOL_KEY = 'hc_holiday_enabled';
+const COLORS_KEY = 'hc_calendar_colors';
 
 export interface CalendarDef {
   id: string;
@@ -32,14 +34,29 @@ export const CALENDARS: CalendarDef[] = [
 
 const ALL_HOLIDAY_IDS = HOLIDAY_DEFS.map((d) => d.id);
 
+// Default colour per calendar id (the source of truth for the picker's reset).
+export const DEFAULT_CALENDAR_COLORS: Record<string, string> = Object.fromEntries(
+  CALENDARS.map((c) => [c.id, c.color])
+);
+
 type VisMap = Record<string, boolean>;
+type ColorMap = Record<string, string>;
 
 // ── In-memory state + subscribers ───────────────────────────────────────────
 let visState: VisMap | null = null;
 let holState: string[] | null = null;
+let colorOverrideState: ColorMap = {}; // sparse — only user overrides
 const visSubs = new Set<() => void>();
 const holSubs = new Set<() => void>();
+const colorSubs = new Set<() => void>();
 let loaded = false;
+
+// Merge overrides over defaults into a full id→colour map.
+function mergedColors(): ColorMap {
+  const out: ColorMap = { ...DEFAULT_CALENDAR_COLORS };
+  for (const id of Object.keys(colorOverrideState)) out[id] = colorOverrideState[id];
+  return out;
+}
 
 function defaultVis(): VisMap {
   return Object.fromEntries(CALENDARS.map((c) => [c.id, true]));
@@ -67,8 +84,16 @@ async function ensureLoaded() {
   } catch {
     holState = [...ALL_HOLIDAY_IDS];
   }
+  try {
+    const rawCol = await AsyncStorage.getItem(COLORS_KEY);
+    colorOverrideState = rawCol ? JSON.parse(rawCol) : {};
+  } catch {
+    colorOverrideState = {};
+  }
+  applyCalendarColorOverrides(colorOverrideState);
   visSubs.forEach((fn) => fn());
   holSubs.forEach((fn) => fn());
+  colorSubs.forEach((fn) => fn());
 }
 
 // ── Calendar visibility hook ────────────────────────────────────────────────
@@ -133,4 +158,36 @@ export function useHolidayPrefs() {
   const isEnabled = (id: string) => (holState ?? ALL_HOLIDAY_IDS).includes(id);
 
   return { enabledIds: enabled, isEnabled, toggle, setGroup };
+}
+
+// ── Calendar colour hook ────────────────────────────────────────────────────
+export function useCalendarColors() {
+  const [colors, setColors] = useState<ColorMap>(mergedColors());
+
+  useEffect(() => {
+    const sub = () => setColors(mergedColors());
+    colorSubs.add(sub);
+    ensureLoaded().then(sub);
+    return () => {
+      colorSubs.delete(sub);
+    };
+  }, []);
+
+  function persist() {
+    AsyncStorage.setItem(COLORS_KEY, JSON.stringify(colorOverrideState)).catch(() => {});
+    applyCalendarColorOverrides(colorOverrideState);
+    colorSubs.forEach((fn) => fn());
+  }
+  function setColor(id: string, color: string) {
+    colorOverrideState = { ...colorOverrideState, [id]: color };
+    persist();
+  }
+  function resetColor(id: string) {
+    const next = { ...colorOverrideState };
+    delete next[id];
+    colorOverrideState = next;
+    persist();
+  }
+
+  return { colors, setColor, resetColor };
 }
