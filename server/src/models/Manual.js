@@ -10,6 +10,12 @@ const manualSchema = new mongoose.Schema({
   fileType: { type: String, default: 'application/pdf' },
   fileSizeBytes: Number,
   fetchedAt: Date,
+  // E2EE attachment (Phase 4c): when `encrypted`, the stored file is opaque
+  // ciphertext (a serialized EncryptedFile) whose per-file key is wrapped to the
+  // household HDK in `wrappedFileKey`. The server never reads the plaintext.
+  encrypted:      { type: Boolean, default: false },
+  wrappedFileKey: String,   // JSON of the RecordEnvelope wrapping the file key
+  keyVersion:     Number,
 }, { timestamps: true });
 
 module.exports = mongoose.model('Manual', manualSchema);

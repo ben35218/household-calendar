@@ -64,4 +64,15 @@ router.post('/push/unregister-native', async (req, res) => {
   }
 });
 
+// A client toggles this when it schedules reminders on-device (Phase 5); the
+// server reminder cron then skips this user so they aren't notified twice.
+router.post('/local-reminders', async (req, res) => {
+  try {
+    await User.updateOne({ _id: req.user._id }, { $set: { localReminders: !!req.body.enabled } });
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 module.exports = router;

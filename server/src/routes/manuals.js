@@ -41,15 +41,25 @@ router.post('/items/:itemId/upload', meter('manualParse'), upload.single('file')
     if (!item) return res.status(404).json({ error: 'Item not found' });
     if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
 
+    // E2EE (Phase 4c): when the client encrypted the file, the uploaded bytes are
+    // opaque ciphertext and it sends the wrapped per-file key + a client-minted
+    // _id (so the wrapped key's AAD binds to this record). fileType is the
+    // *plaintext* mimetype for the client to set on the decrypted blob.
+    const encrypted = req.body.encrypted === 'true' || req.body.encrypted === true;
+    const clientId = /^[a-f0-9]{24}$/i.test(req.body._id || '') ? req.body._id : undefined;
+
     const manual = await Manual.create({
+      ...(clientId ? { _id: clientId } : {}),
       userId: req.user._id,
       itemId: item._id,
       title: req.body.title || req.file.originalname,
       source: 'uploaded',
       storageKey: req.file.filename,
-      fileType: req.file.mimetype,
+      fileType: encrypted ? (req.body.fileType || 'application/pdf') : req.file.mimetype,
       fileSizeBytes: req.file.size,
       fetchedAt: new Date(),
+      encrypted,
+      ...(encrypted ? { wrappedFileKey: req.body.wrappedFileKey, keyVersion: Number(req.body.keyVersion) || undefined } : {}),
     });
     res.status(201).json(manual);
   } catch (err) {
@@ -131,6 +141,11 @@ router.get('/:id/download', async (req, res) => {
     const filepath = path.join(uploadDir, manual.storageKey);
     if (!fs.existsSync(filepath)) return res.status(404).json({ error: 'File not found on disk' });
 
+    if (manual.encrypted) {
+      // Opaque ciphertext — the client fetches, unwraps the file key, and decrypts.
+      res.setHeader('Content-Type', 'application/octet-stream');
+      return res.sendFile(filepath);
+    }
     res.setHeader('Content-Type', manual.fileType || 'application/pdf');
     res.setHeader('Content-Disposition', `inline; filename="${manual.title}.pdf"`);
     res.sendFile(filepath);
@@ -144,6 +159,11 @@ router.post('/:id/extract-tasks', meter('manualParse'), async (req, res) => {
   try {
     const manual = await Manual.findOne({ _id: req.params.id, userId: { $in: req.scopeIds } });
     if (!manual) return res.status(404).json({ error: 'Manual not found' });
+    if (manual.encrypted) {
+      // The server can't read an encrypted manual; client-side extraction with
+      // ephemeral consent is Phase 5.
+      return res.status(400).json({ error: 'This manual is encrypted — task extraction from encrypted manuals is coming soon.' });
+    }
 
     const filePath = path.join(uploadDir, manual.storageKey);
     if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'File not found on disk' });

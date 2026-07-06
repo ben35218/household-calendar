@@ -40,6 +40,14 @@ function audienceUsers(item, members) {
   return members;
 }
 
+// Should a given user receive this item's alert? 'owner' → only the creator;
+// 'everyone' → any household member. Used by the per-user daily check so each
+// member is evaluated in their own timezone.
+function inAudience(item, user) {
+  if (item.alertAudience === 'owner') return String(user._id) === String(item.userId);
+  return true;
+}
+
 async function pushToUsers(users, payload) {
   for (const u of users) await pushToUser(u, payload);
 }
@@ -64,40 +72,47 @@ async function runDailyCheck() {
 }
 
 async function runDailyCheckForHousehold(hh) {
-  {
-    const tz = hh.timezone || 'America/Toronto';
-    if (localHour(tz) !== 7) return;
-    const todayStr = localDateStr(tz);
+  const members = await User.find({ householdId: hh._id });
+  if (!members.length) return;
 
-    const members = await User.find({ householdId: hh._id });
-    if (!members.length) return;
-    const memberIds = members.map(m => m._id);
+  // Each member alerts at their own 7am local, so a member in a different zone
+  // (travelling or out-of-town) gets correct timing. Bail early if nobody in
+  // the household is at 7am right now.
+  const tzOf = (u) => u.timezone || hh.timezone || 'America/Toronto';
+  // Skip users whose client schedules reminders on-device (Phase 5) — they'd
+  // otherwise be notified twice.
+  const due = members.filter(u => !u.localReminders && localHour(tzOf(u)) === 7);
+  if (!due.length) return;
 
-    const [tasks, chores, persons] = await Promise.all([
-      MaintenanceTask.find({ userId: { $in: memberIds }, active: true, nextDueDate: { $ne: null } }).populate('itemId', 'name').lean(),
-      Chore.find({ userId: { $in: memberIds }, active: true, nextDueDate: { $ne: null } }).lean(),
-      Person.find({ userId: { $in: memberIds }, birthday: { $ne: null } }).lean(),
-    ]);
+  const memberIds = members.map(m => m._id);
+  const [tasks, chores, persons] = await Promise.all([
+    MaintenanceTask.find({ userId: { $in: memberIds }, active: true, nextDueDate: { $ne: null } }).populate('itemId', 'name').lean(),
+    Chore.find({ userId: { $in: memberIds }, active: true, nextDueDate: { $ne: null } }).lean(),
+    Person.find({ userId: { $in: memberIds }, birthday: { $ne: null } }).lean(),
+  ]);
+
+  // Fire each at-7am member's alerts, with due/today evaluated in their zone.
+  for (const u of due) {
+    const todayStr = localDateStr(tzOf(u));
 
     // Tasks
     for (const t of tasks) {
-      if (!alertsToday(t, todayStr)) continue;
-      const url = `${APP_URL()}/tasks`;
-      await pushToUsers(audienceUsers(t, members), {
+      if (!inAudience(t, u) || !alertsToday(t, todayStr)) continue;
+      await pushToUser(u, {
         title: 'Maintenance due',
         body: t.itemId?.name ? `${t.title} (${t.itemId.name})` : t.title,
-        url, tag: `task-${t._id}`,
+        url: `${APP_URL()}/tasks`, tag: `task-${t._id}`,
       });
-      console.log(`[Scheduler] Task alert: ${t.title}`);
+      console.log(`[Scheduler] Task alert: ${t.title} → ${u.email}`);
     }
 
     // Chores
     for (const c of chores) {
-      if (!alertsToday(c, todayStr)) continue;
-      await pushToUsers(audienceUsers(c, members), {
+      if (!inAudience(c, u) || !alertsToday(c, todayStr)) continue;
+      await pushToUser(u, {
         title: 'Chore due', body: c.title, url: `${APP_URL()}/chores`, tag: `chore-${c._id}`,
       });
-      console.log(`[Scheduler] Chore alert: ${c.title}`);
+      console.log(`[Scheduler] Chore alert: ${c.title} → ${u.email}`);
     }
 
     // Birthdays — always, to everyone.
@@ -108,12 +123,12 @@ async function runDailyCheckForHousehold(hh) {
       const bDay = String(b.getUTCDate()).padStart(2, '0');
       if (bMo !== mo || bDay !== day) continue;
       const turning = Number(todayStr.slice(0, 4)) - b.getUTCFullYear();
-      await pushToUsers(members, {
+      await pushToUser(u, {
         title: '🎂 Birthday today',
         body: turning > 0 ? `${p.name} turns ${turning} today` : `${p.name}'s birthday is today`,
         url: `${APP_URL()}/people`, tag: `bday-${p._id}-${todayStr}`,
       });
-      console.log(`[Scheduler] Birthday alert: ${p.name}`);
+      console.log(`[Scheduler] Birthday alert: ${p.name} → ${u.email}`);
     }
   }
 }
@@ -205,7 +220,8 @@ async function fanOutEventReminder(event) {
     ? { weekday: 'short', month: 'short', day: 'numeric' }
     : { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
 
-  await pushToUsers(audienceUsers(event, members), {
+  // Skip recipients who get this reminder on-device (Phase 5).
+  await pushToUsers(audienceUsers(event, members).filter(u => !u.localReminders), {
     title: `Reminder: ${event.title}`,
     body: event.location || when,
     url: `${APP_URL()}/calendar`,
@@ -224,4 +240,8 @@ function startScheduler() {
   console.log('[Scheduler] Per-item push alerts: daily check hourly (fires 07:00 local for tasks/chores/birthdays); event reminders every 15 min; orphan-upload cleanup at 03:30');
 }
 
-module.exports = { startScheduler, runDailyCheck, runEventReminderCheck };
+module.exports = {
+  startScheduler, runDailyCheck, runEventReminderCheck,
+  // Exported for tests.
+  runDailyCheckForHousehold, inAudience, alertsToday, localHour, localDateStr,
+};
