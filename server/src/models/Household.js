@@ -14,6 +14,9 @@ const householdSchema = new mongoose.Schema({
   name:     { type: String, required: true },
   ownerId:  { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
   joinCode: { type: String, required: true, unique: true, index: true },
+  // Current Household Data Key version. 0 = no HDK minted yet; the owner mints
+  // v1 (self-wrapped envelope) on first unlock. Bumped on lazy rotation (Phase 7).
+  currentKeyVersion: { type: Number, default: 0 },
   // Shared (household-level) settings — moved off User in Phase 3.
   timezone:           { type: String, default: 'America/Toronto' },
   homeAddress:        { type: String, default: '' },
