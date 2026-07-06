@@ -9,7 +9,7 @@
 const express = require('express');
 const MonetizationConfig = require('../models/MonetizationConfig');
 const Household = require('../models/Household');
-const { invalidateConfigCache, currentMonthKey } = require('../middleware/usageMeter');
+const { invalidateConfigCache, currentPeriodKey } = require('../middleware/usageMeter');
 const { requireAuth, requireAdmin } = require('../middleware/auth');
 
 const router = express.Router();
@@ -41,10 +41,10 @@ router.put('/', async (req, res) => {
   }
 });
 
-// Households + current-month usage, for the temp page's plan management table.
+// Households + current-week usage, for the temp page's plan management table.
 router.get('/households', async (_req, res) => {
   try {
-    const month = currentMonthKey();
+    const period = currentPeriodKey();
     const households = await Household.find({}, 'name joinCode plan usage').lean();
     res.json(
       households.map((h) => ({
@@ -52,7 +52,7 @@ router.get('/households', async (_req, res) => {
         name: h.name,
         joinCode: h.joinCode,
         plan: h.plan || 'free',
-        usageThisMonth: h.usage?.[month] || {},
+        usageThisWeek: h.usage?.[period] || {},
       }))
     );
   } catch (err) {

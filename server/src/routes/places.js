@@ -33,6 +33,10 @@ router.get('/autocomplete', async (req, res) => {
     } else if (type === 'transit') {
       // Train stations, ferry terminals, etc. for rail/sea journeys (max 5 types)
       body.includedPrimaryTypes = ['train_station', 'transit_station', 'subway_station', 'light_rail_station', 'ferry_terminal'];
+    } else if (type === 'business') {
+      // Service contacts: match both businesses and street addresses (no
+      // primary-type filter so a plumber name *or* an address resolves), CA-scoped.
+      body.includedRegionCodes = ['CA'];
     } else {
       body.includedPrimaryTypes = ['establishment'];
     }

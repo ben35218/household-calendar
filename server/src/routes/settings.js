@@ -11,8 +11,11 @@ router.use(requireAuth);
 // Interests / aboutMe (notes) now live on the user's self Person record,
 // managed from the People page — not here. Notifications are no longer a global
 // setting — alerts are configured per item and delivered via push.
-const SHARED   = ['timezone', 'homeAddress', 'groceryShoppingDay', 'grocerySections', 'reminderLeadDays'];
-const PERSONAL = ['firstName', 'lastName', 'birthday'];
+// timezone is personal: alerts fire at each member's own 7am local, so a
+// travelling or out-of-town member gets correct timing regardless of the
+// household's default zone.
+const SHARED   = ['homeAddress', 'groceryShoppingDay', 'grocerySections', 'reminderLeadDays'];
+const PERSONAL = ['firstName', 'lastName', 'birthday', 'timezone'];
 
 router.get('/', async (req, res) => {
   const u = req.user;
@@ -24,8 +27,9 @@ router.get('/', async (req, res) => {
   res.json({
     email: u.email,
     firstName: u.firstName, lastName: u.lastName, birthday: u.birthday,
+    timezone: u.timezone,
     // shared (household)
-    timezone: hh.timezone, homeAddress: hh.homeAddress,
+    homeAddress: hh.homeAddress,
     groceryShoppingDay: hh.groceryShoppingDay, grocerySections: hh.grocerySections,
     reminderLeadDays: hh.reminderLeadDays,
     householdMemberCount: memberCount,

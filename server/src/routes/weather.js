@@ -11,11 +11,20 @@ const {
 const router = express.Router();
 router.use(requireAuth);
 
-// Location is a shared household setting; coords are cached on the household.
-async function getCoords(household) {
-  if (household.lat && household.lon) return { lat: household.lat, lon: household.lon };
-  const coords = await geocodeAddress(household.homeAddress);
-  await Household.findByIdAndUpdate(household._id, coords);
+// Location comes from the household when the user belongs to one, otherwise from
+// the user's own account — mirroring places.js and the settings GET fallback, so
+// accounts with an address on the user but an empty household still get weather.
+function locationHolder(req) {
+  return req.household || req.user;
+}
+
+// Cache geocoded coords back onto whichever doc supplied the address.
+async function getCoords(req) {
+  const holder = locationHolder(req);
+  if (holder.lat && holder.lon) return { lat: holder.lat, lon: holder.lon };
+  const coords = await geocodeAddress(holder.homeAddress);
+  const Model = req.household ? Household : User;
+  await Model.findByIdAndUpdate(holder._id, coords);
   return coords;
 }
 
@@ -38,10 +47,9 @@ function forecastToRecord(userId, day) {
 // Existing endpoint — returns full forecast with hourly data for WeatherWidget
 router.get('/', async (req, res) => {
   try {
-    const household = req.household;
-    if (!household?.homeAddress) return res.status(400).json({ error: 'No home address configured. Add one in Settings.' });
+    if (!locationHolder(req)?.homeAddress) return res.status(400).json({ error: 'No home address configured. Add one in Settings.' });
 
-    const { lat, lon } = await getCoords(household);
+    const { lat, lon } = await getCoords(req);
     const raw = await fetchWeather(lat, lon);
     const result = buildForecast(raw);
 
@@ -69,8 +77,7 @@ router.get('/range', async (req, res) => {
     const { from, to } = req.query;
     if (!from || !to) return res.status(400).json({ error: 'from and to required' });
 
-    const household = req.household;
-    if (!household?.homeAddress) return res.json({ records: [] });
+    if (!locationHolder(req)?.homeAddress) return res.json({ records: [] });
 
     // One-time migration: rename legacy goodForMowing → goodWeather
     await WeatherRecord.updateMany(
@@ -103,7 +110,7 @@ router.get('/range', async (req, res) => {
 
     if (missing.length) {
       try {
-        const { lat, lon } = await getCoords(household);
+        const { lat, lon } = await getCoords(req);
         const archiveRaw = await fetchWeatherArchive(lat, lon, missing[0], missing[missing.length - 1]);
 
         if (archiveRaw.daily) {
@@ -145,7 +152,7 @@ router.get('/range', async (req, res) => {
     const hasForecast = stored.some(r => r.date >= today);
     if (!hasForecast && to >= today) {
       try {
-        const { lat, lon } = await getCoords(household);
+        const { lat, lon } = await getCoords(req);
         const raw = await fetchWeather(lat, lon);
         const result = buildForecast(raw);
         const forecastOps = result.forecast.map(day => ({
@@ -174,10 +181,9 @@ router.get('/range', async (req, res) => {
 // 90-day seasonal outlook — averages same window across past 3 years
 router.get('/outlook', async (req, res) => {
   try {
-    const household = req.household;
-    if (!household?.homeAddress) return res.status(400).json({ error: 'No home address configured. Add one in Settings.' });
+    if (!locationHolder(req)?.homeAddress) return res.status(400).json({ error: 'No home address configured. Add one in Settings.' });
 
-    const { lat, lon } = await getCoords(household);
+    const { lat, lon } = await getCoords(req);
 
     const today = new Date();
     const DAYS = 90;
@@ -240,7 +246,9 @@ router.get('/outlook', async (req, res) => {
 
 router.delete('/geocache', async (req, res) => {
   try {
-    await Household.findByIdAndUpdate(req.household._id, { $unset: { lat: 1, lon: 1 } });
+    const holder = locationHolder(req);
+    const Model = req.household ? Household : User;
+    await Model.findByIdAndUpdate(holder._id, { $unset: { lat: 1, lon: 1 } });
     res.json({ message: 'Geocache cleared' });
   } catch (err) {
     res.status(500).json({ error: err.message });

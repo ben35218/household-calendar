@@ -1,11 +1,11 @@
-// Per-household monthly quota enforcement for cost-bearing AI actions.
+// Per-household weekly quota enforcement for cost-bearing AI actions.
 //
 // Usage:
 //   router.post('/from-photo', meter('scan'), upload.single('photo'), handler)
 //
 // Runs AFTER requireAuth (so req.household / req.user are set). For each action:
 //   1. Resolve the household's plan and the action's quota from MonetizationConfig.
-//   2. If the current month's counter is already at/over quota → 402 with an
+//   2. If the current week's counter is already at/over quota → 402 with an
 //      upgrade payload. A `null` quota means unlimited (still tracked).
 //   3. Otherwise let the request proceed and, on a 2xx response, atomically
 //      $inc the counter (so failed calls don't burn quota).
@@ -39,8 +39,53 @@ function invalidateConfigCache() {
   cachedAt = 0;
 }
 
-function currentMonthKey(d = new Date()) {
-  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
+// Usage windows reset weekly, every Wednesday at 5:00 PM America/New_York
+// (Eastern) — a fixed instant for all users worldwide, regardless of their local
+// timezone. The reset weekday/hour is defined in Eastern and stays put across ET
+// DST changes (the corresponding UTC instant just shifts by an hour).
+const RESET_ZONE = 'America/New_York';
+const RESET_WEEKDAY = 3; // 0=Sun … 3=Wed
+const RESET_HOUR = 17;   // 5PM
+
+// Wall-clock components of `date` in the reset zone.
+function zoneParts(date) {
+  const dtf = new Intl.DateTimeFormat('en-US', {
+    timeZone: RESET_ZONE, hour12: false,
+    year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
+  });
+  const p = Object.fromEntries(dtf.formatToParts(date).map((x) => [x.type, x.value]));
+  const hour = p.hour === '24' ? 0 : Number(p.hour); // some ICU builds emit '24' for midnight
+  return { year: Number(p.year), month: Number(p.month), day: Number(p.day), hour, minute: Number(p.minute) };
+}
+
+// UTC instant (Date) for a given wall-clock time in the reset zone. Anchored at
+// 5PM, far from the 2AM DST boundary, so the single offset lookup is exact.
+function zoneWallToInstant(year, month, day, hour) {
+  const guess = Date.UTC(year, month - 1, day, hour, 0, 0);
+  const seen = zoneParts(new Date(guess));
+  const asIfUTC = Date.UTC(seen.year, seen.month - 1, seen.day, seen.hour, seen.minute);
+  const offsetMs = asIfUTC - guess; // zone = UTC + offset
+  return new Date(guess - offsetMs);
+}
+
+// ISO date (in the reset zone) of the Wednesday that opened the current window.
+function currentPeriodKey(d = new Date()) {
+  const p = zoneParts(d);
+  const weekday = new Date(Date.UTC(p.year, p.month - 1, p.day)).getUTCDay();
+  let daysBack = (weekday - RESET_WEEKDAY + 7) % 7; // days since the most recent Wednesday
+  if (weekday === RESET_WEEKDAY && p.hour < RESET_HOUR) daysBack = 7; // before today's 5PM → last week's window
+  const anchor = new Date(Date.UTC(p.year, p.month - 1, p.day - daysBack));
+  return anchor.toISOString().slice(0, 10);
+}
+
+// The next reset instant (first Wednesday 5PM ET strictly at/after `d`).
+function nextPeriodResetAt(d = new Date()) {
+  const p = zoneParts(d);
+  const weekday = new Date(Date.UTC(p.year, p.month - 1, p.day)).getUTCDay();
+  let daysAhead = (RESET_WEEKDAY - weekday + 7) % 7; // days until the next Wednesday
+  if (daysAhead === 0 && p.hour >= RESET_HOUR) daysAhead = 7; // today's 5PM already passed
+  const target = new Date(Date.UTC(p.year, p.month - 1, p.day + daysAhead));
+  return zoneWallToInstant(target.getUTCFullYear(), target.getUTCMonth() + 1, target.getUTCDate(), RESET_HOUR);
 }
 
 function nextTier(plan) {
@@ -60,14 +105,14 @@ function meter(action) {
       const tier = config.tiers?.[plan] || config.tiers?.free || {};
       const quota = tier.quotas ? tier.quotas[action] : null;
 
-      const month = currentMonthKey();
+      const period = currentPeriodKey();
 
       // Unlimited (null) → track only, never block.
       if (quota !== null && quota !== undefined) {
-        const used = household?.usage?.[month]?.[action] || 0;
+        const used = household?.usage?.[period]?.[action] || 0;
         if (used >= quota) {
           return res.status(402).json({
-            error: 'You’ve reached your monthly limit for this feature.',
+            error: 'You’ve reached your weekly limit for this feature.',
             code: 'QUOTA_EXCEEDED',
             action,
             plan,
@@ -86,7 +131,7 @@ function meter(action) {
           if (res.statusCode >= 200 && res.statusCode < 300) {
             Household.updateOne(
               { _id: household._id },
-              { $inc: { [`usage.${month}.${action}`]: 1 } }
+              { $inc: { [`usage.${period}.${action}`]: 1 } }
             ).catch((err) => console.error('[usageMeter] increment failed:', err.message));
           }
         });
@@ -134,4 +179,4 @@ const mapsSweep = setInterval(() => {
 }, 60 * 60 * 1000);
 if (typeof mapsSweep.unref === 'function') mapsSweep.unref();
 
-module.exports = { meter, mapsGuard, getConfig, invalidateConfigCache, currentMonthKey, nextTier, TIER_ORDER };
+module.exports = { meter, mapsGuard, getConfig, invalidateConfigCache, currentPeriodKey, nextPeriodResetAt, nextTier, TIER_ORDER };

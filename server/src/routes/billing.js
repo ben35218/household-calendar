@@ -11,7 +11,7 @@ const express = require('express');
 const Household = require('../models/Household');
 const MonetizationConfig = require('../models/MonetizationConfig');
 const { requireAuth, requireAdmin } = require('../middleware/auth');
-const { getConfig, currentMonthKey } = require('../middleware/usageMeter');
+const { getConfig, currentPeriodKey, nextPeriodResetAt } = require('../middleware/usageMeter');
 
 const router = express.Router();
 
@@ -76,13 +76,14 @@ router.get('/status', async (req, res) => {
   try {
     const config = await getConfig();
     const plan = req.household?.plan || 'free';
-    const month = currentMonthKey();
+    const period = currentPeriodKey();
     const tiers = config.tiers || {};
     res.json({
       plan,
       planLabel: tiers[plan]?.label || plan,
-      usage: req.household?.usage?.[month] || {},
+      usage: req.household?.usage?.[period] || {},
       quotas: tiers[plan]?.quotas || {},
+      resetsAt: nextPeriodResetAt().toISOString(),
       models: config.models || {},
       hasHousehold: Boolean(req.household),
       catalog: MonetizationConfig.TIERS.map((key) => ({
