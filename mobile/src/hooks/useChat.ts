@@ -30,6 +30,8 @@ export interface ChatDoneData {
   followups?: string[];
   navigateTo?: string;
   tasksCreated?: { id: string; title: string }[];
+  // Proposed tasks the client must create encrypted post-drop (§9.1 P4d).
+  clientCreateTasks?: Record<string, unknown>[];
   [key: string]: unknown;
 }
 

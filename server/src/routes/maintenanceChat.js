@@ -73,9 +73,24 @@ async function extractManualText(manual) {
   }
 }
 
-async function executeTool(name, input, userId, itemId, scopeIds) {
+async function executeTool(name, input, ctx) {
+  const { userId, itemId, scopeIds, household, clientTasks } = ctx;
   switch (name) {
     case 'get_item_tasks': {
+      // Ephemeral-consent (§9.1 P4d): use the client's decrypted item tasks when
+      // supplied so the assistant sees real titles post-drop; else read the DB.
+      if (clientTasks) {
+        return {
+          tasks: clientTasks.map(t => ({
+            id:           t._id,
+            title:        t.title,
+            category:     t.categoryName || null,
+            subcategory:  t.subcategoryName || null,
+            recurrence:   t.recurrence,
+            nextDueDate:  t.nextDueDate ? new Date(t.nextDueDate).toISOString().slice(0, 10) : null,
+          })),
+        };
+      }
       const tasks = await MaintenanceTask.find({ userId: { $in: scopeIds }, itemId, active: true })
         .populate('categoryId', 'name')
         .populate('subcategoryId', 'name')
@@ -111,8 +126,7 @@ async function executeTool(name, input, userId, itemId, scopeIds) {
     }
 
     case 'create_tasks': {
-      const created = [];
-      for (const t of input.tasks) {
+      const payloads = input.tasks.map(t => {
         const recurrence = t.recurrenceType === 'one-time'
           ? { type: 'one-time' }
           : {
@@ -139,11 +153,26 @@ async function executeTool(name, input, userId, itemId, scopeIds) {
         if (t.categoryId)    taskData.categoryId    = t.categoryId;
         if (t.subcategoryId) taskData.subcategoryId = t.subcategoryId;
         if (t.description)   taskData.description   = t.description;
+        return taskData;
+      });
 
+      // Ephemeral-consent (§9.1 P4d): post-drop the server can't create readable
+      // content, so hand the computed payloads back for the client to create
+      // *encrypted*. Model still sees success. Dual-write path writes as before.
+      if (household?.e2eeActive) {
+        return {
+          success:           true,
+          tasksCreated:      payloads.length,
+          tasks:             payloads.map(p => ({ title: p.title })),
+          _clientCreateTasks: payloads,
+        };
+      }
+
+      const created = [];
+      for (const taskData of payloads) {
         const task = await MaintenanceTask.create(taskData);
         created.push({ id: task._id, title: task.title });
       }
-
       return {
         success:       true,
         tasksCreated:  created.length,
@@ -313,11 +342,19 @@ router.post('/', meter('chat'), async (req, res) => {
       system: systemPrompt,
       tools: TOOLS,
       messages,
-      executeTool: (name, input) => executeTool(name, input, userId, itemId, req.scopeIds),
+      executeTool: (name, input) => executeTool(name, input, {
+        userId, itemId, scopeIds: req.scopeIds, household: req.household,
+        clientTasks: Array.isArray(req.body.tasks) ? req.body.tasks : null,
+      }),
       collectSideEffects: (block, result, acc) => {
         if (result && result._tasksCreated) {
           acc.tasksCreated = (acc.tasksCreated || []).concat(result._tasksCreated);
           delete result._tasksCreated; // keep it out of the model-facing tool result
+        }
+        if (result && result._clientCreateTasks) {
+          // Tasks the client must create encrypted (§9.1 P4d).
+          acc.clientCreateTasks = (acc.clientCreateTasks || []).concat(result._clientCreateTasks);
+          delete result._clientCreateTasks;
         }
       },
     });

@@ -32,11 +32,17 @@ import { ref, onMounted } from 'vue';
 import { useRoute } from 'vue-router';
 import ChatPanel from '../components/ChatPanel.vue';
 import { useChat } from '../composables/useChat';
-import { itemsApi, householdApi } from '../services/api';
-import { getHDK, openRecord } from '../services/e2ee';
+import { itemsApi, tasksApi, householdApi } from '../services/api';
+import { getHDK, openRecord, sealNew } from '../services/e2ee';
 
 const route  = useRoute();
 const itemId = route.params.id;
+
+// Encrypted maintenance-task content (mirrors TaskFormView).
+const TASK_ENC = (p) => ({
+  title: p.title, description: p.description, instructions: p.instructions,
+  estimatedCost: p.estimatedCost, estimatedDurationMins: p.estimatedDurationMins,
+});
 
 const itemName     = ref('');
 const loadError    = ref('');
@@ -50,8 +56,26 @@ const chat = useChat({
   contextEndpoint: `/api/maintenance/chat/context?itemId=${itemId}`,
   storageKey: `household-calendar-maint-chat-${itemId}`,
   buildBody: (messages) => ({ itemId, messages, ...(ephemeral.value || {}) }),
-  onResult: (data) => {
-    if (data.tasksCreated?.length) createdTasks.value = createdTasks.value.concat(data.tasksCreated);
+  onResult: async (data) => {
+    // Post-drop the server hands back proposed tasks for the client to create
+    // *encrypted* (§9.1 P4d); pre-drop the server already created them.
+    if (data.clientCreateTasks?.length) {
+      const created = [];
+      for (const p of data.clientCreateTasks) {
+        try {
+          const payload = {
+            itemId, title: p.title, description: p.description,
+            recurrence: p.recurrence, nextDueDate: p.nextDueDate,
+            priority: p.priority, categoryId: p.categoryId, subcategoryId: p.subcategoryId,
+          };
+          const { data: t } = await tasksApi.create(await sealNew('MaintenanceTask', payload, TASK_ENC(payload)));
+          created.push({ id: t._id, title: p.title });
+        } catch { /* skip a failed task, keep the rest */ }
+      }
+      createdTasks.value = createdTasks.value.concat(created);
+    } else if (data.tasksCreated?.length) {
+      createdTasks.value = createdTasks.value.concat(data.tasksCreated);
+    }
   },
   toolLabels: {
     get_item_tasks: 'Reviewing existing tasks…',
@@ -67,7 +91,12 @@ onMounted(async () => {
     itemName.value = item.name;
     let e2eeActive = false;
     try { e2eeActive = !!(await householdApi.get()).data.e2eeActive; } catch { /* solo/offline */ }
-    if (e2eeActive && getHDK()) ephemeral.value = { item };
+    if (e2eeActive && getHDK()) {
+      const tasks = await tasksApi.list({ item: itemId })
+        .then(({ data }) => Promise.all(data.map((t) => openRecord('MaintenanceTask', t))))
+        .catch(() => []);
+      ephemeral.value = { item, tasks };
+    }
   } catch {
     loadError.value = 'Item not found.';
     return;

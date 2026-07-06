@@ -4,12 +4,18 @@ import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import { useQueryClient } from '@tanstack/react-query';
 import { useChat } from '../../hooks/useChat';
 import ChatScreen from '../chat/ChatScreen';
-import { itemsApi, householdApi } from '../../api';
-import { getHDK, openRecord } from '../../lib/e2ee';
+import { itemsApi, tasksApi, householdApi } from '../../api';
+import { getHDK, openRecord, sealNew } from '../../lib/e2ee';
 import { MaintenanceStackParamList } from '../../navigation/MaintenanceNavigator';
 import { colors, radius, spacing } from '../../theme';
 
 type Rt = RouteProp<MaintenanceStackParamList, 'MaintenanceChat'>;
+
+// Encrypted maintenance-task content (mirrors TaskFormScreen).
+const TASK_ENC = (p: Record<string, unknown>) => ({
+  title: p.title, description: p.description, instructions: p.instructions,
+  estimatedCost: p.estimatedCost, estimatedDurationMins: p.estimatedDurationMins,
+});
 
 // Maintenance Assistant — ports client/src/views/MaintenanceChatView.vue.
 // Scoped to one item; surfaces a banner when tasks get created and refreshes
@@ -28,8 +34,25 @@ export default function MaintenanceChatScreen() {
     endpoint: '/maintenance/chat',
     contextEndpoint: `/maintenance/chat/context?itemId=${itemId}`,
     buildBody: (messages) => ({ itemId, messages, ...(ephemeralRef.current || {}) }),
-    onResult: (data) => {
-      if (data.tasksCreated?.length) {
+    onResult: async (data) => {
+      // Post-drop the server hands back proposed tasks for the client to create
+      // *encrypted* (§9.1 P4d); pre-drop the server already created them.
+      if (data.clientCreateTasks?.length) {
+        const created: { id: string; title: string }[] = [];
+        for (const p of data.clientCreateTasks) {
+          try {
+            const payload = {
+              itemId, title: p.title, description: p.description,
+              recurrence: p.recurrence, nextDueDate: p.nextDueDate,
+              priority: p.priority, categoryId: p.categoryId, subcategoryId: p.subcategoryId,
+            };
+            const { data: t } = await tasksApi.create(await sealNew('MaintenanceTask', payload, TASK_ENC(payload)));
+            created.push({ id: t._id, title: String(p.title) });
+          } catch { /* skip a failed task, keep the rest */ }
+        }
+        if (created.length) setCreatedTasks((prev) => prev.concat(created));
+        qc.invalidateQueries({ queryKey: ['tasks', 'forItem', itemId] });
+      } else if (data.tasksCreated?.length) {
         setCreatedTasks((prev) => prev.concat(data.tasksCreated!));
         qc.invalidateQueries({ queryKey: ['tasks', 'forItem', itemId] });
       }
@@ -48,8 +71,13 @@ export default function MaintenanceChatScreen() {
         let e2eeActive = false;
         try { e2eeActive = !!(await householdApi.get()).data.e2eeActive; } catch { /* solo/offline */ }
         if (!e2eeActive || !getHDK()) return;
-        const item = await openRecord('Item', (await itemsApi.get(itemId)).data as any);
-        ephemeralRef.current = { item };
+        const [item, tasks] = await Promise.all([
+          openRecord('Item', (await itemsApi.get(itemId)).data as any),
+          tasksApi.list({ item: itemId })
+            .then(({ data }) => Promise.all(data.map((t) => openRecord('MaintenanceTask', t as any))))
+            .catch(() => []),
+        ]);
+        ephemeralRef.current = { item, tasks };
       } catch { /* non-fatal */ }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
