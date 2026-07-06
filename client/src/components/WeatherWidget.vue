@@ -130,7 +130,7 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue';
 import { format } from 'date-fns';
-import { weatherApi } from '../services/api';
+import { loadForecast } from '../services/weather';
 
 const weather = ref(null);
 const loading = ref(false);
@@ -223,11 +223,10 @@ async function load() {
   loading.value = true;
   error.value = '';
   try {
-    const { data } = await weatherApi.get();
-    weather.value = data;
+    weather.value = await loadForecast();
     selectedDayIndex.value = 0;
   } catch (e) {
-    error.value = e.response?.data?.error ?? 'Weather unavailable';
+    error.value = e.response?.data?.error ?? e.message ?? 'Weather unavailable';
   } finally {
     loading.value = false;
   }

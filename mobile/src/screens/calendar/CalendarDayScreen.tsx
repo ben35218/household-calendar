@@ -4,8 +4,9 @@ import { useQuery } from '@tanstack/react-query';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import { weatherApi, WeatherData, CalendarEvent } from '../../api';
+import { WeatherData, CalendarEvent } from '../../api';
 import { loadCalendarData } from '../../lib/calendarData';
+import { loadForecast } from '../../lib/weather';
 import { Card, Divider } from '../../components/ui';
 import HourlyForecast from '../../components/HourlyForecast';
 import { itemsForDate, eventColor, CALENDAR_COLORS } from '../../lib/calendar';
@@ -64,7 +65,7 @@ export default function CalendarDayScreen() {
   // Weather for this day (from the 16-day forecast, when available).
   const weatherQ = useQuery({
     queryKey: ['weather', 'current'],
-    queryFn: async () => (await weatherApi.get()).data,
+    queryFn: () => loadForecast(),
   });
   const wx = useMemo<WeatherData['forecast'][number] | null>(
     () => weatherQ.data?.forecast?.find((d) => d.date === date) ?? null,

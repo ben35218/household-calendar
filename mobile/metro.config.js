@@ -26,8 +26,9 @@ config.resolver.nodeModulesPaths = [
 config.resolver.extraNodeModules = {
   '@household/crypto': path.resolve(workspaceRoot, 'shared/crypto'),
   'react-native-libsodium': path.resolve(projectRoot, 'node_modules/react-native-libsodium'),
-  // Shared calendar engine (plain CJS, no deps). See §9.1 P2.
+  // Shared CJS engines (no deps). See §9.1 P2 / P5b.
   '@household/calendar': path.resolve(workspaceRoot, 'shared/calendar'),
+  '@household/weather': path.resolve(workspaceRoot, 'shared/weather'),
 };
 
 // @household/crypto uses the package "exports" field (./adapters/native).

@@ -19,9 +19,9 @@ export default defineConfig({
   // @household/calendar is a linked CommonJS package: pre-bundle it in dev so its
   // named exports resolve, and (below) run Rollup's commonjs transform over it at
   // build time (it lives outside node_modules, so it isn't covered by default).
-  optimizeDeps: { include: ['@household/calendar'], exclude: ['@household/crypto'] },
+  optimizeDeps: { include: ['@household/calendar', '@household/weather'], exclude: ['@household/crypto'] },
   build: {
-    commonjsOptions: { include: [/shared[\\/]calendar/, /node_modules/] },
+    commonjsOptions: { include: [/shared[\\/](calendar|weather)/, /node_modules/] },
   },
   resolve: { alias: { 'libsodium-wrappers-sumo': libsodiumCjs } },
   server: {

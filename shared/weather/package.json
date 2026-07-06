@@ -1,0 +1,11 @@
+{
+  "name": "@household/weather",
+  "version": "0.1.0",
+  "description": "Shared client weather engine (open-meteo geocode + forecast + buildForecast). Pure/dependency-free; used by web + mobile.",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "scripts": {
+    "test": "node --test 'index.test.js'"
+  },
+  "license": "ISC"
+}
