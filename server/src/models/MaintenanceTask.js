@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { encFields } = require('./encFields');
 
 const recurrenceSchema = new mongoose.Schema({
   type: { type: String, enum: ['interval', 'calendar', 'one-time'], required: true },
@@ -39,6 +40,8 @@ const taskSchema = new mongoose.Schema({
   intervalKm:    Number,   // e.g. 50000 — service every 50,000 km
   lastServiceKm: Number,   // odometer reading at last completion
   nextDueKm:     Number,   // lastServiceKm + intervalKm
+  // E2EE dual-write ciphertext (Phase 3+): see models/encFields.js.
+  ...encFields,
 }, { timestamps: true });
 
 module.exports = mongoose.model('MaintenanceTask', taskSchema);

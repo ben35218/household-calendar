@@ -2,6 +2,7 @@ const express = require('express');
 const multer  = require('multer');
 const Person  = require('../models/Person');
 const { requireAuth } = require('../middleware/auth');
+const { isObjectId, pickRecordEnc } = require('../services/householdKey');
 
 const router = express.Router();
 router.use(requireAuth);
@@ -86,9 +87,14 @@ router.get('/', async (req, res) => {
 router.post('/', async (req, res) => {
   try {
     const { type, name, relationship, birthday, interests, notes, address, phone, email } = req.body;
+    let enc;
+    try { enc = pickRecordEnc(req.body); }
+    catch (msg) { return res.status(400).json({ error: msg }); }
     const person = await Person.create({
+      ...(isObjectId(req.body._id) ? { _id: req.body._id } : {}),
       userId: req.user._id,
       type, name, relationship, birthday, interests, notes, address, phone, email,
+      ...enc,
     });
     res.status(201).json(person);
   } catch (err) {
@@ -105,6 +111,8 @@ router.put('/:id', async (req, res) => {
     const update = { name, relationship, birthday, interests, notes, address, phone, email };
     // Self-records always stay 'family'; everyone else can be re-typed freely.
     update.type = existing.accountId ? 'family' : type;
+    try { Object.assign(update, pickRecordEnc(req.body)); }
+    catch (msg) { return res.status(400).json({ error: msg }); }
 
     Object.assign(existing, update);
     await existing.save();

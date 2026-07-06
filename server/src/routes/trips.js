@@ -12,6 +12,7 @@ const { randomInt } = require('crypto');
 const { requireAuth } = require('../middleware/auth');
 const { rateLimit } = require('../middleware/rateLimit');
 const { meter } = require('../middleware/usageMeter');
+const { isObjectId, pickRecordEnc } = require('../services/householdKey');
 const { resolvePlaceWithTz } = require('../services/geo');
 const { getRates, convert } = require('../services/fx');
 
@@ -263,8 +264,25 @@ router.get('/:id', async (req, res) => {
     const households = famIds.length ? await Household.find({ _id: { $in: famIds } }, 'name').lean() : [];
     const names = Object.fromEntries(households.map(h => [String(h._id), h.name]));
 
+    // Legacy items may lack householdId (created before household stamping was added).
+    // Resolve their owning household via the creator's userId so visibility matches
+    // what the budget endpoint counts.
+    const legacyRaw = raw.filter(i => !i.householdId);
+    const legacyUserIds = legacyRaw.map(i => i.userId?._id || i.userId).filter(Boolean);
+    const legacyUsers = legacyUserIds.length
+      ? await User.find({ _id: { $in: legacyUserIds } }, 'householdId').lean()
+      : [];
+    const legacyHouseholdMap = Object.fromEntries(legacyUsers.map(u => [String(u._id), String(u.householdId)]));
+
     const items = raw
-      .filter(i => canSeeItem(i, familyId))                 // hide other families' private bookings
+      .filter(i => {
+        if (canSeeItem(i, familyId)) return true;
+        if (!i.householdId) {
+          const uid = i.userId?._id || i.userId;
+          return legacyHouseholdMap[String(uid)] === String(familyId);
+        }
+        return false;
+      })
       .map(i => shapeItem(i, familyId, names));             // strip other families' private fields
     const isOwner = req.scopeIds.some(id => String(id) === String(trip.userId));
     res.json({ trip, items, isOwner });
@@ -564,7 +582,13 @@ router.delete('/:id/settle-payments/:paymentId', async (req, res) => {
 
 router.post('/', async (req, res) => {
   try {
-    const trip = await Trip.create({ userId: req.user._id, ...pick(req.body, TRIP_FIELDS) });
+    let enc;
+    try { enc = pickRecordEnc(req.body); }
+    catch (msg) { return res.status(400).json({ error: msg }); }
+    const trip = await Trip.create({
+      ...(isObjectId(req.body._id) ? { _id: req.body._id } : {}),
+      userId: req.user._id, ...pick(req.body, TRIP_FIELDS), ...enc,
+    });
     res.status(201).json(trip);
   } catch (err) {
     res.status(400).json({ error: err.message });
@@ -573,9 +597,12 @@ router.post('/', async (req, res) => {
 
 router.put('/:id', async (req, res) => {
   try {
+    let enc;
+    try { enc = pickRecordEnc(req.body); }
+    catch (msg) { return res.status(400).json({ error: msg }); }
     const trip = await Trip.findOneAndUpdate(
       { _id: req.params.id, ...accessFilter(req) },
-      pick(req.body, TRIP_FIELDS),
+      { ...pick(req.body, TRIP_FIELDS), ...enc },
       { new: true },
     );
     if (!trip) return res.status(404).json({ error: 'Not found' });
@@ -605,11 +632,14 @@ router.post('/:id/items', async (req, res) => {
     const trip = await requireTripAccess(req, res);
     if (!trip) return;
     const item = new TripItem({
+      ...(isObjectId(req.body._id) ? { _id: req.body._id } : {}),
       userId: req.user._id,
       householdId: req.user.householdId,   // creator's family (snapshot)
       tripId: trip._id,
     });
     applyItemBody(item, req.body, req.user.householdId);
+    try { Object.assign(item, pickRecordEnc(req.body)); }
+    catch (msg) { return res.status(400).json({ error: msg }); }
     await item.save();
     res.status(201).json(item);
   } catch (err) {
@@ -628,6 +658,8 @@ router.put('/:id/items/:itemId', async (req, res) => {
       return res.status(403).json({ error: 'Only the household that created this booking can make it private' });
     }
     const removedKeys = applyItemBody(item, req.body, req.user.householdId);
+    try { Object.assign(item, pickRecordEnc(req.body)); }
+    catch (msg) { return res.status(400).json({ error: msg }); }
     await item.save();
     // Unlink files of families that were dropped from the booking.
     for (const key of removedKeys) {

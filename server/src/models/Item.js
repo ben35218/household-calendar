@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { encFields } = require('./encFields');
 
 const itemSchema = new mongoose.Schema({
   userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
@@ -15,6 +16,8 @@ const itemSchema = new mongoose.Schema({
   customFields: [{ key: String, value: String }],
   photoRef: String,
   autoLookupManual: { type: Boolean, default: true },
+  // E2EE dual-write ciphertext (Phase 3+): see models/encFields.js.
+  ...encFields,
 }, { timestamps: true });
 
 itemSchema.index({ userId: 1, name: 'text', manufacturer: 'text', modelNumber: 'text', location: 'text' });

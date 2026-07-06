@@ -4,6 +4,7 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 const FoodInventory = require('../models/FoodInventory');
+const { isObjectId, pickRecordEnc } = require('../services/householdKey');
 const { requireAuth } = require('../middleware/auth');
 const { meter } = require('../middleware/usageMeter');
 
@@ -114,7 +115,11 @@ router.post('/', async (req, res) => {
       }
     }
 
+    let enc;
+    try { enc = pickRecordEnc(req.body); }
+    catch (msg) { return res.status(400).json({ error: msg }); }
     const item = await FoodInventory.create({
+      ...(isObjectId(req.body._id) ? { _id: req.body._id } : {}),
       userId: req.user._id,
       name,
       quantity: quantity || '',
@@ -123,6 +128,7 @@ router.post('/', async (req, res) => {
       expirationDate: expiry || undefined,
       notes: notes || '',
       source: 'manual',
+      ...enc,
     });
     res.status(201).json(item);
   } catch (err) {
@@ -141,6 +147,8 @@ router.put('/:id', async (req, res) => {
     if (purchaseDate !== undefined) update.purchaseDate = new Date(purchaseDate);
     if (expirationDate !== undefined) update.expirationDate = expirationDate ? new Date(expirationDate) : null;
     if (notes !== undefined) update.notes = notes;
+    try { Object.assign(update, pickRecordEnc(req.body)); }
+    catch (msg) { return res.status(400).json({ error: msg }); }
 
     // If a history item's expiration date is updated to a non-expired date, restore it to active
     if (expirationDate !== undefined) {
@@ -302,27 +310,34 @@ router.post('/batch', async (req, res) => {
 // POST /suggest-recipes
 router.post('/suggest-recipes', meter('generation'), async (req, res) => {
   try {
-    const { itemNames, ingredientMode } = req.body;
-    if (!Array.isArray(itemNames) || itemNames.length === 0) {
-      return res.status(400).json({ error: 'itemNames array is required' });
+    const { itemNames, ingredientMode, query } = req.body;
+    const hasItems = Array.isArray(itemNames) && itemNames.length > 0;
+    const q = typeof query === 'string' ? query.trim() : '';
+    if (!hasItems && !q) {
+      return res.status(400).json({ error: 'itemNames array or query is required' });
     }
 
-    const ingredientList = itemNames.map(n => `- ${n}`).join('\n');
+    const OUTPUT_SPEC = `Suggest exactly 5 recipes. For each recipe:\n- "title": recipe name\n- "description": one sentence describing the dish\n- "time": estimated total time (e.g. "30 min")\n- "usedIngredients": array of the main ingredients this recipe uses\n- "needsOther": array of any additional ingredients needed\n\nReturn ONLY valid JSON with no markdown:\n{ "recipes": [{ "title": "...", "description": "...", "time": "...", "usedIngredients": ["..."], "needsOther": ["..."] }] }`;
 
-    const CONSTRAINTS = {
-      focus: `CONSTRAINT: Each recipe MUST prominently feature at least 2–3 ingredients from the list above as its main components. Common pantry staples (salt, pepper, cooking oil, basic spices, water) are permitted in addition to the listed ingredients, but they must not be the focus — the listed ingredients must be. Do not suggest recipes where the listed ingredients are only minor additions.`,
-      included: `CONSTRAINT: Suggest a variety of recipes where at least one or two of the listed ingredients appear as meaningful supporting components — but the listed ingredients do NOT need to be the star or focus of the dish. They can play a secondary or background role (e.g. a vegetable side, a flavouring agent, an extra topping). The recipes should be diverse in style and centred on other main proteins or bases. Do not suggest recipes where the listed ingredients are entirely absent.`,
-      strict: `STRICT CONSTRAINT: Every recipe you suggest MUST use ONLY ingredients from the list above. Do not include any ingredient not on this list — not even salt, oil, or spices unless they are explicitly on the list. If a recipe would require anything outside the list, do not suggest it.`,
-    };
-    const constraint = CONSTRAINTS[ingredientMode] ?? CONSTRAINTS.focus;
+    let content;
+    if (hasItems) {
+      const ingredientList = itemNames.map(n => `- ${n}`).join('\n');
+      const CONSTRAINTS = {
+        focus: `CONSTRAINT: Each recipe MUST prominently feature at least 2–3 ingredients from the list above as its main components. Common pantry staples (salt, pepper, cooking oil, basic spices, water) are permitted in addition to the listed ingredients, but they must not be the focus — the listed ingredients must be. Do not suggest recipes where the listed ingredients are only minor additions.`,
+        included: `CONSTRAINT: Suggest a variety of recipes where at least one or two of the listed ingredients appear as meaningful supporting components — but the listed ingredients do NOT need to be the star or focus of the dish. They can play a secondary or background role (e.g. a vegetable side, a flavouring agent, an extra topping). The recipes should be diverse in style and centred on other main proteins or bases. Do not suggest recipes where the listed ingredients are entirely absent.`,
+        strict: `STRICT CONSTRAINT: Every recipe you suggest MUST use ONLY ingredients from the list above. Do not include any ingredient not on this list — not even salt, oil, or spices unless they are explicitly on the list. If a recipe would require anything outside the list, do not suggest it.`,
+      };
+      const constraint = CONSTRAINTS[ingredientMode] ?? CONSTRAINTS.focus;
+      const preference = q ? `\n\nAdditional preference from me: "${q}". Honour this where it doesn't conflict with the ingredient constraint above.` : '';
+      content = `I have the following ingredients available:\n${ingredientList}\n\n${constraint}${preference}\n\n${OUTPUT_SPEC}\n\nFor "usedIngredients", use the exact names from my list; for "needsOther", list any ingredients needed beyond my list.`;
+    } else {
+      content = `Suggest recipes for this request: "${q}".\n\n${OUTPUT_SPEC}`;
+    }
 
     const message = await client.messages.create({
       model: MODEL,
       max_tokens: 2048,
-      messages: [{
-        role: 'user',
-        content: `I have the following ingredients available:\n${ingredientList}\n\n${constraint}\n\nSuggest exactly 5 recipes. For each recipe:\n- "title": recipe name\n- "description": one sentence describing the dish\n- "time": estimated total time (e.g. "30 min")\n- "usedIngredients": array of ingredients FROM MY LIST that this recipe uses (use the exact names I provided)\n- "needsOther": array of any additional ingredients needed beyond my list (empty array if inventoryOnly)\n\nReturn ONLY valid JSON with no markdown:\n{ "recipes": [{ "title": "...", "description": "...", "time": "...", "usedIngredients": ["..."], "needsOther": ["..."] }] }`,
-      }],
+      messages: [{ role: 'user', content }],
     });
     const parsed = JSON.parse(stripJsonFences(message.content[0].text));
     res.json(parsed);

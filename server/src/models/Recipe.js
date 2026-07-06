@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { encFields } = require('./encFields');
 
 const ingredientSchema = new mongoose.Schema({
   name:   { type: String, required: true },
@@ -19,7 +20,11 @@ const recipeSchema = new mongoose.Schema({
   ingredients:  [ingredientSchema],
   instructions:            [String],
   instructionIngredients:  { type: [[Number]], default: undefined },
+  // Per-step timer in minutes (parallel to instructions); null/absent = no timer.
+  instructionTimers:       { type: [Number], default: undefined },
   tags:                    [String],
+  // E2EE dual-write ciphertext (Phase 3+): see models/encFields.js.
+  ...encFields,
 }, { timestamps: true });
 
 module.exports = mongoose.model('Recipe', recipeSchema);

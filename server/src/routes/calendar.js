@@ -2,6 +2,7 @@ const express = require('express');
 const CalendarEvent    = require('../models/CalendarEvent');
 const { requireAuth }  = require('../middleware/auth');
 const { collectCalendarRecords } = require('../services/calendarData');
+const { isObjectId, pickRecordEnc } = require('../services/householdKey');
 
 const router = express.Router();
 router.use(requireAuth);
@@ -60,7 +61,14 @@ router.post('/events', async (req, res) => {
       recurrence,
     } = req.body;
 
+    let encFields;
+    try { encFields = pickRecordEnc(req.body); }
+    catch (msg) { return res.status(400).json({ error: msg }); }
+
     const event = await CalendarEvent.create({
+      // Honor a client-minted _id (present when the client encrypted the record,
+      // so the AAD binds to this id); otherwise let Mongo assign one.
+      ...(isObjectId(req.body._id) ? { _id: req.body._id } : {}),
       userId: req.user._id,
       calendarType, title, description, location, placeId, url,
       allDay:      allDay !== false,
@@ -74,6 +82,7 @@ router.post('/events', async (req, res) => {
       alert2At:    buildReminderAt(startDate, alert2Minutes),
       alertAudience: alertAudience || 'everyone',
       recurrence:  buildRecurrence(recurrence),
+      ...encFields,
     });
     res.status(201).json(event);
   } catch (err) {
@@ -108,6 +117,11 @@ router.put('/events/:id', async (req, res) => {
     if (reminderMinutes !== undefined)  updates.reminderMinutes  = reminderMinutes;
     if (alert2Minutes !== undefined)    updates.alert2Minutes    = alert2Minutes;
     if (recurrence !== undefined)       updates.recurrence       = buildRecurrence(recurrence);
+
+    // Re-encrypted content from the client (dual-write). Overwrites the prior
+    // ciphertext at the current key version.
+    try { Object.assign(updates, pickRecordEnc(req.body)); }
+    catch (msg) { return res.status(400).json({ error: msg }); }
 
     // Recompute alert times when startDate or alert minutes change
     if (startDate !== undefined || reminderMinutes !== undefined || alert2Minutes !== undefined) {

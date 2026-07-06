@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { encFields } = require('./encFields');
 
 const recurrenceSchema = new mongoose.Schema({
   type: { type: String, enum: ['interval', 'calendar', 'one-time'], required: true },
@@ -27,6 +28,8 @@ const choreSchema = new mongoose.Schema({
   active:               { type: Boolean, default: true },
   templateId:           String,
   icon:                 { type: String, default: 'mdi-broom' },
+  // E2EE dual-write ciphertext (Phase 3+): see models/encFields.js.
+  ...encFields,
 }, { timestamps: true });
 
 module.exports = mongoose.model('Chore', choreSchema);

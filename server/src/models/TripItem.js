@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { encFields } = require('./encFields');
 
 const attachmentSchema = new mongoose.Schema({
   storageKey:    { type: String, required: true },   // random on-disk filename
@@ -54,6 +55,8 @@ const tripItemSchema = new mongoose.Schema({
     partySize:    Number,
     confirmed:    { type: Boolean, default: false },
   }],
+  // E2EE dual-write ciphertext (Phase 3+): see models/encFields.js.
+  ...encFields,
 }, { timestamps: true });
 
 module.exports = mongoose.model('TripItem', tripItemSchema);

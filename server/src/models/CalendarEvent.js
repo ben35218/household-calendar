@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { encFields } = require('./encFields');
 
 const calendarEventSchema = new mongoose.Schema({
   userId:      { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
@@ -27,6 +28,9 @@ const calendarEventSchema = new mongoose.Schema({
     interval: { type: Number, default: 1 },
     until:    Date,
   },
+
+  // E2EE dual-write ciphertext (Phase 3+): see models/encFields.js.
+  ...encFields,
 }, { timestamps: true });
 
 module.exports = mongoose.model('CalendarEvent', calendarEventSchema);

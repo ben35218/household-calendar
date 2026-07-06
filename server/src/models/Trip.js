@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { encFields } = require('./encFields');
 
 const candidateRangeSchema = new mongoose.Schema({
   start: { type: Date, required: true },
@@ -38,6 +39,8 @@ const tripSchema = new mongoose.Schema({
     date:            { type: Date, default: Date.now },
     note:            String,
   }],
+  // E2EE dual-write ciphertext (Phase 3+): see models/encFields.js.
+  ...encFields,
 }, { timestamps: true });
 
 module.exports = mongoose.model('Trip', tripSchema);

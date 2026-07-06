@@ -1,11 +1,12 @@
 const mongoose = require('mongoose');
+const { encFields } = require('./encFields');
 
 const personSchema = new mongoose.Schema({
   userId:       { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
   // When set, this Person is the self-record for that household member's User
   // account. Self records are always type 'family' and cannot be deleted.
   accountId:    { type: mongoose.Schema.Types.ObjectId, ref: 'User', index: true, sparse: true },
-  type:         { type: String, enum: ['family', 'friend'], required: true },
+  type:         { type: String, enum: ['family', 'friend', 'service'], required: true },
   name:         { type: String, required: true, trim: true },
   relationship: { type: String, trim: true },  // e.g. "spouse", "daughter", "neighbor"
   birthday:     { type: Date },
@@ -14,6 +15,8 @@ const personSchema = new mongoose.Schema({
   address:      { type: String, trim: true },
   phone:        { type: String, trim: true },
   email:        { type: String, trim: true },
+  // E2EE dual-write ciphertext (Phase 3+): see models/encFields.js.
+  ...encFields,
 }, { timestamps: true });
 
 // Ensure the given User has a linked self-record in the People roster, creating

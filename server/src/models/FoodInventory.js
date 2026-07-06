@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { encFields } = require('./encFields');
 
 const foodInventorySchema = new mongoose.Schema({
   userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
@@ -24,6 +25,8 @@ const foodInventorySchema = new mongoose.Schema({
     enum: ['manual', 'receipt_photo', 'receipt_text'],
     default: 'manual',
   },
+  // E2EE dual-write ciphertext (Phase 3+): see models/encFields.js.
+  ...encFields,
 }, { timestamps: true });
 
 foodInventorySchema.index({ userId: 1, status: 1 });
