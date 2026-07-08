@@ -39,14 +39,14 @@ function isConfigured() {
 // Send an email. No-ops (with a log) when SMTP is unconfigured, so callers never
 // need to branch. Never throws — a failed notification must not break the
 // storage-mode flow it accompanies.
-async function sendMail({ to, subject, text, html }) {
+async function sendMail({ to, subject, text, html, attachments }) {
   if (!to) return { sent: false };
   if (!transport) {
     console.log(`[mailer] (dry) → ${to}: ${subject}`);
     return { sent: false, dryRun: true };
   }
   try {
-    await transport.sendMail({ from: MAIL_FROM, to, subject, text, html });
+    await transport.sendMail({ from: MAIL_FROM, to, subject, text, html, attachments });
     return { sent: true };
   } catch (err) {
     console.error(`[mailer] send to ${to} failed:`, err.message);
@@ -99,10 +99,53 @@ function sendDeletionPurged(user) {
   });
 }
 
+// ── Event invitations ────────────────────────────────────────────────────────
+
+// When/where line for the invite email body.
+function fmtEventWhen(event) {
+  if (event.allDay) {
+    const start = fmtDate(event.startDate);
+    if (!event.endDate || fmtDate(event.endDate) === start) return start;
+    return `${start} – ${fmtDate(event.endDate)}`;
+  }
+  const opts = { year: 'numeric', month: 'long', day: 'numeric', hour: 'numeric', minute: '2-digit' };
+  const start = new Date(event.startDate).toLocaleString('en-US', opts);
+  if (!event.endDate) return start;
+  return `${start} – ${new Date(event.endDate).toLocaleString('en-US', opts)}`;
+}
+
+// Invite a recipient to a calendar event. `ics` is the iCalendar text attached
+// so the event imports into Apple/Google/Outlook straight from the email.
+// `hasAccount` switches the call-to-action: open the app vs. join the app.
+function sendEventInvitation({ toEmail, fromName, event, hasAccount, ics }) {
+  const inviter = fromName || 'Someone';
+  const lines = [
+    `${inviter} invited you to an event:`,
+    '',
+    `  ${event.title}`,
+    `  When: ${fmtEventWhen(event)}`,
+    ...(event.location ? [`  Where: ${event.location}`] : []),
+    ...(event.description ? ['', event.description] : []),
+    '',
+    'The attached invite.ics adds this event to Apple, Google, or Outlook Calendar.',
+    '',
+    hasAccount
+      ? 'You can also accept or decline this invitation from the Invitations screen in the Household Calendar app — accepting adds the event to your calendar there.'
+      : 'Join Household Calendar to keep events like this on a shared family calendar.',
+  ];
+  return sendMail({
+    to: toEmail,
+    subject: `${inviter} invited you: ${event.title}`,
+    text: lines.join('\n') + '\n',
+    attachments: ics ? [{ filename: 'invite.ics', content: ics, contentType: 'text/calendar; method=PUBLISH' }] : undefined,
+  });
+}
+
 module.exports = {
   isConfigured,
   sendMail,
   sendDeletionScheduled,
   sendDeletionCanceled,
   sendDeletionPurged,
+  sendEventInvitation,
 };
