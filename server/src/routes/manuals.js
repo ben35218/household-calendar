@@ -30,7 +30,9 @@ const upload = multer({
   storage,
   limits: { fileSize: 50 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
-    const allowed = ['application/pdf', 'image/jpeg', 'image/png', 'image/gif'];
+    // octet-stream = E2EE ciphertext upload (Phase 4c); the real mimetype rides
+    // in the body's fileType and the bytes are opaque to us either way.
+    const allowed = ['application/pdf', 'image/jpeg', 'image/png', 'image/gif', 'application/octet-stream'];
     cb(null, allowed.includes(file.mimetype));
   },
 });

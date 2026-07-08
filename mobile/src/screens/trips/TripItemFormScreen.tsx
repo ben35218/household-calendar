@@ -1,11 +1,17 @@
 import React, { useEffect, useState } from 'react';
-import { View, Text, StyleSheet, ActivityIndicator, TouchableOpacity, Alert } from 'react-native';
+import { View, Text, StyleSheet, ActivityIndicator, TouchableOpacity, Alert, Linking, Share } from 'react-native';
+import { cacheDirectory, downloadAsync } from 'expo-file-system/legacy';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import { tripsApi, placesApi, TripItemType, FormAssistField } from '../../api';
-import { sealNew, sealUpdate, openRecord } from '../../lib/e2ee';
+import { tripsApi, placesApi, TripItemType, TripItemAttachment, FormAssistField } from '../../api';
+import { sealNew, sealUpdate, openRecord, getHDK, newObjectId } from '../../lib/e2ee';
+import { encryptFileForUpload, decryptDownloadedFile } from '../../lib/attachments';
+import { pickDocument } from '../../lib/media';
+import { uploadFile } from '../../lib/upload';
+import { API_URL } from '../../config';
+import { getCachedToken } from '../../lib/secureToken';
 
 // Encrypted trip-item content (cost/sharing/confirmation/dates stay plaintext).
 const TRIP_ITEM_ENC = (p: Record<string, unknown>) => ({
@@ -304,6 +310,69 @@ export default function TripItemFormScreen() {
     },
   });
 
+  // ── Attachments (confirmation files; E2EE on private bookings) ─────────────
+  // GET /trips/:id responds { trip, items, isOwner }; the mobile Trip type
+  // flattens this, so reach into the raw payload for both.
+  const rawTrip = (tripQ.data as any)?.trip;
+  const rawItem = isEdit ? (tripQ.data as any)?.items?.find((x: any) => x._id === itemId) : undefined;
+  const tripShared = !!(rawTrip?.shareCode || (rawTrip?.collaborators?.length ?? 0) > 0);
+  const attachments: TripItemAttachment[] = rawItem?.attachments ?? [];
+  const attachmentsUrl = `/trips/${tripId}/items/${itemId}/attachments`;
+
+  const addAttachment = useMutation({
+    mutationFn: async () => {
+      const file = await pickDocument();
+      if (!file) return null;
+      // E2EE (Phase 4c): private booking on an unshared trip + unlocked HDK →
+      // encrypt the bytes on-device and upload ciphertext + the wrapped file
+      // key. Shared bookings stay plaintext so other families can open them
+      // (the server refuses encrypted uploads there, §9.3).
+      if (getHDK() && !tripShared && form.sharing === 'private') {
+        const attId = await newObjectId();
+        const sealed = await encryptFileForUpload('TripItemAttachment', attId, file.uri);
+        if (sealed) {
+          return uploadFile(attachmentsUrl, { uri: sealed.uri, name: `${attId}.bin`, type: 'application/octet-stream' }, 'file', {
+            encrypted: true,
+            _id: attId,
+            wrappedFileKey: sealed.wrappedFileKey,
+            keyVersion: sealed.keyVersion,
+            fileType: file.type || 'application/pdf',
+            title: file.name,
+          });
+        }
+      }
+      return uploadFile(attachmentsUrl, file, 'file');
+    },
+    onSuccess: (r) => { if (r) qc.invalidateQueries({ queryKey: ['trips', tripId] }); },
+    onError: (e: any) => Alert.alert('Upload failed', e.response?.data?.error || 'Could not upload that file.'),
+  });
+
+  // Open: encrypted attachments download as ciphertext, decrypt on-device to a
+  // temp file, and share/open; plaintext ones open via the tokened URL.
+  const openAttachment = useMutation({
+    mutationFn: async (att: TripItemAttachment) => {
+      const url = `${API_URL}${attachmentsUrl}/${att._id}/download`;
+      if (!att.encrypted) { await Linking.openURL(`${url}?token=${getCachedToken()}`); return; }
+      if (!getHDK() || !att.wrappedFileKey) throw new Error('Unlock your account to open this encrypted attachment.');
+      const dl = await downloadAsync(url, `${cacheDirectory}dl-att-${att._id}.bin`, {
+        headers: { Authorization: `Bearer ${getCachedToken()}` },
+      });
+      const name = att.filename && att.filename.includes('.')
+        ? att.filename
+        : `attachment${(att.fileType || '').includes('pdf') ? '.pdf' : ''}`;
+      const plainUri = await decryptDownloadedFile('TripItemAttachment', att._id, att.keyVersion, att.wrappedFileKey, dl.uri, name);
+      if (!plainUri) throw new Error('Could not decrypt this attachment.');
+      await Share.share({ url: plainUri });
+    },
+    onError: (e: any) => Alert.alert('Could not open attachment', e?.message || 'Please try again.'),
+  });
+
+  const deleteAttachment = useMutation({
+    mutationFn: (attId: string) => tripsApi.removeAttachment(tripId, itemId!, attId),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['trips', tripId] }),
+    onError: (e: any) => Alert.alert('Could not remove attachment', e.response?.data?.error || 'Please try again.'),
+  });
+
   const onSave = () => {
     if (!form.title.trim()) return setError('Title is required');
     if (isJourney ? !form.depDate : !form.startDate) return setError('A date is required');
@@ -514,6 +583,46 @@ export default function TripItemFormScreen() {
       {error ? <Text style={styles.error}>{error}</Text> : null}
 
       {isEdit ? (
+        <>
+          <SectionTitle>Attachments</SectionTitle>
+          {attachments.map((att) => (
+            <View key={att._id} style={styles.attachRow}>
+              <TouchableOpacity
+                style={styles.attachMain}
+                onPress={() => openAttachment.mutate(att)}
+                disabled={openAttachment.isPending}
+              >
+                <Ionicons
+                  name={(att.fileType || '').startsWith('image/') ? 'image-outline' : 'document-outline'}
+                  size={18}
+                  color={accent}
+                />
+                <Text style={styles.attachName} numberOfLines={1}>{att.filename || 'Attachment'}</Text>
+                {att.encrypted ? <Ionicons name="lock-closed" size={13} color={colors.textMuted} /> : null}
+              </TouchableOpacity>
+              <TouchableOpacity
+                onPress={() =>
+                  Alert.alert('Remove attachment?', '', [
+                    { text: 'Cancel', style: 'cancel' },
+                    { text: 'Remove', style: 'destructive', onPress: () => deleteAttachment.mutate(att._id) },
+                  ])
+                }
+              >
+                <Ionicons name="trash-outline" size={18} color={colors.textMuted} />
+              </TouchableOpacity>
+            </View>
+          ))}
+          <Button
+            title={addAttachment.isPending ? 'Uploading…' : 'Attach confirmation (PDF or image)'}
+            variant="ghost"
+            color={accent}
+            onPress={() => addAttachment.mutate()}
+            disabled={addAttachment.isPending}
+          />
+        </>
+      ) : null}
+
+      {isEdit ? (
         <View style={styles.footer}>
           <Button
             title="Delete"
@@ -549,6 +658,9 @@ const styles = StyleSheet.create({
   shareAmt: { width: 110 },
   shareSum: { fontSize: 12, color: colors.textMuted, marginTop: 6, marginBottom: spacing.sm },
   tzNote: { fontSize: 12, color: colors.textMuted, marginBottom: spacing.sm },
+  attachRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, paddingVertical: 8 },
+  attachMain: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
+  attachName: { flex: 1, fontSize: 14, color: colors.text },
   error: { color: colors.error, marginVertical: spacing.sm },
   footer: { flexDirection: 'row', gap: spacing.sm, marginTop: spacing.md, marginBottom: spacing.xl, alignItems: 'center' },
   endModeToggle: { flexDirection: 'row', backgroundColor: '#2A2A2A', borderRadius: 8, padding: 2, marginBottom: spacing.sm },

@@ -8,6 +8,13 @@ const attachmentSchema = new mongoose.Schema({
   fileSizeBytes: Number,
   householdId:   { type: mongoose.Schema.Types.ObjectId, ref: 'Household' }, // uploader's family (private unless one shared bill)
   uploadedAt:    { type: Date, default: Date.now },
+  // E2EE (Phase 4c): on private bookings the file on disk can be AEAD ciphertext,
+  // with the per-file key wrapped to the HDK. Shared bookings stay plaintext so
+  // other families can open them (same boundary as §9.3 shared trips). fileType
+  // then holds the *plaintext* mimetype for the client to restore after decrypt.
+  encrypted:      Boolean,
+  wrappedFileKey: String,
+  keyVersion:     Number,
 }, { _id: true });
 
 const tripItemSchema = new mongoose.Schema({

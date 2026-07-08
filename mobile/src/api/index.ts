@@ -625,8 +625,22 @@ export interface TripItem {
   myData?: { cost?: number | null; currency?: string; confirmation?: string; confirmed?: boolean; partySize?: number };
   shares?: { householdId: string; amount?: number | null }[];
   participants?: string[];
-  attachments?: { _id: string; name: string }[];
+  attachments?: TripItemAttachment[];
   userId?: { firstName?: string };
+}
+
+// Booking confirmation file (PDF/image). Encrypted ones (private bookings on an
+// E2EE household) are ciphertext on the server; wrappedFileKey + keyVersion let
+// the device decrypt after download, and fileType is the plaintext mimetype.
+export interface TripItemAttachment {
+  _id: string;
+  filename?: string;
+  fileType?: string;
+  fileSizeBytes?: number;
+  householdId?: string;
+  encrypted?: boolean;
+  wrappedFileKey?: string;
+  keyVersion?: number;
 }
 
 export interface CandidateRange {
@@ -717,6 +731,10 @@ export const tripsApi = {
   updateItem: (id: string, itemId: string, data: Record<string, unknown>) =>
     api.put<TripItem>(`/trips/${id}/items/${itemId}`, data),
   removeItem: (id: string, itemId: string) => api.delete(`/trips/${id}/items/${itemId}`),
+  // Attachment upload is multipart — see lib/upload (field 'file'):
+  //   POST /trips/:id/items/:itemId/attachments
+  removeAttachment: (id: string, itemId: string, attId: string) =>
+    api.delete(`/trips/${id}/items/${itemId}/attachments/${attId}`),
   // Decrypt-on-share (§9.3): on an E2EE household the first share of a private
   // trip must include the client-decrypted trip + items so the server can
   // re-write them as plaintext for collaborators who hold no HDK.
@@ -744,6 +762,9 @@ export interface CalendarEvent {
   reminderMinutes?: number | null;
   alert2Minutes?: number | null;
   recurrence?: { freq: string; interval?: number; until?: string };
+  // Set when this event is a copy accepted from a cross-household invitation —
+  // the form shows "Leave event" instead of Delete.
+  invitationId?: string;
   // E2EE dual-write (Phase 3a): opaque ciphertext of the content + its key version.
   keyVersion?: number;
   enc?: { alg: string; nonce: string; ct: string };
@@ -798,6 +819,56 @@ export const calendarApi = {
   createEvent: (data: Record<string, unknown>) => api.post<CalendarEvent>('/calendar/events', data),
   updateEvent: (id: string, data: Record<string, unknown>) => api.put<CalendarEvent>(`/calendar/events/${id}`, data),
   deleteEvent: (id: string) => api.delete(`/calendar/events/${id}`),
+};
+
+// ----- Event invitations (cross-household sharing by email) -------------------
+
+// Plaintext snapshot of the event carried by an invitation (the client decrypts
+// the source event and sends this alongside the eventId).
+export interface InvitationEventSnapshot {
+  title: string;
+  description?: string;
+  location?: string;
+  url?: string;
+  phone?: string;
+  startDate: string;
+  endDate?: string;
+  allDay?: boolean;
+  calendarType?: string;
+}
+
+export interface EventInvitation {
+  _id: string;
+  fromUserId: string;
+  fromName?: string;
+  fromEmail?: string;
+  toEmail: string;
+  toUserId?: string;
+  eventId?: string;
+  event: InvitationEventSnapshot;
+  // 'left' = accepted then later left the event (copy deleted).
+  status: 'pending' | 'accepted' | 'declined' | 'left';
+  respondedAt?: string;
+  // The recipient's copy created on accept.
+  acceptedEventId?: string;
+  createdAt: string;
+}
+
+export const invitationsApi = {
+  // Invitations addressed to me (New = pending, Replied = accepted/declined/left).
+  list: () => api.get<EventInvitation[]>('/invitations'),
+  // The organizer's invitee list for one of their events.
+  sentForEvent: (eventId: string) =>
+    api.get<EventInvitation[]>('/invitations/sent', { params: { eventId } }),
+  send: (data: { eventId: string; email: string; event: InvitationEventSnapshot }) =>
+    api.post<{ invitation: EventInvitation; userExists: boolean }>('/invitations', data),
+  accept: (id: string) =>
+    api.post<{ invitation: EventInvitation; event: CalendarEvent }>(`/invitations/${id}/accept`),
+  decline: (id: string) => api.post<{ invitation: EventInvitation }>(`/invitations/${id}/decline`),
+  // Recipient: leave an accepted event (deletes their copy).
+  leave: (id: string) => api.post<{ invitation: EventInvitation }>(`/invitations/${id}/leave`),
+  // Organizer: uninvite (deletes the invitation and, if accepted, the copy).
+  revoke: (id: string) => api.delete(`/invitations/${id}`),
 };
 
 export interface BillingStatus {

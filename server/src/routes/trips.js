@@ -26,7 +26,9 @@ router.use(requireAuth);
 const uploadDir = path.resolve(process.env.UPLOAD_DIR || './uploads', 'trips');
 fs.mkdirSync(uploadDir, { recursive: true });
 
-const ATTACH_TYPES = ['application/pdf', 'image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif', 'message/rfc822'];
+// octet-stream = E2EE ciphertext upload (Phase 4c); the plaintext mimetype rides
+// in the body's fileType and the bytes are opaque to the server either way.
+const ATTACH_TYPES = ['application/pdf', 'image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif', 'message/rfc822', 'application/octet-stream'];
 
 const isEml = (file) => file.mimetype === 'message/rfc822' || /\.eml$/i.test(file.originalname || '');
 // Accept known types by mimetype, and .eml by extension (browsers report these
@@ -750,18 +752,34 @@ router.post('/:id/items/:itemId/leave', async (req, res) => {
 router.post('/:id/items/:itemId/attachments', attachmentUpload.single('file'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: 'No file uploaded (PDF or image)' });
-    if (!await requireTripAccess(req, res)) { fs.unlink(path.join(uploadDir, req.file.filename), () => {}); return; }
+    const trip = await requireTripAccess(req, res);
+    if (!trip) { fs.unlink(path.join(uploadDir, req.file.filename), () => {}); return; }
     const item = await TripItem.findOne({ _id: req.params.itemId, tripId: req.params.id });
     if (!item || !canSeeItem(item, req.user.householdId)) {
       fs.unlink(path.join(uploadDir, req.file.filename), () => {});
       return res.status(404).json({ error: 'Booking not found' });
     }
+    // E2EE (Phase 4c): the client may upload ciphertext + the wrapped per-file
+    // key and a client-minted _id (the file key's AAD binds to it). Only private
+    // bookings on unshared trips may be encrypted — everyone else on a shared
+    // booking/trip holds no HDK and must be able to open the file (§9.3).
+    const encrypted = req.body.encrypted === 'true' || req.body.encrypted === true;
+    if (encrypted && (isTripShared(trip) || (item.sharing && item.sharing !== 'private'))) {
+      fs.unlink(path.join(uploadDir, req.file.filename), () => {});
+      return res.status(409).json({ error: 'Shared bookings keep readable attachments — upload without encryption.' });
+    }
+    if (encrypted && !req.body.wrappedFileKey) {
+      fs.unlink(path.join(uploadDir, req.file.filename), () => {});
+      return res.status(400).json({ error: 'wrappedFileKey required for an encrypted attachment' });
+    }
     item.attachments.push({
+      ...(isObjectId(String(req.body._id || '')) ? { _id: req.body._id } : {}),
       storageKey: req.file.filename,
-      filename: req.file.originalname,
-      fileType: req.file.mimetype,
+      filename: encrypted ? (req.body.title || 'attachment') : req.file.originalname,
+      fileType: encrypted ? (req.body.fileType || 'application/octet-stream') : req.file.mimetype,
       fileSizeBytes: req.file.size,
       householdId: req.user.householdId,   // uploader's family (private unless one shared bill)
+      ...(encrypted ? { encrypted: true, wrappedFileKey: req.body.wrappedFileKey, keyVersion: Number(req.body.keyVersion) || undefined } : {}),
     });
     await item.save();
     res.status(201).json(item.attachments[item.attachments.length - 1]);
@@ -779,7 +797,9 @@ router.get('/:id/items/:itemId/attachments/:attId/download', async (req, res) =>
     if (!att || !canSeeAttachment(item, att, req.user.householdId)) return res.status(404).json({ error: 'Not found' });
     const filepath = path.join(uploadDir, att.storageKey);
     if (!fs.existsSync(filepath)) return res.status(404).json({ error: 'File missing on disk' });
-    res.setHeader('Content-Type', att.fileType || 'application/octet-stream');
+    // Encrypted attachments are ciphertext on disk — fileType holds the plaintext
+    // mimetype for the client to restore after decrypting, not what we serve.
+    res.setHeader('Content-Type', att.encrypted ? 'application/octet-stream' : (att.fileType || 'application/octet-stream'));
     res.setHeader('Content-Disposition', `inline; filename="${(att.filename || 'attachment').replace(/"/g, '')}"`);
     res.sendFile(filepath);
   } catch (err) {
