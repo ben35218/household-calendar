@@ -37,3 +37,24 @@ export const monetizationApi = {
   households: () => api.get('/monetization-config/households'),
   setPlan: (payload) => api.post('/monetization-config/plan', payload),
 };
+
+// Admin ops surfaces: users, E2EE readiness, audit log (requireAdmin-gated).
+// `users` and `audit` return { items, total, page, pageSize }.
+export const adminApi = {
+  users: (params) => api.get('/admin/users', { params }),
+  setRole: (id, role) => api.post(`/admin/users/${id}/role`, { role }),
+  e2ee: () => api.get('/admin/e2ee'),
+  e2eeDetail: (householdId) => api.get(`/admin/e2ee/${householdId}`),
+  nudge: (householdId) => api.post(`/admin/e2ee/${householdId}/nudge`),
+  audit: (params) => api.get('/admin/audit', { params }),
+};
+
+// Content-blind product-usage analytics (requireAdmin-gated).
+export const analyticsApi = {
+  overview: () => api.get('/admin/analytics/overview'),
+  growth: (weeks) => api.get('/admin/analytics/growth', { params: { weeks } }),
+  platforms: () => api.get('/admin/analytics/platforms'),
+  usage: (weeks) => api.get('/admin/analytics/usage', { params: { weeks } }),
+  activity: (weeks) => api.get('/admin/analytics/activity', { params: { weeks } }),
+  retention: (weeks) => api.get('/admin/analytics/retention', { params: { weeks } }),
+};

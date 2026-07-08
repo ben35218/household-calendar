@@ -16,6 +16,10 @@ export const useAuthStore = defineStore('auth', () => {
     if (!token.value) return;
     try {
       const { data } = await authApi.me();
+      // Re-verify the role on every load, not just at login: an admin whose
+      // access was revoked mid-session still holds a valid token, but must be
+      // bounced from the UI (the server would 403 their requests anyway).
+      if (data?.role !== 'admin') return logout();
       user.value = data;
     } catch {
       logout();

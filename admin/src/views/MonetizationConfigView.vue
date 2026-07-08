@@ -23,8 +23,15 @@
             <div class="rl">Price ($/mo)</div>
             <v-text-field v-for="t in TIERS" :key="'pr'+t" v-model.number="config.tiers[t].price" type="number" step="0.01" density="compact" variant="outlined" hide-details />
 
+            <div class="rl font-weight-bold">Weekly token limit</div>
+            <v-text-field
+              v-for="t in TIERS" :key="'wtl'+t"
+              :model-value="quotaDisplay(config.tiers[t].weeklyTokenLimit)"
+              @update:model-value="v => setTokenLimit(t, v)"
+              placeholder="∞" density="compact" variant="outlined" hide-details />
+
             <template v-for="a in ACTIONS" :key="'row'+a">
-              <div class="rl">{{ actionLabel(a) }} quota</div>
+              <div class="rl text-medium-emphasis">{{ actionLabel(a) }} count</div>
               <v-text-field
                 v-for="t in TIERS" :key="a+t"
                 :model-value="quotaDisplay(config.tiers[t].quotas[a])"
@@ -32,7 +39,10 @@
                 placeholder="∞" density="compact" variant="outlined" hide-details />
             </template>
           </div>
-          <p class="text-caption text-medium-emphasis mt-2">Leave a quota blank for unlimited. Helper calls are tracked but unlimited by default.</p>
+          <p class="text-caption text-medium-emphasis mt-2">
+            <strong>Weekly token limit</strong> is the enforced cap (total Claude tokens per week; blank = unlimited).
+            The per-action <em>counts</em> below are analytics only and no longer cap usage.
+          </p>
         </v-card-text>
       </v-card>
 
@@ -126,6 +136,10 @@ function quotaDisplay(v) { return v === null || v === undefined ? '' : String(v)
 function setQuota(tier, action, v) {
   const trimmed = String(v).trim();
   config.value.tiers[tier].quotas[action] = trimmed === '' ? null : Number(trimmed);
+}
+function setTokenLimit(tier, v) {
+  const trimmed = String(v).trim();
+  config.value.tiers[tier].weeklyTokenLimit = trimmed === '' ? null : Number(trimmed);
 }
 
 const money = (n) => (n < 0 ? '-$' : '$') + Math.abs(n).toFixed(2);

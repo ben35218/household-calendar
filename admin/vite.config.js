@@ -17,4 +17,17 @@ export default defineConfig({
       '/api': { target: 'http://localhost:3001', changeOrigin: true },
     },
   },
+  build: {
+    rollupOptions: {
+      output: {
+        // Split the heavy, rarely-changing vendors into their own chunks so the
+        // app code (which changes often) can be cached independently and the
+        // initial payload isn't one giant bundle.
+        manualChunks: {
+          vue: ['vue', 'vue-router', 'pinia'],
+          vuetify: ['vuetify'],
+        },
+      },
+    },
+  },
 });

@@ -13,8 +13,13 @@
 
       <v-navigation-drawer permanent>
         <v-list nav density="comfortable">
+          <v-list-item to="/insights" prepend-icon="mdi-chart-box" title="Insights" />
           <v-list-item to="/monetization" prepend-icon="mdi-cash-multiple" title="Monetization" />
           <v-list-item to="/households" prepend-icon="mdi-home-group" title="Households & plans" />
+          <v-list-item to="/billing" prepend-icon="mdi-credit-card-outline" title="Billing" />
+          <v-list-item to="/users" prepend-icon="mdi-account-multiple" title="Users" />
+          <v-list-item to="/e2ee" prepend-icon="mdi-shield-lock" title="E2EE ops" />
+          <v-list-item to="/audit" prepend-icon="mdi-clipboard-text-clock" title="Audit log" />
         </v-list>
       </v-navigation-drawer>
     </template>
