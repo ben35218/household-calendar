@@ -95,7 +95,10 @@ function ownerFilter(req) {
 }
 // Verify the user can access the trip; responds 404 and returns null if not.
 async function requireTripAccess(req, res) {
-  const trip = await Trip.findOne({ _id: req.params.id, ...accessFilter(req) }).select('_id userId').lean();
+  // shareCode/collaborators must ride along: the item write guards call
+  // isTripShared(trip) on this object to keep a shared trip's items plaintext.
+  const trip = await Trip.findOne({ _id: req.params.id, ...accessFilter(req) })
+    .select('_id userId shareCode collaborators').lean();
   if (!trip) { res.status(404).json({ error: 'Trip not found' }); return null; }
   return trip;
 }

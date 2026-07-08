@@ -10,10 +10,11 @@
  * Dry run is read-only: it prints readiness + how many records would be nulled.
  * --commit is IRREVERSIBLE. Run the dry run first, and verify on-device that an
  * unlocked member can still read everything (see docs/E2EE-SYNC-PLAN.md §9.2)
- * BEFORE committing — nothing here has been exercised with the flag on.
+ * BEFORE committing.
+ *
+ * The logic lives in `dropPlaintext()` (exported, integration-tested over an
+ * in-memory MongoDB); this file doubles as the thin CLI around it.
  */
-require('dotenv').config({ path: require('path').resolve(__dirname, '../../.env') });
-const connectDB = require('../db');
 const mongoose = require('mongoose');
 const Household = require('../models/Household');
 const User = require('../models/User');
@@ -35,30 +36,36 @@ const MODELS = {
   FoodInventory:  require('../models/FoodInventory'),
 };
 
-async function run() {
-  const householdId = process.argv[2];
-  const commit = process.argv.includes('--commit');
-  if (!householdId || !mongoose.isValidObjectId(householdId)) {
-    console.error('usage: node src/scripts/dropPlaintext.js <householdId> [--commit]');
-    process.exit(1);
-  }
-
-  await connectDB();
+// Run the drop (or its dry run) against the current mongoose connection.
+// Returns { status, ... } instead of exiting so tests can assert on it:
+//   already-active | not-ready | stragglers | dry-run | committed
+async function dropPlaintext(householdId, { commit = false, log = () => {} } = {}) {
   const hh = await Household.findById(householdId);
-  if (!hh) { console.error('No such household'); process.exit(1); }
-  if (hh.e2eeActive) { console.log('Household is already E2EE-active. Nothing to do.'); process.exit(0); }
+  if (!hh) throw new Error('No such household');
+  if (hh.e2eeActive) {
+    log('Household is already E2EE-active. Nothing to do.');
+    return { status: 'already-active' };
+  }
 
   const members = await User.find({ householdId: hh._id });
   const memberIds = members.map((m) => m._id);
   const envelopes = await HouseholdKeyEnvelope.find({ householdId: hh._id });
 
-  console.log(`\nHousehold "${hh.name}" (${hh._id}) — HDK v${hh.currentKeyVersion}, ${members.length} member(s)\n`);
+  log(`\nHousehold "${hh.name}" (${hh._id}) — HDK v${hh.currentKeyVersion}, ${members.length} member(s)\n`);
 
   // 1) Readiness gate.
-  const readiness = computeReadiness({ members, envelopes, currentKeyVersion: hh.currentKeyVersion });
-  console.log(`Readiness: ${readiness.ready ? 'READY' : 'NOT READY'}`);
-  readiness.reasons.forEach((r) => console.log('  - ' + r));
-  if (!readiness.ready) { console.log('\nAborting — resolve the above first.'); process.exit(1); }
+  const readiness = computeReadiness({
+    members,
+    envelopes,
+    currentKeyVersion: hh.currentKeyVersion,
+    minAppVersion: process.env.E2EE_MIN_APP_VERSION || null,
+  });
+  log(`Readiness: ${readiness.ready ? 'READY' : 'NOT READY'}`);
+  readiness.reasons.forEach((r) => log('  - ' + r));
+  if (!readiness.ready) {
+    log('\nAborting — resolve the above first.');
+    return { status: 'not-ready', readiness };
+  }
 
   // 2) Straggler check — every content record must already carry ciphertext,
   // EXCEPT shared trips (and their items): those stay plaintext on purpose so
@@ -67,7 +74,7 @@ async function run() {
   let stragglers = 0;
   const scope = { userId: { $in: memberIds } };
   const sharedIds = await sharedTripIds(MODELS.Trip, memberIds);
-  if (sharedIds.length) console.log(`  (${sharedIds.length} shared trip(s) + their items are plaintext-exempt)\n`);
+  if (sharedIds.length) log(`  (${sharedIds.length} shared trip(s) + their items are plaintext-exempt)\n`);
   for (const [name, Model] of Object.entries(MODELS)) {
     const exempt = excludeSharedFilter(name, sharedIds);
     const [sealed, missing] = await Promise.all([
@@ -75,25 +82,26 @@ async function run() {
       Model.countDocuments({ ...scope, ...exempt, enc: { $exists: false } }),
     ]);
     stragglers += missing;
-    console.log(`  ${name.padEnd(16)} ${sealed} sealed, ${missing} missing enc`);
+    log(`  ${name.padEnd(16)} ${sealed} sealed, ${missing} missing enc`);
   }
   const hhLocationUnsealed = !!(hh.homeAddress && !hh.enc);
-  console.log(`  ${'Household'.padEnd(16)} location ${hh.enc ? 'sealed' : (hh.homeAddress ? 'NOT sealed' : 'none set')}`);
+  log(`  ${'Household'.padEnd(16)} location ${hh.enc ? 'sealed' : (hh.homeAddress ? 'NOT sealed' : 'none set')}`);
   if (hhLocationUnsealed) stragglers++;
 
   if (stragglers > 0) {
-    console.log(`\n${stragglers} record(s) still lack ciphertext. The owner's device must open + re-save them (or run the client re-encrypt pass) before the drop. Aborting.`);
-    process.exit(1);
+    log(`\n${stragglers} record(s) still lack ciphertext. The owner's device must open + re-save them (or run the client re-encrypt pass) before the drop. Aborting.`);
+    return { status: 'stragglers', stragglers, readiness };
   }
 
   if (!commit) {
-    console.log('\nDRY RUN — nothing changed. Re-run with --commit to null the plaintext content columns and set e2eeActive.');
-    console.log('IMPORTANT: verify on-device that an unlocked member reads everything first (§9.2). --commit is irreversible.');
-    process.exit(0);
+    log('\nDRY RUN — nothing changed. Re-run with --commit to null the plaintext content columns and set e2eeActive.');
+    log('IMPORTANT: verify on-device that an unlocked member reads everything first (§9.2). --commit is irreversible.');
+    return { status: 'dry-run', readiness };
   }
 
   // 3) COMMIT — null plaintext content only where ciphertext exists.
-  console.log('\nCOMMITTING drop…');
+  log('\nCOMMITTING drop…');
+  const nulled = {};
   for (const [name, Model] of Object.entries(MODELS)) {
     const unset = dropUnsetFor(name);
     if (!unset) continue;
@@ -101,14 +109,39 @@ async function run() {
     // the household read it and hold no HDK.
     const exempt = excludeSharedFilter(name, sharedIds);
     const res = await Model.updateMany({ ...scope, ...exempt, enc: { $exists: true } }, { $unset: unset });
-    console.log(`  ${name.padEnd(16)} nulled ${res.modifiedCount}`);
+    nulled[name] = res.modifiedCount;
+    log(`  ${name.padEnd(16)} nulled ${res.modifiedCount}`);
   }
-  if (hh.enc) await Household.updateOne({ _id: hh._id }, { $unset: dropUnsetFor('Household') ? { homeAddress: '', lat: '', lon: '' } : {} });
+  // Household location: lat/lon derive from homeAddress, so they go with it.
+  if (hh.enc) await Household.updateOne({ _id: hh._id }, { $unset: { homeAddress: '', lat: '', lon: '' } });
   await Household.updateOne({ _id: hh._id }, { $set: { e2eeActive: true } });
   await AuditLog.create({ householdId: hh._id, event: 'plaintext_dropped', meta: { memberCount: members.length, keyVersion: hh.currentKeyVersion } });
 
-  console.log('\nDONE. e2eeActive = true; plaintext content nulled. The E2EE boundary is now live for this household.');
-  process.exit(0);
+  log('\nDONE. e2eeActive = true; plaintext content nulled. The E2EE boundary is now live for this household.');
+  return { status: 'committed', nulled, readiness };
 }
 
-run().catch((err) => { console.error(err); process.exit(1); });
+async function runCli() {
+  require('dotenv').config({ path: require('path').resolve(__dirname, '../../.env') });
+  const connectDB = require('../db');
+  const householdId = process.argv[2];
+  const commit = process.argv.includes('--commit');
+  if (!householdId || !mongoose.isValidObjectId(householdId)) {
+    console.error('usage: node src/scripts/dropPlaintext.js <householdId> [--commit]');
+    process.exit(1);
+  }
+  await connectDB();
+  try {
+    const result = await dropPlaintext(householdId, { commit, log: console.log });
+    process.exit(['not-ready', 'stragglers'].includes(result.status) ? 1 : 0);
+  } catch (err) {
+    console.error(err.message || err);
+    process.exit(1);
+  }
+}
+
+if (require.main === module) {
+  runCli().catch((err) => { console.error(err); process.exit(1); });
+}
+
+module.exports = { dropPlaintext, MODELS };
