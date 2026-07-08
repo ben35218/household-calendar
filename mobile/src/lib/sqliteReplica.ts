@@ -68,3 +68,7 @@ export async function query<T = Row>(
 export async function clear(collection: string): Promise<void> {
   conn().runSync('DELETE FROM records WHERE collection = ?', [collection]);
 }
+
+export async function clearAll(): Promise<void> {
+  conn().runSync('DELETE FROM records');
+}

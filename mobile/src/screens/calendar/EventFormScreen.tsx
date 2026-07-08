@@ -1,10 +1,10 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { View, Text, StyleSheet, ActivityIndicator, Alert } from 'react-native';
+import { View, Text, StyleSheet, ActivityIndicator, Alert, TouchableOpacity } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import { calendarApi, placesApi, settingsApi, FormAssistField } from '../../api';
+import { calendarApi, invitationsApi, placesApi, settingsApi, FormAssistField } from '../../api';
 import { Button, Input, Select, Screen, SwitchRow, SectionTitle, DateField, TimeField, useHeaderCheckButton } from '../../components/ui';
 import FormAssist from '../../components/FormAssist';
 import { useFormAssist } from '../../hooks/useFormAssist';
@@ -12,8 +12,9 @@ import PlacesAutocomplete from '../../components/PlacesAutocomplete';
 import { EVENT_CALENDAR_TYPES, ymd } from '../../lib/calendar';
 import { useCalendarColors } from '../../lib/calendarPrefs';
 import { sealNew, sealUpdate, openRecord } from '../../lib/e2ee';
+import { getQueuedInvitees, clearQueuedInvitees, useQueuedInvitees } from '../../lib/inviteeDraft';
 import { CalendarStackParamList } from '../../navigation/CalendarNavigator';
-import { colors, spacing } from '../../theme';
+import { colors, spacing, radius } from '../../theme';
 
 type Nav = NativeStackNavigationProp<CalendarStackParamList, 'EventForm'>;
 type Rt = RouteProp<CalendarStackParamList, 'EventForm'>;
@@ -49,6 +50,13 @@ function formatDuration(minutes: number): string {
   if (h) parts.push(`${h} hr`);
   if (m) parts.push(`${m} min`);
   return parts.join(' ');
+}
+
+// "a@x.com, b@y.com +2 more" — the Invitees card's one-line preview.
+function inviteePreview(emails: string[]): string {
+  if (!emails.length) return 'No one invited yet';
+  const shown = emails.slice(0, 2).join(', ');
+  return emails.length > 2 ? `${shown} +${emails.length - 2} more` : shown;
 }
 
 const REPEAT_OPTIONS = [
@@ -287,20 +295,43 @@ export default function EventFormScreen() {
     return () => { cancelled = true; };
   }, [eventQ.data]);
 
+  // Form date/time state → the ISO instants the API stores (all-day at noon UTC).
+  const buildStartEnd = () => {
+    const allDay = form.allDay;
+    const startDate = allDay
+      ? `${form.date}T12:00:00.000Z`
+      : new Date(`${form.date}T${form.startTime}:00`).toISOString();
+    const endPart = form.endDate || form.date;
+    const endDate = allDay
+      ? form.endDate
+        ? `${form.endDate}T12:00:00.000Z`
+        : undefined
+      : form.endTime
+      ? new Date(`${endPart}T${form.endTime}:00`).toISOString()
+      : undefined;
+    return { startDate, endDate };
+  };
+
+  // The decrypted event content an invitation carries (email + .ics + the
+  // recipient's copy) — the server can't read an E2EE event's own fields.
+  const buildSnapshot = () => {
+    const { startDate, endDate } = buildStartEnd();
+    return {
+      title: form.title.trim(),
+      description: form.description || undefined,
+      location: form.location || undefined,
+      phone: form.phone || undefined,
+      startDate,
+      endDate,
+      allDay: form.allDay,
+      calendarType: form.calendarType,
+    };
+  };
+
   const save = useMutation({
     mutationFn: async () => {
       const allDay = form.allDay;
-      const startDate = allDay
-        ? `${form.date}T12:00:00.000Z`
-        : new Date(`${form.date}T${form.startTime}:00`).toISOString();
-      const endPart = form.endDate || form.date;
-      const endDate = allDay
-        ? form.endDate
-          ? `${form.endDate}T12:00:00.000Z`
-          : undefined
-        : form.endTime
-        ? new Date(`${endPart}T${form.endTime}:00`).toISOString()
-        : undefined;
+      const { startDate, endDate } = buildStartEnd();
       const payload: Record<string, unknown> = {
         title: form.title.trim(),
         calendarType: form.calendarType,
@@ -322,7 +353,19 @@ export default function EventFormScreen() {
         ? calendarApi.updateEvent(eventId!, await sealUpdate('CalendarEvent', eventId!, payload))
         : calendarApi.createEvent(await sealNew('CalendarEvent', payload));
     },
-    onSuccess: () => {
+    onSuccess: async (res) => {
+      // A new event sends the invitees queued on its Invitees screen — a draft
+      // has no event id, so this is the first moment invitations CAN go out.
+      if (!isEdit) {
+        const queued = getQueuedInvitees();
+        if (queued.length) {
+          const snapshot = buildSnapshot();
+          await Promise.allSettled(
+            queued.map((email) => invitationsApi.send({ eventId: res.data._id, email, event: snapshot })),
+          );
+          clearQueuedInvitees();
+        }
+      }
       qc.invalidateQueries({ queryKey: ['calendar'] });
       navigation.goBack();
     },
@@ -337,6 +380,51 @@ export default function EventFormScreen() {
     },
   });
 
+  // An event copy accepted from a cross-household invitation. The recipient is
+  // a guest, not the organizer: the whole event is READ-ONLY for them (the
+  // server rejects edits with 403) and "Leave event" is their only action.
+  // Household-owned events are unaffected — every member edits those as usual.
+  const guestInvitationId = eventQ.data?.invitationId;
+  useEffect(() => {
+    if (guestInvitationId) navigation.setOptions({ title: 'Event' });
+  }, [navigation, guestInvitationId]);
+
+  // The guest's own invitation, to show who invited them.
+  const myInvitesQ = useQuery({
+    queryKey: ['invitations'],
+    queryFn: async () => (await invitationsApi.list()).data,
+    enabled: !!guestInvitationId,
+  });
+  const inviter = myInvitesQ.data?.find((i) => i._id === guestInvitationId);
+
+  // The organizer's invitee list, previewed on the Invitees card (managed on
+  // the EventInvitees screen; never fetched for a guest copy).
+  const inviteesQ = useQuery({
+    queryKey: ['invitations', 'sent', eventId],
+    queryFn: async () => (await invitationsApi.sentForEvent(eventId!)).data,
+    enabled: isEdit && !!eventQ.data && !guestInvitationId,
+  });
+
+  // A NEW event's invitees queue in the draft store until save can send them.
+  // Start each new form with a clean queue (an abandoned draft leaves one behind).
+  const queuedInvitees = useQueuedInvitees();
+  useEffect(() => {
+    if (!isEdit) clearQueuedInvitees();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  const inviteeEmails = isEdit ? (inviteesQ.data ?? []).map((i) => i.toEmail) : queuedInvitees;
+
+  // Guest leaves the event: their copy is deleted and the invitation retired.
+  const leave = useMutation({
+    mutationFn: () => invitationsApi.leave(guestInvitationId!),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['calendar'] });
+      qc.invalidateQueries({ queryKey: ['invitations'] });
+      navigation.goBack();
+    },
+    onError: (e: any) => setError(e.response?.data?.error || 'Could not leave the event'),
+  });
+
   const onSave = () => {
     if (!form.title.trim()) {
       setError('Title is required');
@@ -346,13 +434,86 @@ export default function EventFormScreen() {
     save.mutate();
   };
 
-  useHeaderCheckButton(navigation, { onPress: onSave, loading: save.isPending, color: cal[form.calendarType] || colors.primary });
+  useHeaderCheckButton(navigation, {
+    onPress: onSave,
+    loading: save.isPending,
+    color: cal[form.calendarType] || colors.primary,
+    // Guests have nothing to save — read-only view below.
+    enabled: !guestInvitationId,
+  });
 
   if (isEdit && eventQ.isLoading) {
     return (
       <View style={styles.center}>
         <ActivityIndicator size="large" color={colors.primary} />
       </View>
+    );
+  }
+
+  // ── Guest (invitee) view: event details, no form, Leave as the only action ──
+  if (guestInvitationId) {
+    const fmtDay = (d: string) =>
+      new Date(d + 'T00:00:00').toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
+    const fmtTime = (t: string) =>
+      new Date(`2000-01-01T${t}:00`).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+    const when = form.allDay
+      ? form.endDate && form.endDate !== form.date
+        ? `${fmtDay(form.date)} – ${fmtDay(form.endDate)}`
+        : fmtDay(form.date)
+      : `${fmtDay(form.date)}, ${fmtTime(form.startTime)}${form.endTime ? ` – ${fmtTime(form.endTime)}` : ''}`;
+    const inviterName = inviter?.fromName || inviter?.fromEmail;
+
+    return (
+      <Screen>
+        <Text style={styles.guestTitle}>{form.title}</Text>
+        {inviterName ? <Text style={styles.guestInviter}>Invited by {inviterName}</Text> : null}
+
+        <View style={styles.guestCard}>
+          <View style={styles.guestRow}>
+            <Ionicons name="time-outline" size={18} color={colors.textMuted} />
+            <Text style={styles.guestMeta}>{when}</Text>
+          </View>
+          {form.location ? (
+            <View style={styles.guestRow}>
+              <Ionicons name="location-outline" size={18} color={colors.textMuted} />
+              <Text style={styles.guestMeta}>{form.location}</Text>
+            </View>
+          ) : null}
+          {form.phone ? (
+            <View style={styles.guestRow}>
+              <Ionicons name="call-outline" size={18} color={colors.textMuted} />
+              <Text style={styles.guestMeta}>{form.phone}</Text>
+            </View>
+          ) : null}
+        </View>
+
+        {form.description ? (
+          <>
+            <SectionTitle>Notes</SectionTitle>
+            <Text style={styles.guestNotes}>{form.description}</Text>
+          </>
+        ) : null}
+
+        <Text style={styles.guestHint}>
+          You’re a guest on this event, so it can’t be edited. Only the organizer can change it.
+        </Text>
+
+        {error ? <Text style={styles.error}>{error}</Text> : null}
+
+        <View style={styles.footer}>
+          <Button
+            title="Leave event"
+            variant="danger"
+            loading={leave.isPending}
+            onPress={() =>
+              Alert.alert('Leave event?', 'This removes the event from your calendar.', [
+                { text: 'Cancel', style: 'cancel' },
+                { text: 'Leave', style: 'destructive', onPress: () => leave.mutate() },
+              ])
+            }
+          />
+        </View>
+      </Screen>
     );
   }
 
@@ -370,6 +531,28 @@ export default function EventFormScreen() {
 
       <Input label="Title *" value={form.title} onChangeText={(v) => set({ title: v })} highlight={assist.changed.has('title')} />
       <Select label="Calendar" value={form.calendarType} options={EVENT_CALENDAR_TYPES} onChange={(v) => set({ calendarType: (v as string) ?? 'activities' })} highlight={assist.changed.has('calendarType')} />
+
+      {/* Invitees — a field-styled row (matches the selects) opening the
+          EventInvitees screen; previews who is currently invited. */}
+      <View style={styles.inviteesWrap}>
+        <Text style={styles.inviteesLabel}>Invitees</Text>
+        <TouchableOpacity
+          style={styles.inviteesField}
+          activeOpacity={0.7}
+          onPress={() =>
+            navigation.navigate('EventInvitees', {
+              eventId: isEdit ? eventId : undefined,
+              snapshot: buildSnapshot(),
+            })
+          }
+        >
+          <Ionicons name="people-outline" size={18} color={colors.textMuted} />
+          <Text style={styles.inviteesValue} numberOfLines={1}>
+            {inviteeEmails.length ? `${inviteeEmails.length} invited · ${inviteePreview(inviteeEmails)}` : 'None'}
+          </Text>
+          <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
+        </TouchableOpacity>
+      </View>
 
       <SwitchRow label="All day" value={form.allDay} onValueChange={(v) => set({ allDay: v })} highlight={assist.changed.has('allDay')} boxed />
 
@@ -501,6 +684,26 @@ const styles = StyleSheet.create({
   travelText: { fontSize: 13, color: colors.textMuted },
   travelHint: { fontSize: 13, color: colors.textMuted, marginTop: -spacing.sm, marginBottom: spacing.md },
   notes: { height: 90, textAlignVertical: 'top' },
-  footer: { flexDirection: 'row', gap: spacing.sm, marginTop: spacing.md, marginBottom: spacing.xl, alignItems: 'center' },
+  footer: { marginTop: spacing.md, marginBottom: spacing.xl },
+  // Invitees field-row (mirrors ui.tsx's input/select box styling)
+  inviteesWrap: { marginBottom: spacing.md },
+  inviteesLabel: { fontSize: 13, color: colors.textMuted, marginBottom: 6, fontWeight: '500' },
+  inviteesField: {
+    backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border,
+    borderRadius: radius.md, paddingHorizontal: 14, paddingVertical: 12,
+    flexDirection: 'row', alignItems: 'center', gap: spacing.sm,
+  },
+  inviteesValue: { flex: 1, fontSize: 16, color: colors.text },
+  // Guest (read-only invitee) view
+  guestTitle: { fontSize: 24, fontWeight: '700', color: colors.text },
+  guestInviter: { fontSize: 13, color: colors.textMuted, marginTop: 4 },
+  guestCard: {
+    backgroundColor: colors.surface, borderRadius: 12,
+    padding: spacing.md, gap: spacing.sm, marginTop: spacing.md,
+  },
+  guestRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
+  guestMeta: { fontSize: 15, color: colors.text, flexShrink: 1 },
+  guestNotes: { fontSize: 14, color: colors.text, lineHeight: 20 },
+  guestHint: { fontSize: 13, color: colors.textMuted, marginTop: spacing.lg },
   durationHint: { fontSize: 13, color: colors.textMuted, marginTop: -spacing.xs, marginBottom: spacing.md },
 });

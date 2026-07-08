@@ -11,7 +11,7 @@ export default function AssistantIcon({ size = 26, color = '#fff' }: { size?: nu
     <View style={{ width: size, height: size, alignItems: 'center', justifyContent: 'center' }}>
       <Ionicons name="chatbubble-outline" size={size} color={color} />
       <Ionicons
-        name="sparkles"
+        name="sparkles-outline"
         size={inner}
         color={color}
         style={{ position: 'absolute', top: Math.round(size * 0.28), transform: [{ translateX: Math.round(size * 0.04) }] }}

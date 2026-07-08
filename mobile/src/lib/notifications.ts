@@ -18,6 +18,16 @@ import { notificationsApi, CalendarData } from '../api';
 import { loadCalendarData } from './calendarData';
 import { getPrivacyPrefs } from './privacyPrefs';
 
+// Foreground notification behavior (applies to local reminders and any push).
+Notifications.setNotificationHandler({
+  handleNotification: async () => ({
+    shouldShowBanner: true,
+    shouldShowList: true,
+    shouldPlaySound: true,
+    shouldSetBadge: false,
+  }),
+});
+
 const WINDOW_DAYS = 21;
 const MAX_SCHEDULED = 60;  // headroom under the iOS ~64 pending cap
 const ALERT_HOUR = 7;      // local 7am for day-based alerts (mirrors the server cron)

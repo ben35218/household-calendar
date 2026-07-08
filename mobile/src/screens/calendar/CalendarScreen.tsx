@@ -15,6 +15,7 @@ import { mdiName } from '../../lib/recurrence';
 import { CalendarStackParamList } from '../../navigation/CalendarNavigator';
 import { colors, spacing } from '../../theme';
 import AssistantIcon from '../../components/AssistantIcon';
+import InvitationsButton from '../../components/InvitationsButton';
 import { useAiEnabled } from '../../lib/privacyPrefs';
 
 type Nav = NativeStackNavigationProp<CalendarStackParamList, 'CalendarHome'>;
@@ -369,11 +370,12 @@ export default function CalendarScreen() {
         </TouchableOpacity>
       </View>
 
-      {/* ── Bottom-right: Calendars + Assistant (assistant on the right) ──────── */}
+      {/* ── Bottom-right: Calendars + Invitations + Assistant ─────────────────── */}
       <View style={[styles.pill, styles.bottomRight, { bottom: insets.bottom + 16 }]}>
         <TouchableOpacity style={styles.bottomPillBtn} onPress={() => navigation.navigate('Calendars')}>
           <MaterialCommunityIcons name="calendar-multiple" size={22} color={BTN_FG} />
         </TouchableOpacity>
+        <InvitationsButton onPress={() => navigation.navigate('Invitations')} />
         {aiEnabled && (
           <TouchableOpacity style={styles.bottomPillBtn} onPress={() => navigation.navigate('CalendarAssistant')}>
             <AssistantIcon size={22} color={BTN_FG} />

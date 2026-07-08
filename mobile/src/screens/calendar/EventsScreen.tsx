@@ -11,6 +11,7 @@ import { getCanadianHolidays } from '../../lib/holidays';
 import { useCalendarVisibility, useHolidayPrefs, useCalendarColors } from '../../lib/calendarPrefs';
 import { SegmentedControl } from '../../components/ui';
 import AssistantIcon from '../../components/AssistantIcon';
+import InvitationsButton from '../../components/InvitationsButton';
 import { useAiEnabled } from '../../lib/privacyPrefs';
 import { colors, spacing } from '../../theme';
 import type { CalendarStackParamList } from '../../navigation/CalendarNavigator';
@@ -326,11 +327,12 @@ export default function EventsScreen() {
         </TouchableOpacity>
       </View>
 
-      {/* ── Bottom-right: Calendars + Assistant (assistant on the right) ──────── */}
+      {/* ── Bottom-right: Calendars + Invitations + Assistant ─────────────────── */}
       <View style={[styles.pill, styles.bottomRight, { bottom: insets.bottom + 16 }]}>
         <TouchableOpacity style={styles.bottomPillBtn} onPress={() => nav.navigate('Calendars')}>
           <MaterialCommunityIcons name="calendar-multiple" size={22} color={BTN_FG} />
         </TouchableOpacity>
+        <InvitationsButton onPress={() => nav.navigate('Invitations')} />
         {aiEnabled && (
           <TouchableOpacity style={styles.bottomPillBtn} onPress={() => nav.navigate('CalendarAssistant')}>
             <AssistantIcon size={22} color={BTN_FG} />

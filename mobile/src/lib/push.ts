@@ -4,16 +4,11 @@ import * as Device from 'expo-device';
 import Constants from 'expo-constants';
 import { notificationsApi } from '../api';
 
-// Foreground notification behavior.
-Notifications.setNotificationHandler({
-  handleNotification: async () => ({
-    shouldShowBanner: true,
-    shouldShowList: true,
-    shouldPlaySound: true,
-    shouldSetBadge: false,
-  }),
-});
-
+// Remote-push token registration. Currently unwired: reminders are delivered
+// as on-device local notifications (lib/notifications.ts), and the server cron
+// skips localReminders users. Kept for server-originated pushes that can't be
+// computed locally (e.g. event-invitation alerts).
+//
 // Ask permission, get the Expo push token, and register it with the backend so
 // the server can deliver via APNs/FCM through the Expo Push API
 // (server/src/services/push.js sendToExpo). Returns the token, or null if

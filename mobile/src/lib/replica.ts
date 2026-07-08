@@ -89,3 +89,11 @@ export async function clear(collection: string): Promise<void> {
   if (sqliteReady()) return sqlite.clear(collection);
   await AsyncStorage.removeItem(key(collection));
 }
+
+// Wipe every replicated collection (both backends) — a signed-out device must
+// not keep another household's records.
+export async function clearAll(): Promise<void> {
+  const keys = (await AsyncStorage.getAllKeys()).filter((k) => k.startsWith('hc_replica:'));
+  if (keys.length) await AsyncStorage.multiRemove(keys);
+  if (sqliteReady()) await sqlite.clearAll();
+}
