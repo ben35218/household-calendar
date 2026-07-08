@@ -34,6 +34,8 @@ export default function MaintenanceChatScreen() {
   const chat = useChat({
     endpoint: '/maintenance/chat',
     contextEndpoint: `/maintenance/chat/context?itemId=${itemId}`,
+    // Post-drop the DB summary is sealed — POST the decrypted item instead.
+    contextBody: () => (ephemeralRef.current ? { itemId, ...ephemeralRef.current } : null),
     buildBody: (messages) => ({ itemId, messages, ...(ephemeralRef.current || {}) }),
     onResult: async (data) => {
       // Post-drop the server hands back proposed tasks for the client to create
@@ -79,6 +81,7 @@ export default function MaintenanceChatScreen() {
             .catch(() => []),
         ]);
         ephemeralRef.current = { item, tasks };
+        chat.loadContext(); // refresh the summary with the decrypted records
       } catch { /* non-fatal */ }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps

@@ -131,22 +131,39 @@ function buildSuggestedPrompts(trip, items) {
   return prompts.slice(0, 4);
 }
 
-router.get('/context', async (req, res) => {
+// GET = dual-write DB read; POST additionally accepts the client's decrypted
+// `trip` + `items` (§9.1 P4 polish) so the summary stays accurate post-drop —
+// access is still verified against the DB via plaintext metadata.
+async function contextHandler(req, res) {
   try {
-    const { tripId } = req.query;
+    const src = req.method === 'GET' ? req.query : (req.body || {});
+    const { tripId } = src;
     if (!tripId) return res.status(400).json({ error: 'tripId is required' });
-    const loaded = await loadTrip(req, tripId);
-    if (!loaded) return res.status(404).json({ error: 'Trip not found' });
+
+    let trip, items;
+    if (src.trip && typeof src.trip === 'object' && Array.isArray(src.items)) {
+      if (!(await Trip.exists({ _id: tripId, ...accessFilter(req) }))) {
+        return res.status(404).json({ error: 'Trip not found' });
+      }
+      trip = src.trip;
+      items = src.items;
+    } else {
+      const loaded = await loadTrip(req, tripId);
+      if (!loaded) return res.status(404).json({ error: 'Trip not found' });
+      ({ trip, items } = loaded);
+    }
 
     res.json({
-      context: buildContextSummary(loaded.trip, loaded.items),
-      suggestedPrompts: buildSuggestedPrompts(loaded.trip, loaded.items),
+      context: buildContextSummary(trip, items),
+      suggestedPrompts: buildSuggestedPrompts(trip, items),
     });
   } catch (err) {
     console.error('Vacation chat context error:', err);
     res.status(500).json({ error: err.message });
   }
-});
+}
+router.get('/context', contextHandler);
+router.post('/context', contextHandler);
 
 router.post('/', meter('chat', 'vacation'), async (req, res) => {
   try {

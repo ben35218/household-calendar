@@ -63,6 +63,9 @@ export default function CalendarAssistantScreen() {
     // Pass the toggle to the context endpoint too, so the "what I can see" panel
     // doesn't claim access to household details the prompt won't actually get.
     contextEndpoint: `/calendar/chat/context?includePersonalInfo=${usePersonal}`,
+    // Post-drop the DB people are sealed — POST the decrypted roster instead.
+    contextBody: () =>
+      ephemeralRef.current ? { includePersonalInfo: usePersonal, people: ephemeralRef.current.people } : null,
     // Privacy toggle: tell the server whether it may use household contacts in the
     // prompt. When off, the server withholds them (and we also skip decrypting/
     // sending people below, so plaintext contacts never leave the device).
@@ -109,6 +112,7 @@ export default function CalendarAssistantScreen() {
           loadForecast().catch(() => null),
         ]);
         ephemeralRef.current = { people: peopleRows, calendarSources, ...(weather ? { weather } : {}) };
+        chat.loadContext(); // refresh the "what I can see" panel with the decrypted roster
       } catch { /* non-fatal — server falls back to its DB read */ }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps

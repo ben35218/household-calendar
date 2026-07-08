@@ -44,6 +44,10 @@ export interface ChatDoneData {
 export interface UseChatOptions {
   endpoint: string; // relative to API_URL, e.g. '/calendar/chat'
   contextEndpoint?: string; // relative GET path incl. any query string
+  // §9.1 P4 polish: when this returns a body (e.g. decrypted records on an E2EE
+  // household), the context is POSTed with it instead of GET — the server can't
+  // read sealed content, so the client supplies it. Return null for plain GET.
+  contextBody?: () => Record<string, unknown> | null;
   buildBody: (messages: ChatMessage[]) => Record<string, unknown>;
   onResult?: (data: ChatDoneData) => void;
   toolLabels?: Record<string, string>;
@@ -102,7 +106,10 @@ export function useChat(options: UseChatOptions) {
     const ep = optsRef.current.contextEndpoint;
     if (!ep) return;
     try {
-      const { data } = await api.get(ep);
+      const body = optsRef.current.contextBody?.() ?? null;
+      // POST carries the decrypted records; its params live in the body, so the
+      // GET-style query string is dropped.
+      const { data } = body ? await api.post(ep.split('?')[0], body) : await api.get(ep);
       setContext(data.context || null);
       setSuggestedPrompts(Array.isArray(data.suggestedPrompts) ? data.suggestedPrompts : []);
     } catch {

@@ -27,6 +27,8 @@ export default function VacationAssistantScreen() {
   const chat = useChat({
     endpoint: '/vacation/chat',
     contextEndpoint: `/vacation/chat/context?tripId=${tripId}`,
+    // Post-drop the DB summary is sealed — POST the decrypted trip instead.
+    contextBody: () => (ephemeralRef.current ? { tripId, ...ephemeralRef.current } : null),
     buildBody: (messages) => ({ tripId, messages, ...(ephemeralRef.current || {}) }),
     onResult: () => qc.invalidateQueries({ queryKey: ['trips', tripId] }),
     toolLabels: {
@@ -46,6 +48,7 @@ export default function VacationAssistantScreen() {
         const trip = await openRecord('Trip', (data as any).trip);
         const items = await Promise.all(((data as any).items || []).map((i: any) => openRecord('TripItem', i)));
         ephemeralRef.current = { trip, items };
+        chat.loadContext(); // refresh the summary with the decrypted records
       } catch { /* non-fatal */ }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps

@@ -522,12 +522,18 @@ function buildSuggestedPrompts(people) {
 }
 
 // Context + starter prompts shown when the assistant first opens.
-router.get('/context', async (req, res) => {
+// GET = dual-write DB read; POST additionally accepts the client's decrypted
+// `people` (§9.1 P4 polish) so the "what I can see" panel and starter prompts
+// stay accurate after the plaintext drop, when loadPeople returns sealed rows.
+async function contextHandler(req, res) {
   try {
-    // Privacy toggle (query flag): when off, don't load household contacts, so the
-    // panel and starter prompts don't surface people the assistant can't use.
-    const includePersonalInfo = req.query.includePersonalInfo !== 'false';
-    const people = includePersonalInfo ? await loadPeople(req) : [];
+    const src = req.method === 'GET' ? req.query : (req.body || {});
+    // Privacy toggle: when off, don't load household contacts, so the panel and
+    // starter prompts don't surface people the assistant can't use.
+    const includePersonalInfo = String(src.includePersonalInfo) !== 'false' && src.includePersonalInfo !== false;
+    const people = includePersonalInfo
+      ? (Array.isArray(src.people) ? src.people : await loadPeople(req))
+      : [];
     res.json({
       context: buildContextSummary(people, includePersonalInfo),
       suggestedPrompts: buildSuggestedPrompts(people),
@@ -536,7 +542,9 @@ router.get('/context', async (req, res) => {
     console.error('Calendar chat context error:', err);
     res.status(500).json({ error: err.message });
   }
-});
+}
+router.get('/context', contextHandler);
+router.post('/context', contextHandler);
 
 router.post('/', meter('chat', 'calendar'), async (req, res) => {
   try {

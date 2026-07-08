@@ -277,17 +277,24 @@ function buildSuggestedPrompts(item, manuals) {
 }
 
 // Context + starter prompts shown when the assistant first opens.
-router.get('/context', async (req, res) => {
+// GET = dual-write DB read; POST additionally accepts the client's decrypted
+// `item` (§9.1 P4 polish) so the summary stays accurate post-drop — access is
+// still verified against the DB via plaintext metadata. Manuals keep plaintext
+// titles (upload metadata), so their DB read works in both modes.
+async function contextHandler(req, res) {
   try {
-    const { itemId } = req.query;
+    const src = req.method === 'GET' ? req.query : (req.body || {});
+    const { itemId } = src;
     if (!itemId) return res.status(400).json({ error: 'itemId is required' });
+    const clientItem = src.item && typeof src.item === 'object' ? src.item : null;
 
-    const [item, manuals, existingTaskCount] = await Promise.all([
+    const [dbItem, manuals, existingTaskCount] = await Promise.all([
       Item.findOne({ _id: itemId, userId: { $in: req.scopeIds } }).lean(),
       Manual.find({ itemId, userId: { $in: req.scopeIds } }).lean(),
       MaintenanceTask.countDocuments({ userId: { $in: req.scopeIds }, itemId, active: true }),
     ]);
-    if (!item) return res.status(404).json({ error: 'Item not found' });
+    if (!dbItem) return res.status(404).json({ error: 'Item not found' });
+    const item = clientItem || dbItem;
 
     res.json({
       context: buildContextSummary(item, manuals, existingTaskCount),
@@ -297,7 +304,9 @@ router.get('/context', async (req, res) => {
     console.error('Maintenance chat context error:', err);
     res.status(500).json({ error: err.message });
   }
-});
+}
+router.get('/context', contextHandler);
+router.post('/context', contextHandler);
 
 router.post('/', meter('chat', 'maintenance'), async (req, res) => {
   try {
