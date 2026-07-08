@@ -11,8 +11,14 @@ import {
   StyleSheet,
 } from 'react-native';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useNavigation } from '@react-navigation/native';
+import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { colors, radius, spacing } from '../../theme';
 import { flattenMarkdown } from '../../lib/markdown';
+import { formatCompact } from '../../lib/format';
+import { usePrivacyPrefs } from '../../lib/privacyPrefs';
+import type { RootStackParamList } from '../../navigation/types';
 import type { ChatController } from '../../hooks/useChat';
 
 // Reusable assistant chat UI. Ports client/src/components/ChatPanel.vue. Each
@@ -27,6 +33,7 @@ export default function ChatScreen({
   placeholder = 'Type a message…',
   disabled = false,
   banner,
+  onFollowupPress,
 }: {
   chat: ChatController;
   emptyIcon?: keyof typeof MaterialCommunityIcons.glyphMap;
@@ -35,12 +42,33 @@ export default function ChatScreen({
   placeholder?: string;
   disabled?: boolean;
   banner?: React.ReactNode;
+  // Intercept a follow-up chip tap. Return true if handled (e.g. a client-side
+  // action like saving an event); otherwise the chip text is sent to the chat.
+  onFollowupPress?: (text: string) => boolean;
 }) {
   const scrollRef = useRef<ScrollView>(null);
   const [contextOpen, setContextOpen] = useState(false);
+  const insets = useSafeAreaInsets();
+  const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
+  const aiEnabled = usePrivacyPrefs().prefs.aiEnabled;
   const scrollToEnd = () => scrollRef.current?.scrollToEnd({ animated: true });
 
   const empty = chat.messages.length === 0 && !chat.streamingText;
+
+  // Master switch (Phase 5): with AI off in Privacy settings the assistant is
+  // unusable and nothing is ever sent to the provider — same guarantee FormAssist
+  // gives. Mirrors the "panel doesn't render" behavior for a full-screen surface.
+  if (!aiEnabled) {
+    return (
+      <View style={styles.disabledWrap}>
+        <MaterialCommunityIcons name="robot-off-outline" size={48} color={colors.textMuted} />
+        <Text style={styles.disabledTitle}>AI features are turned off</Text>
+        <Text style={styles.disabledText}>
+          Turn on “AI features” in Profile → Privacy to use the assistant.
+        </Text>
+      </View>
+    );
+  }
 
   return (
     <KeyboardAvoidingView
@@ -124,15 +152,17 @@ export default function ChatScreen({
 
         {/* Conversation */}
         {chat.messages.map((msg, i) => (
-          <View
-            key={i}
-            style={[styles.row, msg.role === 'user' ? styles.rowRight : styles.rowLeft]}
-          >
-            <View style={[styles.bubble, msg.role === 'user' ? styles.bubbleUser : styles.bubbleAssistant]}>
-              <Text style={msg.role === 'user' ? styles.bubbleUserText : styles.bubbleAssistantText}>
-                {msg.role === 'user' ? msg.content : flattenMarkdown(msg.content)}
-              </Text>
+          <View key={i}>
+            <View style={[styles.row, msg.role === 'user' ? styles.rowRight : styles.rowLeft]}>
+              <View style={[styles.bubble, msg.role === 'user' ? styles.bubbleUser : styles.bubbleAssistant]}>
+                <Text style={msg.role === 'user' ? styles.bubbleUserText : styles.bubbleAssistantText}>
+                  {msg.role === 'user' ? msg.content : flattenMarkdown(msg.content)}
+                </Text>
+              </View>
             </View>
+            {msg.role === 'assistant' && msg.tokens ? (
+              <Text style={styles.tokenMeta}>{formatCompact(msg.tokens)} tokens</Text>
+            ) : null}
           </View>
         ))}
 
@@ -159,26 +189,53 @@ export default function ChatScreen({
         {chat.followups.length && !chat.loading ? (
           <View style={styles.followups}>
             {chat.followups.map((f, i) => (
-              <TouchableOpacity key={i} style={styles.followupChip} onPress={() => chat.send(f)} disabled={disabled}>
+              <TouchableOpacity
+                key={i}
+                style={styles.followupChip}
+                onPress={() => {
+                  if (!onFollowupPress?.(f)) chat.send(f);
+                }}
+                disabled={disabled}
+              >
                 <Text style={styles.followupChipText}>{f}</Text>
               </TouchableOpacity>
             ))}
           </View>
         ) : null}
 
-        {/* Error + retry */}
+        {/* Error + retry. Over quota, retrying is futile — offer the upgrade
+            path (Plan screen) instead. */}
         {chat.error ? (
           <View style={styles.errorBox}>
-            <Text style={styles.errorText}>{chat.error}</Text>
-            <TouchableOpacity onPress={() => chat.retry()}>
-              <Text style={styles.retryText}>Retry</Text>
-            </TouchableOpacity>
+            {chat.quotaExceeded && chat.error.includes('Upgrade') ? (
+              // Over quota, retrying is futile: render "Upgrade" inline as an
+              // underlined link to the Plan screen (Paywall) instead of a button.
+              <Text style={styles.errorText}>
+                {chat.error.slice(0, chat.error.indexOf('Upgrade'))}
+                <Text
+                  style={styles.upgradeLink}
+                  onPress={() => navigation.navigate('Paywall')}
+                  accessibilityRole="link"
+                  accessibilityLabel="Upgrade — open the Plan screen"
+                >
+                  Upgrade
+                </Text>
+                {chat.error.slice(chat.error.indexOf('Upgrade') + 'Upgrade'.length)}
+              </Text>
+            ) : (
+              <>
+                <Text style={styles.errorText}>{chat.error}</Text>
+                <TouchableOpacity onPress={() => chat.retry()}>
+                  <Text style={styles.retryText}>Retry</Text>
+                </TouchableOpacity>
+              </>
+            )}
           </View>
         ) : null}
       </ScrollView>
 
       {/* Input */}
-      <View style={styles.inputBar}>
+      <View style={[styles.inputBar, { paddingBottom: spacing.sm + insets.bottom }]}>
         <TextInput
           style={styles.textInput}
           value={chat.input}
@@ -206,6 +263,9 @@ export default function ChatScreen({
 
 const styles = StyleSheet.create({
   flex: { flex: 1, backgroundColor: colors.background },
+  disabledWrap: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: spacing.xl, gap: spacing.sm, backgroundColor: colors.background },
+  disabledTitle: { fontSize: 16, fontWeight: '700', color: colors.text, marginTop: spacing.sm },
+  disabledText: { fontSize: 13, color: colors.textMuted, textAlign: 'center', lineHeight: 19 },
   scrollContent: { padding: spacing.md, paddingBottom: spacing.lg },
   contextCard: {
     backgroundColor: colors.primary + '0D',
@@ -238,6 +298,7 @@ const styles = StyleSheet.create({
   bubbleAssistant: { backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border, borderBottomLeftRadius: 4 },
   bubbleUserText: { color: '#fff', fontSize: 14, lineHeight: 21 },
   bubbleAssistantText: { color: colors.text, fontSize: 14, lineHeight: 21 },
+  tokenMeta: { fontSize: 11, color: colors.textMuted, marginTop: -2, marginBottom: spacing.sm, marginLeft: 4 },
   thinking: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
   thinkingText: { fontSize: 13, color: colors.textMuted },
   followups: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm, marginBottom: spacing.sm },
@@ -259,6 +320,7 @@ const styles = StyleSheet.create({
   },
   errorText: { flex: 1, color: colors.error, fontSize: 13 },
   retryText: { color: colors.error, fontWeight: '700', fontSize: 13, paddingLeft: spacing.sm },
+  upgradeLink: { color: colors.error, fontWeight: '700', textDecorationLine: 'underline' },
   inputBar: {
     flexDirection: 'row',
     alignItems: 'flex-end',

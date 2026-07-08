@@ -155,6 +155,32 @@ export default function TripFormScreen() {
     ]);
   };
 
+  // GET /trips/:id reports whether the caller's household owns the trip. Only the
+  // owner may delete it; a guest collaborator removes themselves via leave-share
+  // instead (mirrors the web TripDetailView). Default true so a brand-new trip or
+  // an older API response shows the owner path — the server enforces either way.
+  const isOwner = (tripQ.data as unknown as { isOwner?: boolean } | undefined)?.isOwner ?? true;
+
+  const leave = useMutation({
+    mutationFn: () => tripsApi.leaveShare(id!),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['trips'] });
+      navigation.navigate('Vacations');
+    },
+    onError: (e: any) => setError(e.response?.data?.error || 'Could not leave trip'),
+  });
+
+  const onLeave = () => {
+    Alert.alert(
+      'Leave this trip?',
+      'You’ll be removed as a collaborator. The trip stays with its owner, and you can rejoin later with the invite code.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Leave', style: 'destructive', onPress: () => leave.mutate() },
+      ],
+    );
+  };
+
   const onSave = () => {
     if (!form.name.trim()) {
       setError('Name is required');
@@ -243,9 +269,15 @@ export default function TripFormScreen() {
       {error ? <Text style={styles.error}>{error}</Text> : null}
 
       {isEdit ? (
-        <TouchableOpacity onPress={onDelete} disabled={del.isPending} style={styles.deleteBtn}>
-          <Text style={styles.deleteText}>{del.isPending ? 'Deleting…' : 'Delete Trip'}</Text>
-        </TouchableOpacity>
+        isOwner ? (
+          <TouchableOpacity onPress={onDelete} disabled={del.isPending} style={styles.deleteBtn}>
+            <Text style={styles.deleteText}>{del.isPending ? 'Deleting…' : 'Delete Trip'}</Text>
+          </TouchableOpacity>
+        ) : (
+          <TouchableOpacity onPress={onLeave} disabled={leave.isPending} style={styles.deleteBtn}>
+            <Text style={styles.deleteText}>{leave.isPending ? 'Leaving…' : 'Leave this shared trip'}</Text>
+          </TouchableOpacity>
+        )
       ) : null}
     </Screen>
   );

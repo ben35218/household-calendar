@@ -1,6 +1,6 @@
-import React, { useLayoutEffect, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useState } from 'react';
 import { View, StyleSheet } from 'react-native';
-import { useNavigation } from '@react-navigation/native';
+import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { SegmentedControl, RoundIconButton } from '../../components/ui';
 import InventoryPane from './InventoryPane';
@@ -16,7 +16,14 @@ type Nav = NativeStackNavigationProp<KitchenStackParamList>;
 export default function KitchenScreen() {
   const [pane, setPane] = useState<Pane>('planner');
   const navigation = useNavigation<Nav>();
+  const scrollToDate = useRoute<RouteProp<KitchenStackParamList, 'KitchenHome'>>().params?.scrollToDate;
   const accent = useCalendarColors().colors.recipes;
+
+  // Landing here to reveal a freshly-scheduled recipe: make sure the Planner is
+  // the active pane so PlannerPane can scroll to that day.
+  useEffect(() => {
+    if (scrollToDate) setPane('planner');
+  }, [scrollToDate]);
 
   // Contextual add button: recipes -> new recipe, food -> new inventory item.
   // The planner has no add action, so no button appears there.

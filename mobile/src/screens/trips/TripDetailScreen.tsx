@@ -12,6 +12,8 @@ import { useCalendarColors } from '../../lib/calendarPrefs';
 import { zonedParts, zonedTimeLabel } from '../../lib/tz';
 import TripTimeline from '../../components/TripTimeline';
 import AssistantIcon from '../../components/AssistantIcon';
+import { useAiEnabled } from '../../lib/privacyPrefs';
+import { getHDK, openRecord } from '../../lib/e2ee';
 import { TripsStackParamList } from '../../navigation/TripsNavigator';
 import { colors, spacing } from '../../theme';
 
@@ -33,6 +35,7 @@ function eachDay(startISO: string, endISO: string): string[] {
 
 export default function TripDetailScreen() {
   const navigation = useNavigation<Nav>();
+  const aiEnabled = useAiEnabled();
   const accent = useCalendarColors().colors.vacations;
   const { id } = useRoute<Rt>().params;
   const qc = useQueryClient();
@@ -50,10 +53,26 @@ export default function TripDetailScreen() {
   const tz = trip?.destinationTz || '';
 
   const share = useMutation({
-    mutationFn: () => tripsApi.share(id),
+    mutationFn: async () => {
+      try {
+        return (await tripsApi.share(id)).data;
+      } catch (e: any) {
+        // Decrypt-on-share (§9.3): an E2EE private trip is ciphertext-only, so the
+        // server asks us to hand it the decrypted trip + items to re-write as
+        // plaintext for collaborators. Requires the household key to be unlocked.
+        if (e?.response?.data?.error !== 'decrypt_required') throw e;
+        if (!getHDK() || !data) throw new Error('Unlock your account, then try sharing again.');
+        const decTrip = await openRecord('Trip', data.trip as any);
+        const decItems = await Promise.all((data.items || []).map((i) => openRecord('TripItem', i as any)));
+        return (await tripsApi.share(id, { trip: decTrip, items: decItems })).data;
+      }
+    },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['trips', id] });
       setShareModal(true);
+    },
+    onError: (e: any) => {
+      Alert.alert('Could not share trip', e?.message || e?.response?.data?.message || 'Please try again.');
     },
   });
 
@@ -286,13 +305,15 @@ export default function TripDetailScreen() {
             />
           )}
         </ScrollView>
-        <TouchableOpacity
-          style={[styles.fab, { backgroundColor: accent }]}
-          activeOpacity={0.85}
-          onPress={() => navigation.navigate('VacationAssistant', { tripId: id, tripName: trip?.name })}
-        >
-          <AssistantIcon size={26} color="#fff" />
-        </TouchableOpacity>
+        {aiEnabled && (
+          <TouchableOpacity
+            style={[styles.fab, { backgroundColor: accent }]}
+            activeOpacity={0.85}
+            onPress={() => navigation.navigate('VacationAssistant', { tripId: id, tripName: trip?.name })}
+          >
+            <AssistantIcon size={26} color="#fff" />
+          </TouchableOpacity>
+        )}
       </View>
     );
   }
@@ -462,13 +483,15 @@ export default function TripDetailScreen() {
           </View>
         ) : null}
       </ScrollView>
-      <TouchableOpacity
-        style={[styles.fab, { backgroundColor: accent }]}
-        activeOpacity={0.85}
-        onPress={() => navigation.navigate('VacationAssistant', { tripId: id, tripName: trip?.name })}
-      >
-        <AssistantIcon size={26} color="#fff" />
-      </TouchableOpacity>
+      {aiEnabled && (
+        <TouchableOpacity
+          style={[styles.fab, { backgroundColor: accent }]}
+          activeOpacity={0.85}
+          onPress={() => navigation.navigate('VacationAssistant', { tripId: id, tripName: trip?.name })}
+        >
+          <AssistantIcon size={26} color="#fff" />
+        </TouchableOpacity>
+      )}
 
       <Modal visible={shareModal} transparent animationType="fade" onRequestClose={() => setShareModal(false)}>
         <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={() => setShareModal(false)}>

@@ -16,6 +16,7 @@ import { Platform } from 'react-native';
 import * as Notifications from 'expo-notifications';
 import { notificationsApi, CalendarData } from '../api';
 import { loadCalendarData } from './calendarData';
+import { getPrivacyPrefs } from './privacyPrefs';
 
 const WINDOW_DAYS = 21;
 const MAX_SCHEDULED = 60;  // headroom under the iOS ~64 pending cap
@@ -92,6 +93,8 @@ async function syncServerFlag(enabled: boolean) {
 
 export async function rescheduleReminders(): Promise<number> {
   try {
+    // Respect the user's on/off toggle even if called outside the scheduler hook.
+    if (!getPrivacyPrefs().remindersEnabled) { await cancelAllReminders(); await syncServerFlag(false); return 0; }
     if (!(await ensureNotificationPermission())) { await syncServerFlag(false); return 0; }
     await syncServerFlag(true);
     if (Platform.OS === 'android') {

@@ -1,11 +1,12 @@
 import React, { useState } from 'react';
 import { View, Text, ScrollView, StyleSheet, TouchableOpacity, ActivityIndicator, Switch } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { useNavigation } from '@react-navigation/native';
+import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useQuery } from '@tanstack/react-query';
 import { inventoryApi, recipesApi } from '../../api';
 import { Button, Card, Chip, Input } from '../../components/ui';
+import AiUsageBanner from '../../components/AiUsageBanner';
 import { useCalendarColors } from '../../lib/calendarPrefs';
 import { colors, spacing } from '../../theme';
 import type { KitchenStackParamList } from '../../navigation/KitchenNavigator';
@@ -23,6 +24,9 @@ type IngredientMode = 'focus' | 'included' | 'strict';
 // on "Use my ingredients" to build AI suggestions around selected inventory items.
 export default function FindRecipesScreen() {
   const nav = useNavigation<NativeStackNavigationProp<KitchenStackParamList>>();
+  // Carried from the planner's "Add recipe" for a date, so a saved recipe lands
+  // on that date and returns to Meals.
+  const scheduleDate = useRoute<RouteProp<KitchenStackParamList, 'RecipeAssistant'>>().params?.scheduleDate;
   const accent = useCalendarColors().colors.recipes;
   const { data: items, isLoading } = useQuery({
     queryKey: ['inventory', 'active'],
@@ -36,8 +40,7 @@ export default function FindRecipesScreen() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [suggestions, setSuggestions] = useState<Suggestion[] | null>(null);
-  const [savingIdx, setSavingIdx] = useState<number | null>(null);
-  const [savedIds, setSavedIds] = useState<Record<number, string>>({});
+  const [generatingIdx, setGeneratingIdx] = useState<number | null>(null);
 
   const all = items ?? [];
   const toggle = (id: string) =>
@@ -47,7 +50,6 @@ export default function FindRecipesScreen() {
   async function suggest() {
     setError('');
     setBusy(true);
-    setSavedIds({});
     try {
       const params = useIngredients
         ? { query: queryText.trim(), itemNames: selectedNames, ingredientMode }
@@ -61,8 +63,12 @@ export default function FindRecipesScreen() {
     }
   }
 
-  async function saveSuggestion(s: Suggestion, i: number) {
-    setSavingIdx(i);
+  // Expand a lightweight suggestion into a full recipe (one AI generation) and open
+  // it in the review screen. Nothing is saved until the user taps save there — and
+  // that save reuses this generated recipe, so it costs no extra tokens.
+  async function preview(s: Suggestion, i: number) {
+    setError('');
+    setGeneratingIdx(i);
     try {
       const description = [
         `Recipe: ${s.title}.`,
@@ -72,9 +78,11 @@ export default function FindRecipesScreen() {
         s.time ? `Estimated time: ${s.time}.` : '',
       ].filter(Boolean).join(' ');
       const { data } = await recipesApi.generateFromAi(description);
-      if (data._id) setSavedIds((m) => ({ ...m, [i]: data._id as string }));
+      nav.navigate('RecipeForm', { initial: data, scheduleDate });
+    } catch (e: any) {
+      setError(e?.response?.data?.error || 'Failed to build that recipe. Please try again.');
     } finally {
-      setSavingIdx(null);
+      setGeneratingIdx(null);
     }
   }
 
@@ -91,21 +99,38 @@ export default function FindRecipesScreen() {
     return (
       <ScrollView style={styles.container} contentContainerStyle={styles.content}>
         <ResultsHeader title="Recipe Suggestions" onBack={() => setSuggestions(null)} />
+        <Text style={styles.previewHint}>Tap a suggestion to see the full recipe, then save it.</Text>
+        {error ? <Text style={styles.errorText}>{error}</Text> : null}
         {suggestions.map((r, i) => (
-          <Card key={i} style={styles.card}>
-            <Text style={styles.recipeTitle}>{r.title}</Text>
-            {r.description ? <Text style={styles.recipeDesc}>{r.description}</Text> : null}
-            {r.time ? <Text style={styles.time}>⏱ {r.time}</Text> : null}
-            <View style={styles.tags}>
-              {(r.usedIngredients ?? []).map((ing) => <Chip key={ing} label={ing} color={colors.success} />)}
-              {(r.needsOther ?? []).map((ing) => <Chip key={ing} label={ing} color={colors.textMuted} />)}
-            </View>
-            {savedIds[i] ? (
-              <Button title="View Recipe" variant="ghost" onPress={() => nav.navigate('RecipeDetail', { id: savedIds[i] })} />
-            ) : (
-              <Button title="Save to Library" variant="ghost" loading={savingIdx === i} onPress={() => saveSuggestion(r, i)} />
-            )}
-          </Card>
+          <TouchableOpacity
+            key={i}
+            activeOpacity={0.7}
+            disabled={generatingIdx !== null}
+            onPress={() => preview(r, i)}
+          >
+            <Card style={styles.card}>
+              <Text style={styles.recipeTitle}>{r.title}</Text>
+              {r.description ? <Text style={styles.recipeDesc}>{r.description}</Text> : null}
+              {r.time ? <Text style={styles.time}>⏱ {r.time}</Text> : null}
+              <View style={styles.tags}>
+                {(r.usedIngredients ?? []).map((ing) => <Chip key={ing} label={ing} color={colors.success} />)}
+                {(r.needsOther ?? []).map((ing) => <Chip key={ing} label={ing} color={colors.textMuted} />)}
+              </View>
+              <View style={styles.cardFooter}>
+                {generatingIdx === i ? (
+                  <>
+                    <ActivityIndicator size="small" color={accent} />
+                    <Text style={[styles.footerLabel, { color: accent }]}>Building recipe…</Text>
+                  </>
+                ) : (
+                  <>
+                    <Text style={[styles.footerLabel, { color: accent }]}>Preview</Text>
+                    <Ionicons name="chevron-forward" size={16} color={accent} />
+                  </>
+                )}
+              </View>
+            </Card>
+          </TouchableOpacity>
         ))}
       </ScrollView>
     );
@@ -114,6 +139,7 @@ export default function FindRecipesScreen() {
   // ── Selector ──
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
+      <AiUsageBanner />
       <Card style={styles.card}>
         <Text style={styles.title}>What are you in the mood for?</Text>
         <Input
@@ -225,4 +251,7 @@ const styles = StyleSheet.create({
   recipeTitle: { fontSize: 16, fontWeight: '600', color: colors.text, marginBottom: 4 },
   recipeDesc: { fontSize: 13, color: colors.textMuted, marginBottom: 6, lineHeight: 18 },
   time: { fontSize: 12, color: colors.textMuted, marginBottom: 6 },
+  previewHint: { fontSize: 13, color: colors.textMuted, marginBottom: spacing.md },
+  cardFooter: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: spacing.sm },
+  footerLabel: { fontSize: 14, fontWeight: '600' },
 });

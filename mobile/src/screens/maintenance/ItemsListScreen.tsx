@@ -17,8 +17,10 @@ import { itemsApi, Item } from '../../api';
 import { openRecord } from '../../lib/e2ee';
 import * as replica from '../../lib/replica';
 import { Card } from '../../components/ui';
+import AiUsageBanner from '../../components/AiUsageBanner';
 import { mdiName } from '../../lib/recurrence';
 import { itemTypeConfig } from '../../lib/itemTypes';
+import { useAiEnabled } from '../../lib/privacyPrefs';
 import { takePhoto, pickImage } from '../../lib/media';
 import { uploadFile } from '../../lib/upload';
 import { MaintenanceStackParamList } from '../../navigation/MaintenanceNavigator';
@@ -28,6 +30,7 @@ type Nav = NativeStackNavigationProp<MaintenanceStackParamList, 'ItemsList'>;
 
 export default function ItemsListScreen() {
   const navigation = useNavigation<Nav>();
+  const aiEnabled = useAiEnabled();
   const qc = useQueryClient();
   const [scanning, setScanning] = useState(false);
 
@@ -88,16 +91,19 @@ export default function ItemsListScreen() {
         contentContainerStyle={styles.content}
         refreshControl={<RefreshControl refreshing={itemsQ.isRefetching} onRefresh={itemsQ.refetch} />}
       >
-        <TouchableOpacity style={styles.scanBtn} onPress={onAddPhoto} disabled={scanning} activeOpacity={0.8}>
-          {scanning ? (
-            <ActivityIndicator color={colors.primary} />
-          ) : (
-            <>
-              <Ionicons name="camera-outline" size={20} color={colors.primary} />
-              <Text style={styles.scanText}>Add from Photo</Text>
-            </>
-          )}
-        </TouchableOpacity>
+        {aiEnabled && <AiUsageBanner />}
+        {aiEnabled && (
+          <TouchableOpacity style={styles.scanBtn} onPress={onAddPhoto} disabled={scanning} activeOpacity={0.8}>
+            {scanning ? (
+              <ActivityIndicator color={colors.primary} />
+            ) : (
+              <>
+                <Ionicons name="camera-outline" size={20} color={colors.primary} />
+                <Text style={styles.scanText}>Add from Photo</Text>
+              </>
+            )}
+          </TouchableOpacity>
+        )}
 
         {groups.length === 0 ? (
           <Text style={styles.empty}>No items yet. Add your appliances, vehicles, and systems.</Text>

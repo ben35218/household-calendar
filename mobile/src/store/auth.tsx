@@ -1,5 +1,7 @@
 import React, { createContext, useContext, useEffect, useState, useCallback } from 'react';
-import { authApi, User } from '../api';
+import { Platform } from 'react-native';
+import Constants from 'expo-constants';
+import { authApi, householdApi, User } from '../api';
 import { setUnauthorizedHandler } from '../api/client';
 import { loadToken, saveToken, clearToken } from '../lib/secureToken';
 import { ensureEnrolledOnLogin, ensureHouseholdKey, lock as lockE2EE } from '../lib/e2ee';
@@ -63,6 +65,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setUnauthorizedHandler(() => { void logout(); });
     return () => setUnauthorizedHandler(null);
   }, [logout]);
+
+  // Report this app version for the §9 readiness gate (every member must be on a
+  // compatible build before the whole-household drop). Best-effort.
+  useEffect(() => {
+    if (!user) return;
+    householdApi
+      .reportClientVersion(Constants.expoConfig?.version ?? '0.0.0', Platform.OS)
+      .catch(() => {});
+  }, [user?._id]);
 
   const login = useCallback(async (creds: { email: string; password: string }) => {
     const { data } = await authApi.login(creds);

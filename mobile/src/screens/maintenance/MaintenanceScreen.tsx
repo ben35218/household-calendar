@@ -17,6 +17,7 @@ import { tasksApi, itemsApi, Task, Item, LinkedRef } from '../../api';
 import { Card, RoundIconButton } from '../../components/ui';
 import { formatCalendarDate } from '../../lib/recurrence';
 import { useCalendarColors } from '../../lib/calendarPrefs';
+import { useAiEnabled } from '../../lib/privacyPrefs';
 import { MaintenanceStackParamList } from '../../navigation/MaintenanceNavigator';
 import { colors, spacing, radius } from '../../theme';
 
@@ -70,6 +71,7 @@ function refId(ref?: LinkedRef | string | null): string {
 
 export default function MaintenanceScreen() {
   const navigation = useNavigation<Nav>();
+  const aiEnabled = useAiEnabled();
   const accent = useCalendarColors().colors.maintenance;
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [statusFilter, setStatusFilter] = useState<StatusKey | null>(null);
@@ -240,12 +242,14 @@ export default function MaintenanceScreen() {
                         ) : null}
                       </View>
                     </View>
-                    <TouchableOpacity
-                      style={styles.iconBtn}
-                      onPress={() => navigation.navigate('MaintenanceChat', { itemId: item._id, itemName: item.name })}
-                    >
-                      <Ionicons name="chatbubble-outline" size={20} color={colors.primary} />
-                    </TouchableOpacity>
+                    {aiEnabled && (
+                      <TouchableOpacity
+                        style={styles.iconBtn}
+                        onPress={() => navigation.navigate('MaintenanceChat', { itemId: item._id, itemName: item.name })}
+                      >
+                        <Ionicons name="chatbubble-outline" size={20} color={colors.primary} />
+                      </TouchableOpacity>
+                    )}
                     <TouchableOpacity style={styles.iconBtn} onPress={() => toggle(item._id)}>
                       <Ionicons name={isOpen ? 'chevron-up' : 'chevron-down'} size={20} color={colors.textMuted} />
                     </TouchableOpacity>

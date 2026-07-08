@@ -4,6 +4,7 @@ import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import { useQueryClient } from '@tanstack/react-query';
 import { useChat } from '../../hooks/useChat';
 import ChatScreen from '../chat/ChatScreen';
+import AiUsageBanner from '../../components/AiUsageBanner';
 import { tripsApi, householdApi } from '../../api';
 import { getHDK, openRecord } from '../../lib/e2ee';
 import { TripsStackParamList } from '../../navigation/TripsNavigator';
@@ -64,10 +65,11 @@ export default function VacationAssistantScreen() {
   return (
     <ChatScreen
       chat={chat}
+      banner={<AiUsageBanner />}
       emptyIcon="bag-suitcase"
       emptyText={`Ask me about ${tripName || 'this trip'} — your itinerary, costs, or what's left to plan.`}
       emptyHint={'e.g. "What\'s my itinerary?"'}
-      placeholder="Ask about this trip…"
+      placeholder="Message…"
     />
   );
 }

@@ -2,8 +2,8 @@ import React from 'react';
 import { View, Text, ScrollView, StyleSheet, ActivityIndicator } from 'react-native';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useQuery } from '@tanstack/react-query';
-import { weatherApi, OutlookWeek } from '../../api';
-import { loadForecast } from '../../lib/weather';
+import { OutlookWeek } from '../../api';
+import { loadForecast, loadOutlookWeeks } from '../../lib/weather';
 import { Card, Divider } from '../../components/ui';
 import HourlyForecast from '../../components/HourlyForecast';
 import { wmoIcon, weatherColor } from '../../lib/weatherIcons';
@@ -23,7 +23,7 @@ function weekRange(start: string, end: string) {
 // a 7-day forecast strip, and the 90-day seasonal outlook grouped by month.
 export default function WeatherScreen() {
   const weatherQ = useQuery({ queryKey: ['weather'], queryFn: () => loadForecast() });
-  const outlookQ = useQuery({ queryKey: ['weather', 'outlook'], queryFn: async () => (await weatherApi.outlook()).data.weeks });
+  const outlookQ = useQuery({ queryKey: ['weather', 'outlook'], queryFn: () => loadOutlookWeeks() });
 
   const monthGroups = React.useMemo(() => {
     const groups: { label: string; weeks: OutlookWeek[] }[] = [];

@@ -13,9 +13,17 @@ import { keysApi, householdApi, type HDKEnvelopePayload } from '../api';
 
 let enrollment: Awaited<ReturnType<typeof buildEnrollment>> | null = null;
 let keyPair: IdentityKeyPair | null = null;
-let hdk: Uint8Array | null = null; // in-memory Household Data Key for this session (Phase 2)
-let hdkVersion = 0; // the HDK's key version (bound into record AAD)
+// Every HDK version this session can unwrap, keyed by version. Under lazy
+// rotation (§5.2) records sealed before a rotation stay at their old version, so
+// we must keep old HDKs to read them while writing new records under the current
+// version. `hdkVersion` is the *current* (write) version.
+const hdks = new Map<number, Uint8Array>();
+let hdkVersion = 0; // the current HDK version (bound into new-record AAD)
 let hdkHouseholdId: string | null = null; // the household the HDK belongs to (bound into record AAD)
+
+function currentHDK(): Uint8Array | null {
+  return hdks.get(hdkVersion) ?? null;
+}
 
 // One-time recovery code + subscribers (so a root modal can display it once).
 let pendingRecoveryCode: string | null = null;
@@ -50,11 +58,11 @@ export function getKeyPair(): IdentityKeyPair | null {
   return keyPair;
 }
 export function getHDK(): Uint8Array | null {
-  return hdk;
+  return currentHDK();
 }
 export function lock() {
   keyPair = null;
-  hdk = null;
+  hdks.clear();
   hdkVersion = 0;
   hdkHouseholdId = null;
 }
@@ -65,26 +73,68 @@ export function lock() {
 // a family member approves me. See docs/E2EE-SYNC-PLAN.md §5.
 export async function ensureHouseholdKey(): Promise<'locked' | 'ready' | 'pending'> {
   if (!keyPair) return 'locked';
-  if (hdk) return 'ready';
   const crypto = await loadHouseholdCrypto();
   const { data } = await householdApi.getKey();
-
-  hdkHouseholdId = data.householdId || null;
+  const householdId = data.householdId || null;
   const current = data.currentKeyVersion || 0;
-  const mine = (data.envelopes || []).find((e) => e.keyVersion === current);
-  if (current > 0 && mine) {
-    hdk = crypto.unwrapHDK(mine.wrappedHDK, keyPair);
+
+  // Household changed under us (left/joined/deleted) → drop every cached version
+  // so we don't decrypt against an orphaned HDK or skip minting a fresh key.
+  if (hdkHouseholdId !== householdId) {
+    hdks.clear();
+    hdkVersion = 0;
+    hdkHouseholdId = householdId;
+  }
+
+  // Unwrap every envelope we don't already hold — including older versions — so a
+  // record sealed before a rotation stays decryptable.
+  for (const e of data.envelopes || []) {
+    if (!hdks.has(e.keyVersion)) {
+      try { hdks.set(e.keyVersion, crypto.unwrapHDK(e.wrappedHDK, keyPair)); } catch { /* skip a bad envelope */ }
+    }
+  }
+
+  if (current > 0 && hdks.has(current)) {
     hdkVersion = current;
+    // A departed member left this household keyed for rotation (§5.2). Drive it
+    // now, best-effort — a concurrent rotation by another member just 409s and
+    // we pick up their new envelope on the next call.
+    if (data.keyRotationPending) { try { await rotateHouseholdKey(); } catch { /* non-fatal */ } }
     return 'ready';
   }
   if (current === 0 && data.isOwner) {
     const fresh = crypto.generateHDK();
     await householdApi.mintKey({ wrappedHDK: crypto.wrapHDKForMember(fresh, keyPair.publicKey), keyVersion: 1 });
-    hdk = fresh;
+    hdks.set(1, fresh);
     hdkVersion = 1;
     return 'ready';
   }
   return 'pending';
+}
+
+// §5.2 lazy rotation: mint a fresh HDK for the next version and wrap it to every
+// current member, so a removed/departed member can't read future writes. Old
+// versions stay in the map for reading historical records. Self-healing —
+// invoked from ensureHouseholdKey when the server flags keyRotationPending.
+export async function rotateHouseholdKey(): Promise<boolean> {
+  if (!keyPair || !hdkHouseholdId || !hdks.has(hdkVersion)) return false;
+  const crypto = await loadHouseholdCrypto();
+  const nextVersion = hdkVersion + 1;
+  const { data: members } = await householdApi.memberKeys();
+  if (!members.length) return false;
+  const fresh = crypto.generateHDK();
+  const envelopes = members.map((m) => ({
+    userId: m.userId,
+    wrappedHDK: crypto.wrapHDKForMember(fresh, crypto.unb64(m.identityPublicKey)),
+  }));
+  try {
+    const { data } = await householdApi.rotateKey({ keyVersion: nextVersion, envelopes });
+    hdks.set(data.keyVersion, fresh);
+    hdkVersion = data.keyVersion;
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 // ── Record encryption (Phase 3 dual-write) ───────────────────────────────────
@@ -104,6 +154,7 @@ export async function encryptRecord(
   id: string,
   fields: unknown,
 ): Promise<{ enc: RecordEnvelope; keyVersion: number } | null> {
+  const hdk = currentHDK();
   if (!hdk || !hdkHouseholdId) return null;
   const crypto = await loadHouseholdCrypto();
   const loc = { collection, id, householdId: String(hdkHouseholdId), keyVersion: hdkVersion };
@@ -118,9 +169,12 @@ export async function decryptRecord<T = Record<string, unknown>>(
   keyVersion: number | undefined,
   enc: { alg: string; nonce: string; ct: string } | undefined | null,
 ): Promise<T | null> {
-  if (!hdk || !hdkHouseholdId || !enc) return null;
+  if (!hdkHouseholdId || !enc) return null;
+  const version = keyVersion ?? hdkVersion;
+  const hdk = hdks.get(version);
+  if (!hdk) return null;
   const crypto = await loadHouseholdCrypto();
-  const loc = { collection, id, householdId: String(hdkHouseholdId), keyVersion: keyVersion ?? hdkVersion };
+  const loc = { collection, id, householdId: String(hdkHouseholdId), keyVersion: version };
   try {
     return crypto.decryptRecord<T>(hdk, loc, enc as RecordEnvelope);
   } catch {
@@ -156,6 +210,59 @@ export async function openRecord<T extends { _id: string; keyVersion?: number; e
   return dec ? ({ ...record, ...dec } as T) : record;
 }
 
+// ── Attachment encryption (Phase 4c) ─────────────────────────────────────────
+// Encrypt file bytes for `collection`/`id`: a fresh per-file key encrypts the
+// bytes (chunked AEAD), and that key is HDK-wrapped bound to the record. Returns
+// the serialized ciphertext to upload + the wrapped key (JSON string) + version,
+// or null if this session holds no HDK. Mirrors the web `encryptAttachment`.
+const ATTACH_CHUNK = 1024 * 1024; // 1 MiB chunks
+
+export async function encryptAttachment(
+  collection: string,
+  id: string,
+  bytes: Uint8Array,
+): Promise<{ ciphertext: Uint8Array; wrappedFileKey: string; keyVersion: number } | null> {
+  const hdk = currentHDK();
+  if (!hdk || !hdkHouseholdId) return null;
+  const crypto = await loadHouseholdCrypto();
+  const loc = { collection, id, householdId: String(hdkHouseholdId), keyVersion: hdkVersion };
+  const fileKey = crypto.generateFileKey();
+  const chunks: Uint8Array[] = [];
+  for (let i = 0; i < bytes.length; i += ATTACH_CHUNK) chunks.push(bytes.subarray(i, i + ATTACH_CHUNK));
+  const enc = crypto.encryptFile(fileKey, chunks);
+  const wrapped = crypto.wrapFileKey(hdk, fileKey, loc);
+  return {
+    ciphertext: new TextEncoder().encode(JSON.stringify(enc)),
+    wrappedFileKey: JSON.stringify(wrapped),
+    keyVersion: hdkVersion,
+  };
+}
+
+// Reverse of encryptAttachment: unwrap the file key (picking the right HDK
+// version) and decrypt the serialized ciphertext back to the original bytes, or
+// null if we can't (no HDK for that version, malformed blob).
+export async function decryptAttachment(
+  collection: string,
+  id: string,
+  keyVersion: number | undefined,
+  wrappedFileKey: string,
+  ciphertext: Uint8Array,
+): Promise<Uint8Array | null> {
+  if (!hdkHouseholdId) return null;
+  const version = keyVersion ?? hdkVersion;
+  const hdk = hdks.get(version);
+  if (!hdk) return null;
+  const crypto = await loadHouseholdCrypto();
+  const loc = { collection, id, householdId: String(hdkHouseholdId), keyVersion: version };
+  try {
+    const fileKey = crypto.unwrapFileKey(hdk, JSON.parse(wrappedFileKey), loc);
+    const enc = JSON.parse(new TextDecoder().decode(ciphertext));
+    return crypto.decryptFile(fileKey, enc);
+  } catch {
+    return null;
+  }
+}
+
 // Human-comparable fingerprint of a public key, for out-of-band verification.
 export async function publicKeyFingerprint(publicKeyB64: string): Promise<string> {
   const crypto = await loadHouseholdCrypto();
@@ -167,6 +274,7 @@ export async function wrapHDKForJoiner(
   requesterPublicKeyB64: string,
   keyVersion: number,
 ): Promise<HDKEnvelopePayload | null> {
+  const hdk = currentHDK();
   if (!hdk) return null;
   const crypto = await loadHouseholdCrypto();
   return {

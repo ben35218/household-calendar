@@ -8,11 +8,15 @@ import type { PickedFile } from './media';
 export async function uploadFile<T = unknown>(
   path: string,
   file: PickedFile,
-  fieldName = 'photo'
+  fieldName = 'photo',
+  extraFields?: Record<string, string | number | boolean>
 ): Promise<T> {
   const form = new FormData();
   // RN FormData accepts this {uri,name,type} shape for file parts.
   form.append(fieldName, { uri: file.uri, name: file.name, type: file.type } as any);
+  // Extra text fields (e.g. E2EE attachment upload: encrypted, _id,
+  // wrappedFileKey, keyVersion, fileType, title).
+  for (const [k, v] of Object.entries(extraFields || {})) form.append(k, String(v));
   const { data } = await api.post<T>(path, form, {
     headers: { 'Content-Type': 'multipart/form-data' },
   });

@@ -11,6 +11,7 @@ import { getCanadianHolidays } from '../../lib/holidays';
 import { useCalendarVisibility, useHolidayPrefs, useCalendarColors } from '../../lib/calendarPrefs';
 import { SegmentedControl } from '../../components/ui';
 import AssistantIcon from '../../components/AssistantIcon';
+import { useAiEnabled } from '../../lib/privacyPrefs';
 import { colors, spacing } from '../../theme';
 import type { CalendarStackParamList } from '../../navigation/CalendarNavigator';
 
@@ -100,6 +101,7 @@ function timeLabel(item: AgendaItem): string {
 // calendar" button); opens painted directly at Today.
 export default function EventsScreen() {
   const nav = useNavigation<Nav>();
+  const aiEnabled = useAiEnabled();
   const insets = useSafeAreaInsets();
   const { user } = useAuth();
   const { visibility } = useCalendarVisibility();
@@ -329,9 +331,11 @@ export default function EventsScreen() {
         <TouchableOpacity style={styles.bottomPillBtn} onPress={() => nav.navigate('Calendars')}>
           <MaterialCommunityIcons name="calendar-multiple" size={22} color={BTN_FG} />
         </TouchableOpacity>
-        <TouchableOpacity style={styles.bottomPillBtn} onPress={() => nav.navigate('CalendarAssistant')}>
-          <AssistantIcon size={22} color={BTN_FG} />
-        </TouchableOpacity>
+        {aiEnabled && (
+          <TouchableOpacity style={styles.bottomPillBtn} onPress={() => nav.navigate('CalendarAssistant')}>
+            <AssistantIcon size={22} color={BTN_FG} />
+          </TouchableOpacity>
+        )}
       </View>
     </View>
   );

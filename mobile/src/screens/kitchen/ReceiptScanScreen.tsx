@@ -6,6 +6,7 @@ import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { inventoryApi, ReceiptExtraction } from '../../api';
 import { Button, Input, Screen, SegmentedControl, Card, Select } from '../../components/ui';
+import AiUsageBanner from '../../components/AiUsageBanner';
 import { INVENTORY_CATEGORIES } from './constants';
 import { takePhoto, pickImage } from '../../lib/media';
 import { uploadFile } from '../../lib/upload';
@@ -125,6 +126,7 @@ export default function ReceiptScanScreen() {
 
   return (
     <Screen>
+      <AiUsageBanner />
       <SegmentedControl<Mode>
         value={mode}
         onChange={setMode}

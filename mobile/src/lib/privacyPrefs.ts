@@ -16,12 +16,16 @@ export interface PrivacyPrefs {
   aiUsePersonalInfo: boolean;
   // Where app data lives: backed up in the Cloud, or kept only on this device.
   dataStorage: DataStorage;
+  // On-device reminder notifications (Phase 5a). When off we cancel the schedule
+  // and stop rescheduling — no local notifications fire.
+  remindersEnabled: boolean;
 }
 
 export const DEFAULT_PRIVACY_PREFS: PrivacyPrefs = {
   aiEnabled: true,
   aiUsePersonalInfo: true,
   dataStorage: 'cloud',
+  remindersEnabled: true,
 };
 
 // ── In-memory state + subscribers ───────────────────────────────────────────
@@ -57,6 +61,13 @@ function persist(next: PrivacyPrefs) {
 export function getPrivacyPrefs(): PrivacyPrefs {
   ensureLoaded();
   return current();
+}
+
+// Convenience hook for the common case: gate any AI entry point (assistant
+// buttons, photo/receipt scans, recipe import) on the master switch so nothing
+// AI-powered is shown while "Use AI features" is off.
+export function useAiEnabled(): boolean {
+  return usePrivacyPrefs().prefs.aiEnabled;
 }
 
 export function usePrivacyPrefs() {

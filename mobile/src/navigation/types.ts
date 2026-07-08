@@ -1,4 +1,4 @@
-import type { Item } from '../api';
+import type { Item, Recipe } from '../api';
 
 // The single, flat route map for the whole app — the React-Navigation analogue
 // of the web's one flat vue-router. Every screen is a sibling route, so any
@@ -11,7 +11,7 @@ export type RootStackParamList = {
   // ----- Calendar -----
   CalendarHome: undefined;
   CalendarDay: { date: string };
-  EventForm: { eventId?: string; date?: string };
+  EventForm: { eventId?: string; date?: string; prefill?: Record<string, unknown> };
   CalendarAssistant: undefined;
   CalendarSearch: undefined;
   Calendars: undefined;
@@ -37,13 +37,19 @@ export type RootStackParamList = {
   ChoreTemplates: undefined;
 
   // ----- Kitchen / meal planner -----
-  KitchenHome: undefined;
+  // `scrollToDate` (YYYY-MM-DD): open the Planner pane and scroll to that day —
+  // used after scheduling a freshly-created recipe so the user lands on it.
+  KitchenHome: { scrollToDate?: string } | undefined;
   InventoryItemForm: { id?: string };
   ReceiptScan: undefined;
   RecipeDetail: { id: string };
-  RecipeForm: { id?: string };
+  // `initial` pre-fills a new recipe for review/save (e.g. an AI-generated
+  // suggestion) without persisting anything until the user taps save.
+  // `scheduleDate` (YYYY-MM-DD): when the recipe originated from the planner's
+  // "Add recipe" for a date, schedule it to that date on save and return to Meals.
+  RecipeForm: { id?: string; initial?: Partial<Recipe>; scheduleDate?: string };
   CookingMode: { id: string };
-  RecipeAssistant: undefined;
+  RecipeAssistant: { scheduleDate?: string } | undefined;
   MealPlannerSettings: undefined;
   AddMeal: { date: string };
 
@@ -63,5 +69,6 @@ export type RootStackParamList = {
   ContactImport: undefined;
   Household: undefined;
   Privacy: undefined;
+  E2eeMigration: undefined;
   Paywall: undefined;
 };

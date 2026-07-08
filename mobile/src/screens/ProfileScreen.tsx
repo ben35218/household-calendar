@@ -22,6 +22,7 @@ const SECTIONS: Section[] = [
   { route: 'Household', label: 'Household', subtitle: 'Shared household and invite code', icon: 'home-outline' },
   { route: 'People', label: 'Contacts', subtitle: 'Family, friends & service providers', icon: 'people-outline' },
   { route: 'Privacy', label: 'Privacy', subtitle: 'AI features, personal data & storage', icon: 'lock-closed-outline' },
+  { route: 'E2eeMigration', label: 'Encryption', subtitle: 'Encryption status, recovery code & setup', icon: 'shield-checkmark-outline' },
   { route: 'Paywall', label: 'Plan & billing', subtitle: 'Your plan, usage & upgrades', icon: 'star-outline' },
 ];
 

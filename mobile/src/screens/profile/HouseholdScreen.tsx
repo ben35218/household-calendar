@@ -169,6 +169,35 @@ export default function HouseholdScreen() {
     ]);
   }
 
+  function removeMember(m: HouseholdMember) {
+    const who = [m.firstName, m.lastName].filter(Boolean).join(' ') || m.email || 'this member';
+    Alert.alert(
+      `Remove ${who}?`,
+      'They’ll move to their own household with their own data. Your household’s encryption key rotates so they can’t see anything you add afterward — but they keep access to what they could already see.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Remove',
+          style: 'destructive',
+          onPress: async () => {
+            setActing(m._id);
+            try {
+              await householdApi.removeMember(m._id);
+              await refetch();
+              qc.invalidateQueries();
+              // Drive the rotation now (the server flagged it) while we're unlocked.
+              await ensureHouseholdKey();
+            } catch (e: any) {
+              Alert.alert('Could not remove member', e?.response?.data?.error || 'Please try again.');
+            } finally {
+              setActing(null);
+            }
+          },
+        },
+      ]
+    );
+  }
+
   function leave() {
     Alert.alert(
       'Leave household?',
@@ -268,7 +297,8 @@ export default function HouseholdScreen() {
         <SectionTitle>Members ({household.members.length})</SectionTitle>
         {household.members.map((m: HouseholdMember) => {
           const display = [m.firstName, m.lastName].filter(Boolean).join(' ') || m.email || '?';
-          const isOwner = String(m._id) === String(household.ownerId);
+          const isMemberOwner = String(m._id) === String(household.ownerId);
+          const canRemove = !!household.isOwner && !isMemberOwner;
           return (
             <View key={m._id} style={styles.memberRow}>
               <View style={styles.memberAvatar}>
@@ -280,7 +310,19 @@ export default function HouseholdScreen() {
                 <Text style={styles.memberName} numberOfLines={1}>{display}</Text>
                 {m.email ? <Text style={styles.memberEmail} numberOfLines={1}>{m.email}</Text> : null}
               </View>
-              {isOwner ? <Text style={styles.ownerChip}>Owner</Text> : null}
+              {isMemberOwner ? <Text style={styles.ownerChip}>Owner</Text> : null}
+              {canRemove ? (
+                <TouchableOpacity
+                  onPress={() => removeMember(m)}
+                  disabled={acting === m._id}
+                  style={styles.removeBtn}
+                  activeOpacity={0.7}
+                >
+                  {acting === m._id
+                    ? <ActivityIndicator size="small" color={colors.error} />
+                    : <Ionicons name="person-remove-outline" size={18} color={colors.error} />}
+                </TouchableOpacity>
+              ) : null}
             </View>
           );
         })}
@@ -358,5 +400,6 @@ const styles = StyleSheet.create({
     fontSize: 11, fontWeight: '600', color: colors.primary, backgroundColor: colors.primary + '18',
     paddingHorizontal: 8, paddingVertical: 2, borderRadius: 6, overflow: 'hidden',
   },
+  removeBtn: { padding: 6, marginLeft: spacing.sm },
   error: { color: colors.error, fontSize: 13, marginBottom: spacing.sm, marginTop: spacing.sm },
 });

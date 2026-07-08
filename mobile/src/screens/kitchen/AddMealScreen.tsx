@@ -84,7 +84,7 @@ export default function AddMealScreen() {
         contentContainerStyle={styles.content}
         keyboardShouldPersistTaps="handled"
         ListHeaderComponent={
-          <TouchableOpacity style={styles.createRow} onPress={() => navigation.navigate('RecipeForm', {})}>
+          <TouchableOpacity style={styles.createRow} onPress={() => navigation.navigate('RecipeForm', { scheduleDate: date })}>
             <View style={[styles.createIcon, { backgroundColor: accent }]}>
               <Ionicons name="add" size={20} color="#fff" />
             </View>

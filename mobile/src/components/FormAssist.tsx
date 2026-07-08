@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { View, Text, StyleSheet } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { Button, Input } from './ui';
+import AiUsageBanner from './AiUsageBanner';
 import { formAssistApi, FormAssistField } from '../api';
 import { usePrivacyPrefs } from '../lib/privacyPrefs';
 import { colors, spacing, radius } from '../theme';
@@ -66,15 +67,13 @@ export default function FormAssist({
   if (!prefs.aiEnabled) return null;
 
   return (
-    <View style={styles.card}>
+    <>
+      <AiUsageBanner />
+      <View style={styles.card}>
       <View style={styles.header}>
         <Ionicons name="sparkles" size={16} color={colors.primary} />
         <Text style={styles.title}>{title}</Text>
       </View>
-      <Text style={styles.consent}>
-        <Ionicons name="cloud-upload-outline" size={11} color={colors.textMuted} />
-        {' '}Your description{includeContacts && prefs.aiUsePersonalInfo ? ' (and household contacts)' : ''} is sent to Anthropic to fill the form.
-      </Text>
       <Input
         value={prompt}
         onChangeText={setPrompt}
@@ -91,7 +90,8 @@ export default function FormAssist({
         loading={loading}
         disabled={disabled || !prompt.trim()}
       />
-    </View>
+      </View>
+    </>
   );
 }
 
@@ -106,7 +106,6 @@ const styles = StyleSheet.create({
   },
   header: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: spacing.sm },
   title: { fontSize: 15, fontWeight: '700', color: colors.text },
-  consent: { fontSize: 11, color: colors.textMuted, marginBottom: spacing.sm, lineHeight: 15 },
   input: { minHeight: 68, textAlignVertical: 'top' },
   error: { color: colors.error, marginBottom: spacing.sm, fontSize: 13 },
   note: { color: colors.textMuted, marginBottom: spacing.sm, fontSize: 13 },

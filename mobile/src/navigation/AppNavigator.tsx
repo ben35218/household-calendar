@@ -1,7 +1,8 @@
 import React from 'react';
-import { TouchableOpacity } from 'react-native';
+import { TouchableOpacity, View, StyleSheet } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
+import StorageBanner from '../components/StorageBanner';
 import { RootStackParamList } from './types';
 import { colors } from '../theme';
 import { useCalendarColors } from '../lib/calendarPrefs';
@@ -62,6 +63,7 @@ import PersonFormScreen from '../screens/profile/PersonFormScreen';
 import ContactImportScreen from '../screens/profile/ContactImportScreen';
 import HouseholdScreen from '../screens/profile/HouseholdScreen';
 import PrivacyScreen from '../screens/profile/PrivacyScreen';
+import E2eeMigrationScreen from '../screens/profile/E2eeMigrationScreen';
 import PaywallScreen from '../screens/PaywallScreen';
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
@@ -80,7 +82,10 @@ export default function AppNavigator() {
   // Keep the stored timezone aligned with this device (drives 7am alert timing).
   useSyncTimezone();
   return (
-    <Stack.Navigator
+    <View style={styles.root}>
+      {/* Persistent cloud-purge countdown, above every screen (§6.2). */}
+      <StorageBanner />
+      <Stack.Navigator
       initialRouteName="CalendarHome"
       screenOptions={{
         headerStyle: { backgroundColor: colors.primary },
@@ -159,7 +164,13 @@ export default function AppNavigator() {
       <Stack.Screen name="ContactImport" component={ContactImportScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Import Contacts' }} />
       <Stack.Screen name="Household" component={HouseholdScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Household' }} />
       <Stack.Screen name="Privacy" component={PrivacyScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Privacy' }} />
+      <Stack.Screen name="E2eeMigration" component={E2eeMigrationScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Encryption' }} />
       <Stack.Screen name="Paywall" component={PaywallScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Plan' }} />
-    </Stack.Navigator>
+      </Stack.Navigator>
+    </View>
   );
 }
+
+const styles = StyleSheet.create({
+  root: { flex: 1, backgroundColor: colors.background },
+});

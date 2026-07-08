@@ -207,7 +207,10 @@ export interface Manual {
   title: string;
   source: string;
   fileSizeBytes: number;
-  encrypted?: boolean; // E2EE (Phase 4c): opaque ciphertext; view on web for now
+  encrypted?: boolean;        // E2EE (Phase 4c): opaque ciphertext, decrypted on-device
+  wrappedFileKey?: string;    // HDK-wrapped per-file key (JSON), needed to decrypt
+  keyVersion?: number;        // which HDK version wrapped the file key
+  fileType?: string;          // original mime type (for opening the decrypted file)
 }
 
 export interface Item {
@@ -474,6 +477,7 @@ export interface Household {
   name: string;
   joinCode: string;
   ownerId: string;
+  isOwner?: boolean;
   homeAddress?: string;
   // True once the household's plaintext has been dropped (§9). Gates the
   // client-side encrypted self-Person seed.
@@ -504,7 +508,16 @@ export interface HouseholdKeyState {
   householdId: string;
   currentKeyVersion: number;
   isOwner: boolean;
+  keyRotationPending: boolean;
   envelopes: { keyVersion: number; wrappedHDK: string }[];
+}
+export interface HouseholdMemberKey {
+  userId: string;
+  identityPublicKey: string;
+}
+export interface RotationPayload {
+  keyVersion: number;
+  envelopes: { userId: string; wrappedHDK: string }[];
 }
 
 export const householdApi = {
@@ -519,7 +532,46 @@ export const householdApi = {
   getKey: () => api.get<HouseholdKeyState>('/household/key'),
   mintKey: (envelope: HDKEnvelopePayload) => api.post('/household/key', envelope),
   leave: () => api.post('/household/leave'),
+  // Phase 7 member removal + lazy HDK rotation (§5.2).
+  memberKeys: () => api.get<HouseholdMemberKey[]>('/household/member-keys'),
+  rotateKey: (payload: RotationPayload) => api.post<{ ok: boolean; keyVersion: number }>('/household/key/rotate', payload),
+  removeMember: (userId: string) => api.post(`/household/members/${userId}/remove`),
+  // §9 drop readiness gate + client-version report.
+  readiness: () => api.get<E2eeReadiness>('/household/e2ee/readiness'),
+  reportClientVersion: (version: string, platform: string) =>
+    api.post('/household/e2ee/client-version', { version, platform }),
+  // §9 straggler re-encrypt pass (owner device seals records lacking ciphertext).
+  stragglers: () => api.get<E2eeStragglers>('/household/e2ee/stragglers'),
+  seal: (payload: { collection: string; _id: string; enc: unknown; keyVersion?: number }) =>
+    api.post('/household/e2ee/seal', payload),
 };
+
+export interface E2eeStragglerGroup {
+  collection: string;
+  fields: string[];
+  records: Record<string, unknown>[];
+}
+export interface E2eeStragglers {
+  total: number;
+  collections: E2eeStragglerGroup[];
+}
+
+export interface E2eeReadinessMember {
+  userId: string;
+  email: string;
+  enrolled: boolean;
+  hasEnvelope: boolean;
+  clientVersion: string | null;
+  versionOk: boolean;
+}
+export interface E2eeReadiness {
+  e2eeActive: boolean;
+  ready: boolean;
+  currentKeyVersion: number;
+  minAppVersion: string | null;
+  perMember: E2eeReadinessMember[];
+  reasons: string[];
+}
 
 // ----- Places (Google Places proxy; powers address autocomplete) -------------
 
@@ -665,7 +717,11 @@ export const tripsApi = {
   updateItem: (id: string, itemId: string, data: Record<string, unknown>) =>
     api.put<TripItem>(`/trips/${id}/items/${itemId}`, data),
   removeItem: (id: string, itemId: string) => api.delete(`/trips/${id}/items/${itemId}`),
-  share: (id: string) => api.post<{ shareCode: string }>(`/trips/${id}/share`),
+  // Decrypt-on-share (§9.3): on an E2EE household the first share of a private
+  // trip must include the client-decrypted trip + items so the server can
+  // re-write them as plaintext for collaborators who hold no HDK.
+  share: (id: string, decrypted?: { trip: unknown; items: unknown[] }) =>
+    api.post<{ shareCode: string }>(`/trips/${id}/share`, decrypted ? { decrypted } : undefined),
   unshare: (id: string) => api.delete(`/trips/${id}/share`),
   joinShare: (shareCode: string) => api.post<{ tripId: string }>('/trips/join', { shareCode }),
   leaveShare: (id: string) => api.post(`/trips/${id}/leave-share`),
@@ -747,11 +803,19 @@ export const calendarApi = {
 export interface BillingStatus {
   plan: string;
   planLabel: string;
+  // Weekly TOKEN budget — the enforced metric shown as a % gauge in the Plan view.
+  tokensUsed: number;
+  weeklyTokenLimit: number | null; // null = unlimited
+  tokenPct: number;                // 0–100 (0 when unlimited)
+  // Per-action counts (analytics / detail; no longer the enforced cap).
   usage: Record<string, number>;
+  // 'user' = free tier (each member has their own allowance); 'household' = paid
+  // tiers (shared family pool). Determines whether usage is personal or shared.
+  usageScope?: 'user' | 'household';
   quotas: Record<string, number | null>;
   resetsAt?: string; // ISO instant of the next weekly usage reset (Wed 5PM ET)
   hasHousehold: boolean;
-  catalog: { key: string; label: string; price: number }[];
+  catalog: { key: string; label: string; price: number; weeklyTokenLimit?: number | null }[];
 }
 
 export const billingApi = {
@@ -790,6 +854,35 @@ export const weatherApi = {
   get: () => api.get<WeatherData>('/weather'),
   range: (from: string, to: string) => api.get('/weather/range', { params: { from, to } }),
   outlook: () => api.get<{ weeks: OutlookWeek[] }>('/weather/outlook'),
+};
+
+// ----- Storage mode / cloud-purge lifecycle (server: routes/storage.js) ------
+
+export type StorageMode = 'cloud' | 'local';
+export type CloudDeletionState = 'none' | 'scheduled' | 'purged';
+
+export interface StorageState {
+  storageMode: StorageMode;
+  cloudDeletionState: CloudDeletionState;
+  cloudDeletionScheduledAt: string | null;
+  localReplicaVerifiedAt: string | null;
+  canGoLocal: boolean;
+  memberCount: number;
+}
+
+// The download-first manifest the client proves before the server will schedule
+// a purge (§6.2). Shape mirrors services/cloudDeletion.js buildManifest.
+export interface ReplicaManifest {
+  total: number;
+  counts: Record<string, number>;
+  hash: string;
+}
+
+export const storageApi = {
+  getMode: () => api.get<StorageState>('/storage'),
+  switchToLocal: (manifest: ReplicaManifest) =>
+    api.post<StorageState>('/storage/switch-to-local', { manifest }),
+  switchToCloud: () => api.post<StorageState>('/storage/switch-to-cloud'),
 };
 
 // Native push device registration (server: routes/notifications.js).

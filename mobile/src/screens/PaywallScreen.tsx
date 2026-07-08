@@ -14,14 +14,6 @@ import {
 } from '../lib/purchases';
 import { colors, spacing, radius } from '../theme';
 
-// Tracked usage actions, mirroring the web Plan & usage page.
-const USAGE_ACTIONS: { key: string; label: string }[] = [
-  { key: 'chat', label: 'AI chat messages' },
-  { key: 'scan', label: 'Photo / receipt scans' },
-  { key: 'generation', label: 'Recipe & meal generation' },
-  { key: 'manualParse', label: 'Manual lookups' },
-];
-
 const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 
 // The server resets usage every Wednesday at 5PM Eastern and returns that next
@@ -102,33 +94,45 @@ export default function PaywallScreen() {
 
       {billing.data ? (
         <Card style={styles.card}>
-          <Text style={styles.usageHeading}>This week's usage</Text>
+          <Text style={styles.usageHeading}>
+            {billing.data.usageScope === 'household' ? "Household's AI usage this week" : 'Your AI usage this week'}
+          </Text>
+          <Text style={styles.usageScopeNote}>
+            {billing.data.usageScope === 'household'
+              ? 'Shared across everyone in your household.'
+              : 'On the free plan each person has their own weekly allowance.'}
+          </Text>
           {describeReset(billing.data.resetsAt) ? (
             <Text style={styles.usageReset}>{describeReset(billing.data.resetsAt)}</Text>
           ) : null}
-          {USAGE_ACTIONS.map((a) => {
-            const used = billing.data!.usage?.[a.key] ?? 0;
-            const quota = billing.data!.quotas?.[a.key];
-            const hasLimit = quota != null;
-            const pct = hasLimit && quota! > 0 ? Math.min(100, Math.round((used / quota!) * 100)) : 0;
-            const over = hasLimit && used >= quota!;
+          {(() => {
+            const used = billing.data!.tokensUsed ?? 0;
+            const limit = billing.data!.weeklyTokenLimit ?? null;
+            const pct = billing.data!.tokenPct ?? 0;
+            const unlimited = limit == null;
+            const over = !unlimited && used >= limit!;
             return (
-              <View key={a.key} style={styles.usageRow}>
-                <View style={styles.usageLabelRow}>
-                  <Text style={styles.usageLabel}>{a.label}</Text>
-                  <Text style={styles.usageValue}>{used} / {hasLimit ? quota : '∞'}</Text>
+              <View style={styles.usageRow}>
+                <View style={styles.gaugeHeader}>
+                  <Text style={styles.gaugePct}>{unlimited ? 'Unlimited' : `${pct}%`}</Text>
+                  <Text style={styles.gaugeCaption}>{unlimited ? 'AI usage' : 'used this week'}</Text>
                 </View>
-                <View style={styles.usageTrack}>
-                  <View
-                    style={[
-                      styles.usageFill,
-                      { width: `${pct}%`, backgroundColor: over ? colors.error : colors.primary },
-                    ]}
-                  />
-                </View>
+                {!unlimited ? (
+                  <View style={styles.usageTrack}>
+                    <View
+                      style={[
+                        styles.usageFill,
+                        { width: `${pct}%`, backgroundColor: over ? colors.error : colors.primary },
+                      ]}
+                    />
+                  </View>
+                ) : null}
+                {over ? (
+                  <Text style={styles.usageOver}>You’ve reached your weekly AI limit. Upgrade for more.</Text>
+                ) : null}
               </View>
             );
-          })}
+          })()}
         </Card>
       ) : null}
 
@@ -179,6 +183,7 @@ const styles = StyleSheet.create({
   card: { marginBottom: spacing.md },
   note: { color: colors.textMuted, fontSize: 13, lineHeight: 19, marginBottom: spacing.md },
   usageHeading: { fontSize: 13, fontWeight: '600', color: colors.textMuted, marginBottom: 2 },
+  usageScopeNote: { fontSize: 12, color: colors.textMuted, marginBottom: 2 },
   usageReset: { fontSize: 12, color: colors.textMuted, marginBottom: spacing.sm },
   usageRow: { marginBottom: spacing.sm },
   usageLabelRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 4 },
@@ -186,6 +191,10 @@ const styles = StyleSheet.create({
   usageValue: { color: colors.textMuted, fontSize: 14 },
   usageTrack: { height: 6, borderRadius: radius.sm, backgroundColor: colors.border, overflow: 'hidden' },
   usageFill: { height: 6, borderRadius: radius.sm },
+  gaugeHeader: { flexDirection: 'row', alignItems: 'baseline', gap: spacing.sm, marginBottom: 6 },
+  gaugePct: { fontSize: 28, fontWeight: '700', color: colors.text },
+  gaugeCaption: { fontSize: 13, color: colors.textMuted },
+  usageOver: { fontSize: 12, color: colors.error, marginTop: 6 },
   tierRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 6 },
   tierLabel: { fontSize: 16, fontWeight: '600', color: colors.text },
   tierDesc: { color: colors.textMuted, fontSize: 13, marginVertical: 4 },

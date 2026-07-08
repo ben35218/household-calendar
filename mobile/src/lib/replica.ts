@@ -4,17 +4,28 @@
 // so the app can paint instantly and query/sort/filter client-side. Sync is
 // last-write-wins on the server's `updatedAt` (decision D6).
 //
-// Backend note: this interim implementation uses AsyncStorage (already a dep, so
-// it runs on the current dev client with no native rebuild). Decision D5 is
-// expo-sqlite for the real store — swap it in behind this same interface once a
-// dev-client rebuild adds the native module. See docs/E2EE-SYNC-PLAN.md §6.
+// Backend note (Decision D5): the real store is expo-sqlite (lib/sqliteReplica).
+// We prefer it when its native module is linked, and fall back to AsyncStorage
+// otherwise — so this runs on the current dev client with no rebuild, and
+// automatically upgrades to SQLite once a dev-client build adds the module. Both
+// backends satisfy the same interface below. See docs/E2EE-SYNC-PLAN.md §6 / P7.
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as sqlite from './sqliteReplica';
 
 // The minimal shape the replica needs from any record; concrete model types
 // (Recipe, Item, …) satisfy it structurally without an index signature.
 type Row = { _id: string; updatedAt?: string };
 type StoredRow = Row & Record<string, unknown>;
+
+// Decide once whether the SQLite backend is usable (native module present).
+let useSqlite: boolean | null = null;
+function sqliteReady(): boolean {
+  if (useSqlite === null) {
+    try { useSqlite = sqlite.isAvailable(); } catch { useSqlite = false; }
+  }
+  return useSqlite;
+}
 
 const key = (collection: string) => `hc_replica:${collection}`;
 
@@ -31,6 +42,7 @@ async function readMap(collection: string): Promise<Record<string, StoredRow>> {
 // overwrites a fresher one).
 export async function upsert(collection: string, rows: Row[]): Promise<void> {
   if (!rows?.length) return;
+  if (sqliteReady()) return sqlite.upsert(collection, rows);
   const map = await readMap(collection);
   for (const row of rows) {
     const existing = map[row._id];
@@ -41,6 +53,7 @@ export async function upsert(collection: string, rows: Row[]): Promise<void> {
 }
 
 export async function getAll<T = Row>(collection: string): Promise<T[]> {
+  if (sqliteReady()) return sqlite.getAll<T>(collection);
   return Object.values(await readMap(collection)) as unknown as T[];
 }
 
@@ -73,5 +86,6 @@ export async function syncedList<T extends Row>(
 }
 
 export async function clear(collection: string): Promise<void> {
+  if (sqliteReady()) return sqlite.clear(collection);
   await AsyncStorage.removeItem(key(collection));
 }

@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { View, Text, StyleSheet, ActivityIndicator, Alert } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
@@ -84,7 +84,7 @@ const ASSIST_FIELDS: FormAssistField[] = [
 
 export default function EventFormScreen() {
   const navigation = useNavigation<Nav>();
-  const { eventId, date } = useRoute<Rt>().params || {};
+  const { eventId, date, prefill } = useRoute<Rt>().params || {};
   const isEdit = !!eventId;
   const qc = useQueryClient();
   // The save check is tinted with the selected calendar's colour (respects
@@ -162,6 +162,16 @@ export default function EventFormScreen() {
   useEffect(() => {
     navigation.setOptions({ title: isEdit ? 'Edit Event' : 'New Event' });
   }, [navigation, isEdit]);
+
+  // Pre-fill a new event from the calendar assistant's draft ("Edit in form").
+  // Uses the same patch path as FormAssist so the filled fields get highlighted.
+  const prefilled = useRef(false);
+  useEffect(() => {
+    if (isEdit || prefilled.current || !prefill) return;
+    prefilled.current = true;
+    applyPatch(prefill);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [prefill, isEdit]);
 
   // Default the "From" origin to the household home address once settings load.
   const settingsQ = useQuery({ queryKey: ['settings'], queryFn: async () => (await settingsApi.get()).data });

@@ -96,7 +96,8 @@
         {
           "contactsPermission": "Import family and friends from your contacts so the assistant can suggest activities and remember birthdays."
         }
-      ]
+      ],
+      "expo-sqlite"
     ],
     "extra": {
       "apiBaseUrl": "http://localhost:3001",

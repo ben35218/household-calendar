@@ -2,9 +2,9 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { View, Text, StyleSheet, ActivityIndicator, TouchableOpacity, Alert } from 'react-native';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Ionicons } from '@expo/vector-icons';
-import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
+import { useNavigation, useRoute, RouteProp, StackActions } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import { recipesApi, Recipe, Ingredient } from '../../api';
+import { recipesApi, recipeScheduleApi, Recipe, Ingredient } from '../../api';
 import { sealNew, sealUpdate, openRecord } from '../../lib/e2ee';
 
 // Encrypted recipe content (imageUrl/sourceUrl/instructionIngredients stay plaintext).
@@ -16,6 +16,8 @@ const RECIPE_ENC = (p: Record<string, unknown>) => ({
 import { Button, Input, Screen, SectionTitle, Card, useHeaderCheckButton } from '../../components/ui';
 import StepIngredientLinker from '../../components/StepIngredientLinker';
 import AssistantIcon from '../../components/AssistantIcon';
+import AiUsageBanner from '../../components/AiUsageBanner';
+import { useAiEnabled } from '../../lib/privacyPrefs';
 import { takePhoto, pickImage } from '../../lib/media';
 import { uploadFile } from '../../lib/upload';
 import { KitchenStackParamList } from '../../navigation/KitchenNavigator';
@@ -61,7 +63,8 @@ const EMPTY: FormState = {
 
 export default function RecipeFormScreen() {
   const navigation = useNavigation<Nav>();
-  const { id } = useRoute<Rt>().params || {};
+  const aiEnabled = useAiEnabled();
+  const { id, initial, scheduleDate } = useRoute<Rt>().params || {};
   const isEdit = !!id;
   const qc = useQueryClient();
   // Meals/recipes calendar colour (respects user overrides) — the section accent.
@@ -70,9 +73,10 @@ export default function RecipeFormScreen() {
   const lidCounter = useRef(0);
   const makeLid = () => `_l${++lidCounter.current}`;
 
-  // New recipes start with a single blank ingredient row; edits populate from data.
+  // New recipes start with a single blank ingredient row; edits and pre-filled
+  // reviews (an AI-generated suggestion) populate from data instead.
   const [form, setForm] = useState<FormState>(() =>
-    isEdit ? EMPTY : { ...EMPTY, ingredients: [{ amount: '', unit: '', name: '' }], lids: [makeLid()] }
+    isEdit || initial ? EMPTY : { ...EMPTY, ingredients: [{ amount: '', unit: '', name: '' }], lids: [makeLid()] }
   );
   const [urlInput, setUrlInput] = useState('');
   const [tagInput, setTagInput] = useState('');
@@ -157,6 +161,15 @@ export default function RecipeFormScreen() {
     return () => { cancelled = true; };
   }, [recipeQ.data]);
 
+  // Pre-fill a brand-new recipe from an AI-generated suggestion (already plaintext,
+  // not yet saved). Runs once; the user reviews/edits and saves via the header check.
+  const initialLoaded = useRef(false);
+  useEffect(() => {
+    if (isEdit || !initial || initialLoaded.current) return;
+    initialLoaded.current = true;
+    populate(initial);
+  }, [isEdit, initial]);
+
   const fromUrl = useMutation({
     mutationFn: () => recipesApi.fromUrl(urlInput.trim()),
     onSuccess: (res) => {
@@ -212,9 +225,25 @@ export default function RecipeFormScreen() {
         ? recipesApi.update(id!, await sealUpdate('Recipe', id!, payload, RECIPE_ENC(payload)))
         : recipesApi.create(await sealNew('Recipe', payload, RECIPE_ENC(payload)));
     },
-    onSuccess: (res) => {
+    onSuccess: async (res) => {
       qc.invalidateQueries({ queryKey: ['recipes'] });
       const newId = (res.data as Recipe)?._id;
+      // Came from the planner's "Add recipe" for a date: schedule the new recipe
+      // to that date, then return to the Meals/Planner view (not the detail page).
+      if (!isEdit && newId && scheduleDate) {
+        try {
+          await recipeScheduleApi.schedule({ recipeId: newId, scheduledDate: scheduleDate });
+          qc.invalidateQueries({ queryKey: ['recipe-schedule'] });
+          qc.invalidateQueries({ queryKey: ['grocery-list'] });
+        } catch {
+          // Recipe saved fine; if scheduling failed the user can add it from the planner.
+        }
+        // Pop the whole create flow (AddMeal → RecipeForm → assistant → …) off the
+        // stack until we're back on the existing Meals view — so the user doesn't
+        // have to back out manually — and tell it to scroll to the scheduled day.
+        navigation.dispatch(StackActions.popTo('KitchenHome', { scrollToDate: scheduleDate }, { merge: true }));
+        return;
+      }
       if (!isEdit && newId) navigation.replace('RecipeDetail', { id: newId });
       else navigation.goBack();
     },
@@ -324,12 +353,22 @@ export default function RecipeFormScreen() {
   }
 
   const importing = fromUrl.isPending || fromPhoto.isPending;
+  // The AI form assistant works on an existing recipe's fields — available both
+  // when editing and when reviewing a pre-filled (AI-generated) recipe. The Quick
+  // import card is only for building a blank recipe from scratch, so it's hidden
+  // once the form is pre-filled.
+  const isReview = !isEdit && !!initial;
+  const showAssistant = (isEdit || isReview) && aiEnabled;
+  const showQuickImport = !isEdit && !isReview && aiEnabled;
 
   return (
     <Screen>
-      {/* AI Assistant — describe changes to apply, or tag ingredients to steps */}
-      {isEdit ? (
-        <View style={styles.aiCard}>
+      {/* AI Assistant — describe changes to apply, or tag ingredients to steps.
+          The usage banner self-gates: it only appears near the weekly token limit. */}
+      {showAssistant ? (
+        <>
+          <AiUsageBanner />
+          <View style={styles.aiCard}>
           <View style={styles.aiHeader}>
             <Ionicons name="sparkles" size={16} color={accent} />
             <Text style={styles.aiTitle}>AI Assistant</Text>
@@ -367,11 +406,12 @@ export default function RecipeFormScreen() {
               )}
             </TouchableOpacity>
           </View>
-        </View>
+          </View>
+        </>
       ) : null}
 
-      {/* Import bar */}
-      {!isEdit ? (
+      {/* Import bar — all three actions (URL, photo, assistant) call the AI provider */}
+      {showQuickImport ? (
         <Card style={styles.importCard}>
           <Text style={styles.importTitle}>Quick import</Text>
           <View style={styles.importBtns}>
@@ -387,7 +427,7 @@ export default function RecipeFormScreen() {
             </TouchableOpacity>
             <TouchableOpacity
               style={[styles.iconBtn, { backgroundColor: accent }]}
-              onPress={() => navigation.navigate('RecipeAssistant')}
+              onPress={() => navigation.navigate('RecipeAssistant', { scheduleDate })}
               accessibilityLabel="AI Assistant"
             >
               <AssistantIcon size={20} color="#fff" />

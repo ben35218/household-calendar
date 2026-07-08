@@ -4,6 +4,7 @@ import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import { useQueryClient } from '@tanstack/react-query';
 import { useChat } from '../../hooks/useChat';
 import ChatScreen from '../chat/ChatScreen';
+import AiUsageBanner from '../../components/AiUsageBanner';
 import { itemsApi, tasksApi, householdApi } from '../../api';
 import { getHDK, openRecord, sealNew } from '../../lib/e2ee';
 import { MaintenanceStackParamList } from '../../navigation/MaintenanceNavigator';
@@ -94,19 +95,23 @@ export default function MaintenanceChatScreen() {
     });
   }, [navigation, chat.messages.length, chat.loading, chat.clear]);
 
-  const banner =
-    createdTasks.length > 0 ? (
-      <View style={styles.banner}>
-        <Text style={styles.bannerTitle}>
-          {createdTasks.length} task{createdTasks.length > 1 ? 's' : ''} added
-        </Text>
-        {createdTasks.map((t) => (
-          <Text key={t.id} style={styles.bannerLine}>
-            • {t.title}
+  const banner = (
+    <>
+      <AiUsageBanner />
+      {createdTasks.length > 0 ? (
+        <View style={styles.banner}>
+          <Text style={styles.bannerTitle}>
+            {createdTasks.length} task{createdTasks.length > 1 ? 's' : ''} added
           </Text>
-        ))}
-      </View>
-    ) : null;
+          {createdTasks.map((t) => (
+            <Text key={t.id} style={styles.bannerLine}>
+              • {t.title}
+            </Text>
+          ))}
+        </View>
+      ) : null}
+    </>
+  );
 
   return (
     <ChatScreen

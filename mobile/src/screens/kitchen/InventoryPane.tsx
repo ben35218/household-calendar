@@ -20,6 +20,7 @@ import * as replica from '../../lib/replica';
 import { Card, SegmentedControl, Input, Badge } from '../../components/ui';
 import { daysUntilExpiry, expiryColor, expiryLabel } from './constants';
 import { useCalendarColors } from '../../lib/calendarPrefs';
+import { useAiEnabled } from '../../lib/privacyPrefs';
 import { KitchenStackParamList } from '../../navigation/KitchenNavigator';
 import { colors, radius, spacing } from '../../theme';
 
@@ -35,6 +36,7 @@ const ACTIVE_GROUPS = [
 
 export default function InventoryPane() {
   const navigation = useNavigation<Nav>();
+  const aiEnabled = useAiEnabled();
   const qc = useQueryClient();
   const [tab, setTab] = useState<Tab>('active');
   const [search, setSearch] = useState('');
@@ -111,9 +113,11 @@ export default function InventoryPane() {
               ]}
             />
           </View>
-          <TouchableOpacity style={styles.scanBtn} onPress={() => navigation.navigate('ReceiptScan')}>
-            <Ionicons name="scan-outline" size={20} color={colors.primary} />
-          </TouchableOpacity>
+          {aiEnabled && (
+            <TouchableOpacity style={styles.scanBtn} onPress={() => navigation.navigate('ReceiptScan')}>
+              <Ionicons name="scan-outline" size={20} color={colors.primary} />
+            </TouchableOpacity>
+          )}
         </View>
         <View style={{ height: spacing.sm }} />
         <Input placeholder="Search…" value={search} onChangeText={setSearch} />

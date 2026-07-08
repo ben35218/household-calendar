@@ -17,6 +17,7 @@ import api from '../api/client';
 export interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;
+  tokens?: number; // Claude tokens this assistant turn consumed (from the `done` event)
 }
 
 export interface ChatContext {
@@ -30,8 +31,13 @@ export interface ChatDoneData {
   followups?: string[];
   navigateTo?: string;
   tasksCreated?: { id: string; title: string }[];
+  // Claude tokens this reply consumed (summed across the agentic tool loop).
+  tokensUsed?: number;
   // Proposed tasks the client must create encrypted post-drop (§9.1 P4d).
   clientCreateTasks?: Record<string, unknown>[];
+  // Event the calendar assistant drafted this turn (open_create_event_form
+  // input). Present it as "Save this to my calendar" / "Edit in form" actions.
+  pendingEvent?: Record<string, unknown>;
   [key: string]: unknown;
 }
 
@@ -69,9 +75,16 @@ export function useChat(options: UseChatOptions) {
   const [streamingText, setStreamingText] = useState('');
   const [toolActivity, setToolActivity] = useState('');
   const [error, setError] = useState('');
+  // True when the last turn was refused for hitting the weekly quota (HTTP 402).
+  // Drives a tappable "Upgrade" affordance instead of the useless Retry.
+  const [quotaExceeded, setQuotaExceeded] = useState(false);
   const [followups, setFollowups] = useState<string[]>([]);
+  // The event the assistant drafted this turn (drives the Save/Edit chips).
+  const [pendingEvent, setPendingEvent] = useState<Record<string, unknown> | null>(null);
   const [context, setContext] = useState<ChatContext | null>(null);
   const [suggestedPrompts, setSuggestedPrompts] = useState<string[]>([]);
+  // Running total of Claude tokens used this chat session (for a live indicator).
+  const [sessionTokens, setSessionTokens] = useState(0);
 
   const esRef = useRef<EventSource<ChatSSEEvent> | null>(null);
 
@@ -100,8 +113,18 @@ export function useChat(options: UseChatOptions) {
   const clear = useCallback(() => {
     setMessages([]);
     setFollowups([]);
+    setPendingEvent(null);
     setError('');
+    setQuotaExceeded(false);
     setStreamingText('');
+    setSessionTokens(0);
+  }, []);
+
+  // Consume the drafted event + its Save/Edit chips once the user acts on them,
+  // so the chips don't linger (and can't be tapped twice) after handling.
+  const resolvePending = useCallback(() => {
+    setPendingEvent(null);
+    setFollowups([]);
   }, []);
 
   const streamRequest = useCallback(
@@ -154,9 +177,14 @@ export function useChat(options: UseChatOptions) {
         es.addEventListener('done', (e) => {
           const data = parseData(e.data) as ChatDoneData;
           finished = true;
-          setMessages((m) => [...m, { role: 'assistant', content: data.reply || acc || '' }]);
+          const tokens = typeof data.tokensUsed === 'number' ? data.tokensUsed : undefined;
+          setMessages((m) => [...m, { role: 'assistant', content: data.reply || acc || '', tokens }]);
+          if (tokens) setSessionTokens((n) => n + tokens);
           setStreamingText('');
           setFollowups(Array.isArray(data.followups) ? data.followups : []);
+          setPendingEvent(
+            data.pendingEvent && typeof data.pendingEvent === 'object' ? data.pendingEvent : null
+          );
           onResult?.(data);
           done();
         });
@@ -196,13 +224,16 @@ export function useChat(options: UseChatOptions) {
       setStreamingText('');
       setToolActivity('');
       setError('');
+      setQuotaExceeded(false);
       try {
         await streamRequest(history);
       } catch (e) {
         setStreamingText('');
+        const overQuota = e instanceof ChatQuotaError;
+        setQuotaExceeded(overQuota);
         setError(
-          e instanceof ChatQuotaError
-            ? 'You’ve reached your weekly chat limit. Upgrade for more messages.'
+          overQuota
+            ? 'You’ve reached your weekly AI limit. Upgrade for more.'
             : 'Sorry, something went wrong.'
         );
       } finally {
@@ -219,6 +250,7 @@ export function useChat(options: UseChatOptions) {
       if (!content || loading) return;
       setInput('');
       setFollowups([]);
+      setPendingEvent(null);
       const next: ChatMessage[] = [...messages, { role: 'user', content }];
       setMessages(next);
       await run(next);
@@ -241,12 +273,16 @@ export function useChat(options: UseChatOptions) {
     streamingText,
     toolActivity,
     error,
+    quotaExceeded,
     followups,
+    pendingEvent,
     context,
     suggestedPrompts,
+    sessionTokens,
     send,
     retry,
     clear,
+    resolvePending,
     loadContext,
   };
 }

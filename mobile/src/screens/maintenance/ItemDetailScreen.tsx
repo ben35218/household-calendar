@@ -1,5 +1,6 @@
 import React, { useLayoutEffect, useState } from 'react';
-import { View, Text, StyleSheet, ActivityIndicator, Alert, TouchableOpacity, Linking } from 'react-native';
+import { View, Text, StyleSheet, ActivityIndicator, Alert, TouchableOpacity, Linking, Share } from 'react-native';
+import { cacheDirectory, downloadAsync } from 'expo-file-system/legacy';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Ionicons } from '@expo/vector-icons';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
@@ -16,11 +17,14 @@ import {
 } from '../../api';
 import { Button, Card, Screen, Divider, ListRow, Input } from '../../components/ui';
 import AssistantIcon from '../../components/AssistantIcon';
+import { useAiEnabled } from '../../lib/privacyPrefs';
 import { recurrenceLabel, formatCalendarDate, mdiName } from '../../lib/recurrence';
 import { itemTypeConfig } from '../../lib/itemTypes';
 import { useCalendarColors } from '../../lib/calendarPrefs';
 import { pickDocument } from '../../lib/media';
 import { uploadFile } from '../../lib/upload';
+import { getHDK, newObjectId } from '../../lib/e2ee';
+import { encryptFileForUpload, decryptDownloadedFile } from '../../lib/attachments';
 import { API_URL } from '../../config';
 import { getCachedToken } from '../../lib/secureToken';
 import { MaintenanceStackParamList } from '../../navigation/MaintenanceNavigator';
@@ -35,6 +39,7 @@ function manualDownloadUrl(id: string) {
 
 export default function ItemDetailScreen() {
   const navigation = useNavigation<Nav>();
+  const aiEnabled = useAiEnabled();
   const { id } = useRoute<Rt>().params;
   const accent = useCalendarColors().colors.maintenance;
   const qc = useQueryClient();
@@ -47,6 +52,8 @@ export default function ItemDetailScreen() {
     candidates: [],
   });
   const [extract, setExtract] = useState<{ manualId: string; title: string; tasks: ExtractedTask[]; selected: Set<number> } | null>(null);
+  // Manual lookup shows only Claude's top pick by default; "See more options" reveals the rest.
+  const [showAllManuals, setShowAllManuals] = useState(false);
 
   const itemQ = useQuery({ queryKey: ['items', id], queryFn: async () => (await itemsApi.get(id)).data });
   const item = itemQ.data;
@@ -83,6 +90,23 @@ export default function ItemDetailScreen() {
     mutationFn: async () => {
       const file = await pickDocument();
       if (!file) return null;
+      // E2EE (Phase 4c): when the household key is unlocked, encrypt the file
+      // bytes on-device and upload the ciphertext + wrapped file key. Otherwise
+      // upload plaintext as before (dual-write / non-E2EE households).
+      if (getHDK()) {
+        const manualId = await newObjectId();
+        const sealed = await encryptFileForUpload('Manual', manualId, file.uri);
+        if (sealed) {
+          return uploadFile('/manuals/items/' + id + '/upload', { uri: sealed.uri, name: `${manualId}.bin`, type: 'application/octet-stream' }, 'file', {
+            encrypted: true,
+            _id: manualId,
+            wrappedFileKey: sealed.wrappedFileKey,
+            keyVersion: sealed.keyVersion,
+            fileType: file.type || 'application/pdf',
+            title: file.name,
+          });
+        }
+      }
       return uploadFile('/manuals/items/' + id + '/upload', file, 'file');
     },
     onSuccess: (res) => {
@@ -91,9 +115,38 @@ export default function ItemDetailScreen() {
     onError: (e: any) => Alert.alert('Upload failed', e.response?.data?.error || 'Could not upload that file.'),
   });
 
+  // Open a manual: encrypted ones are downloaded as ciphertext, decrypted
+  // on-device to a temp file, and shared/opened; plaintext ones open directly.
+  const openManual = useMutation({
+    mutationFn: async (m: Manual) => {
+      if (!m.encrypted) { await Linking.openURL(manualDownloadUrl(m._id)); return; }
+      if (!getHDK() || !m.wrappedFileKey) throw new Error('Unlock your account to open this encrypted manual.');
+      const cipherUri = `${cacheDirectory}dl-${m._id}.bin`;
+      const dl = await downloadAsync(`${API_URL}/manuals/${m._id}/download`, cipherUri, {
+        headers: { Authorization: `Bearer ${getCachedToken()}` },
+      });
+      const plainUri = await decryptDownloadedFile('Manual', m._id, m.keyVersion, m.wrappedFileKey, dl.uri, `${m.title || 'manual'}.pdf`);
+      if (!plainUri) throw new Error('Could not decrypt this manual.');
+      await Share.share({ url: plainUri });
+    },
+    onError: (e: any) => Alert.alert('Could not open manual', e?.message || 'Please try again.'),
+  });
+
+  // Preview a found candidate's PDF before committing to save it.
+  const viewCandidate = async (c: ManualCandidate) => {
+    try {
+      await Linking.openURL(c.url);
+    } catch {
+      Alert.alert('Could not open', 'This link could not be opened. Try saving it instead.');
+    }
+  };
+
   const runLookup = useMutation({
     mutationFn: () => manualsApi.autoLookup(id),
-    onMutate: () => setLookup({ state: 'searching', candidates: [] }),
+    onMutate: () => {
+      setShowAllManuals(false);
+      setLookup({ state: 'searching', candidates: [] });
+    },
     onSuccess: (res) =>
       setLookup({ state: 'done', candidates: res.data.candidates || [], query: res.data.query }),
     onError: (e: any) =>
@@ -108,6 +161,7 @@ export default function ItemDetailScreen() {
   const saveCandidate = useMutation({
     mutationFn: (c: ManualCandidate) => manualsApi.fromUrl(id, { url: c.url, title: c.title || `${item?.name} Manual` }),
     onSuccess: () => {
+      setShowAllManuals(false);
       setLookup({ state: 'idle', candidates: [] });
       refreshItem();
     },
@@ -221,7 +275,7 @@ export default function ItemDetailScreen() {
                   <View style={{ flex: 1 }}>
                     <Input placeholder="Current reading (km)" keyboardType="numeric" value={odomReading} onChangeText={setOdomReading} />
                   </View>
-                  <Button title="Log" loading={logOdo.isPending} disabled={!odomReading} onPress={() => logOdo.mutate()} />
+                  <Button title="Log" color={accent} loading={logOdo.isPending} disabled={!odomReading} onPress={() => logOdo.mutate()} />
                 </View>
                 <Input placeholder="Notes (optional)" value={odomNotes} onChangeText={setOdomNotes} />
               </View>
@@ -255,21 +309,26 @@ export default function ItemDetailScreen() {
                 {(m.fileSizeBytes / 1024 / 1024).toFixed(1)} MB · {m.source}
               </Text>
             </View>
-            <TouchableOpacity
-              onPress={() => m.encrypted
-                ? Alert.alert('Encrypted manual', 'This manual is end-to-end encrypted. Open it in the web app — encrypted-file viewing on mobile is coming soon.')
-                : Linking.openURL(manualDownloadUrl(m._id))}
-              style={styles.iconBtn}
-            >
-              <Ionicons name={m.encrypted ? 'lock-closed-outline' : 'eye-outline'} size={20} color={colors.primary} />
-            </TouchableOpacity>
-            <TouchableOpacity onPress={() => runExtract.mutate(m)} style={styles.iconBtn}>
-              {runExtract.isPending && runExtract.variables?._id === m._id ? (
+            <TouchableOpacity onPress={() => openManual.mutate(m)} style={styles.iconBtn}>
+              {openManual.isPending && openManual.variables?._id === m._id ? (
                 <ActivityIndicator size="small" color={colors.primary} />
               ) : (
-                <Ionicons name="share-outline" size={20} color={colors.primary} />
+                <Ionicons name={m.encrypted ? 'lock-open-outline' : 'eye-outline'} size={20} color={colors.primary} />
               )}
             </TouchableOpacity>
+            {aiEnabled ? (
+              <TouchableOpacity
+                onPress={() => runExtract.mutate(m)}
+                style={styles.iconBtn}
+                accessibilityLabel="Extract maintenance tasks with AI"
+              >
+                {runExtract.isPending && runExtract.variables?._id === m._id ? (
+                  <ActivityIndicator size="small" color={colors.primary} />
+                ) : (
+                  <Ionicons name="download-outline" size={20} color={colors.primary} />
+                )}
+              </TouchableOpacity>
+            ) : null}
             <TouchableOpacity onPress={() => delManual.mutate(m._id)} style={styles.iconBtn}>
               <Ionicons name="trash-outline" size={20} color={colors.error} />
             </TouchableOpacity>
@@ -280,6 +339,7 @@ export default function ItemDetailScreen() {
         {extract ? (
           <View style={styles.pad}>
             <Text style={styles.overline}>Tasks from {extract.title}</Text>
+
             {extract.tasks.length === 0 ? (
               <Text style={styles.body}>No maintenance schedule found.</Text>
             ) : (
@@ -309,10 +369,11 @@ export default function ItemDetailScreen() {
             )}
             {extract.tasks.length > 0 ? (
               <View style={styles.row}>
-                <Button title="Cancel" variant="ghost" onPress={() => setExtract(null)} />
+                <Button title="Cancel" color={accent} onPress={() => setExtract(null)} />
                 <View style={{ flex: 1 }}>
                   <Button
                     title={`Create ${extract.selected.size} Task${extract.selected.size === 1 ? '' : 's'}`}
+                    color={accent}
                     loading={createTasks.isPending}
                     disabled={extract.selected.size === 0}
                     onPress={() => createTasks.mutate()}
@@ -320,7 +381,7 @@ export default function ItemDetailScreen() {
                 </View>
               </View>
             ) : (
-              <Button title="Close" variant="ghost" onPress={() => setExtract(null)} />
+              <Button title="Close" color={accent} onPress={() => setExtract(null)} />
             )}
           </View>
         ) : null}
@@ -334,15 +395,25 @@ export default function ItemDetailScreen() {
         {lookup.state === 'done' && lookup.candidates.length > 0 ? (
           <View style={styles.pad}>
             <Text style={styles.overline}>Found for {lookup.query}</Text>
-            {lookup.candidates.map((c, i) => (
+            {/* Claude ranks its best pick to index 0; show only that until the user asks for more. */}
+            {(showAllManuals ? lookup.candidates : lookup.candidates.slice(0, 1)).map((c, i) => (
               <View key={i} style={styles.manualRow}>
                 <View style={{ flex: 1 }}>
-                  <Text style={styles.manualTitle}>{c.title || c.domain}</Text>
+                  <Text style={styles.manualTitle} numberOfLines={2}>{c.title || c.domain}</Text>
+                  {i === 0 && c.recommended ? <Text style={[styles.recommendedTag, { color: accent }]}>Recommended</Text> : null}
                   <Text style={styles.manualSub} numberOfLines={1}>{c.domain}</Text>
                 </View>
-                <Button title="Save" variant="ghost" loading={saveCandidate.isPending && saveCandidate.variables === c} onPress={() => saveCandidate.mutate(c)} />
+                <View style={styles.candidateActions}>
+                  <TouchableOpacity onPress={() => viewCandidate(c)} style={styles.iconBtn} accessibilityLabel="Preview manual">
+                    <Ionicons name="eye-outline" size={20} color={accent} />
+                  </TouchableOpacity>
+                  <Button title="Save" color={accent} loading={saveCandidate.isPending && saveCandidate.variables === c} onPress={() => saveCandidate.mutate(c)} />
+                </View>
               </View>
             ))}
+            {!showAllManuals && lookup.candidates.length > 1 ? (
+              <Button title="See more options" color={accent} onPress={() => setShowAllManuals(true)} />
+            ) : null}
           </View>
         ) : null}
         {lookup.state === 'done' && lookup.candidates.length === 0 ? (
@@ -351,14 +422,14 @@ export default function ItemDetailScreen() {
         {lookup.state === 'error' && lookup.quota ? (
           <View style={styles.pad}>
             <Text style={styles.body}>{lookup.error}</Text>
-            <Button title="See plans" variant="ghost" onPress={() => navigation.navigate('Paywall')} />
+            <Button title="See plans" color={accent} onPress={() => navigation.navigate('Paywall')} />
           </View>
         ) : null}
         {lookup.state === 'error' && !lookup.quota ? <Text style={[styles.body, styles.pad]}>{lookup.error}</Text> : null}
 
         <View style={styles.manualActions}>
-          <Button title="Find" variant="ghost" loading={runLookup.isPending} onPress={() => runLookup.mutate()} />
-          <Button title="Upload" variant="ghost" loading={upload.isPending} onPress={() => upload.mutate()} />
+          <Button title="Find" color={accent} loading={runLookup.isPending} onPress={() => runLookup.mutate()} />
+          <Button title="Upload" color={accent} loading={upload.isPending} onPress={() => upload.mutate()} />
         </View>
       </Card>
 
@@ -390,13 +461,15 @@ export default function ItemDetailScreen() {
         <Button title="Delete item" variant="danger" loading={del.isPending} onPress={confirmDelete} />
       </View>
     </Screen>
-    <TouchableOpacity
-      style={[styles.fab, { backgroundColor: accent }]}
-      activeOpacity={0.85}
-      onPress={() => navigation.navigate('MaintenanceChat', { itemId: id, itemName: item?.name })}
-    >
-      <AssistantIcon size={26} color="#fff" />
-    </TouchableOpacity>
+    {aiEnabled && (
+      <TouchableOpacity
+        style={[styles.fab, { backgroundColor: accent }]}
+        activeOpacity={0.85}
+        onPress={() => navigation.navigate('MaintenanceChat', { itemId: id, itemName: item?.name })}
+      >
+        <AssistantIcon size={26} color="#fff" />
+      </TouchableOpacity>
+    )}
     </View>
   );
 }
@@ -442,6 +515,8 @@ const styles = StyleSheet.create({
   manualRow: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: spacing.md, paddingVertical: spacing.sm, gap: 4 },
   manualTitle: { fontSize: 15, fontWeight: '500', color: colors.text },
   manualSub: { fontSize: 12, color: colors.textMuted, marginTop: 2 },
+  recommendedTag: { fontSize: 11, fontWeight: '700', color: colors.primary, textTransform: 'uppercase', marginTop: 2 },
+  candidateActions: { flexDirection: 'row', alignItems: 'center', gap: spacing.xs },
   manualActions: { flexDirection: 'row', gap: spacing.sm, padding: spacing.md, justifyContent: 'flex-end' },
   iconBtn: { padding: 6 },
   extractRow: { flexDirection: 'row', alignItems: 'flex-start', paddingVertical: spacing.sm },

@@ -15,6 +15,7 @@ import { mdiName } from '../../lib/recurrence';
 import { CalendarStackParamList } from '../../navigation/CalendarNavigator';
 import { colors, spacing } from '../../theme';
 import AssistantIcon from '../../components/AssistantIcon';
+import { useAiEnabled } from '../../lib/privacyPrefs';
 
 type Nav = NativeStackNavigationProp<CalendarStackParamList, 'CalendarHome'>;
 
@@ -72,6 +73,7 @@ function monthWindow(): { year: number; month: number }[] {
 export default function CalendarScreen() {
   const navigation = useNavigation<Nav>();
   const insets = useSafeAreaInsets();
+  const aiEnabled = useAiEnabled();
   const { user } = useAuth();
   const { width } = useWindowDimensions();
   const { visibility } = useCalendarVisibility();
@@ -372,9 +374,11 @@ export default function CalendarScreen() {
         <TouchableOpacity style={styles.bottomPillBtn} onPress={() => navigation.navigate('Calendars')}>
           <MaterialCommunityIcons name="calendar-multiple" size={22} color={BTN_FG} />
         </TouchableOpacity>
-        <TouchableOpacity style={styles.bottomPillBtn} onPress={() => navigation.navigate('CalendarAssistant')}>
-          <AssistantIcon size={22} color={BTN_FG} />
-        </TouchableOpacity>
+        {aiEnabled && (
+          <TouchableOpacity style={styles.bottomPillBtn} onPress={() => navigation.navigate('CalendarAssistant')}>
+            <AssistantIcon size={22} color={BTN_FG} />
+          </TouchableOpacity>
+        )}
       </View>
     </View>
   );

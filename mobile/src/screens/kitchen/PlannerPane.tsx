@@ -2,13 +2,14 @@ import React, { useEffect, useRef, useState } from 'react';
 import { View, Text, StyleSheet, ActivityIndicator, ScrollView, TouchableOpacity, Modal } from 'react-native';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
-import { useNavigation } from '@react-navigation/native';
+import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import {
   recipeScheduleApi, inventoryApi, settingsApi,
   RecipeSchedule, GroceryItem, OrganizedGroceryList, GrocerySessionState,
 } from '../../api';
 import { Card, Divider, Input } from '../../components/ui';
+import AiUsageBanner from '../../components/AiUsageBanner';
 import { KitchenStackParamList } from '../../navigation/KitchenNavigator';
 import { useCalendarColors } from '../../lib/calendarPrefs';
 import { colors, spacing } from '../../theme';
@@ -34,6 +35,10 @@ export default function PlannerPane() {
   const navigation = useNavigation<Nav>();
   const qc = useQueryClient();
   const accent = useCalendarColors().colors.recipes;
+  // Set after scheduling a freshly-created recipe: scroll to reveal its day.
+  const scrollToDate = useRoute<RouteProp<KitchenStackParamList, 'KitchenHome'>>().params?.scrollToDate;
+  const scrollRef = useRef<ScrollView>(null);
+  const dayOffsets = useRef<Record<string, number>>({});
   // Default grocery day is Saturday (6) until settings load; realigned below.
   const [weekStart, setWeekStart] = useState(() => startOfWeek(new Date(), 6));
   const alignedToSettings = useRef(false);
@@ -92,6 +97,19 @@ export default function PlannerPane() {
     qc.setQueryData(['grocery-session', start], state);
     recipeScheduleApi.sessionPut(start, state).catch(() => {});
   }, [checked, substitutions, notFound, haveHome, organized, start, qc]);
+
+  // Reveal a just-scheduled recipe's day, then clear the param so returning here
+  // later doesn't re-scroll. The delay lets the refreshed schedule (the new meal
+  // row) finish laying out before we read the day's offset.
+  useEffect(() => {
+    if (!scrollToDate) return;
+    const t = setTimeout(() => {
+      const y = dayOffsets.current[scrollToDate];
+      if (y != null) scrollRef.current?.scrollTo({ y: Math.max(0, y - spacing.md), animated: true });
+      navigation.setParams({ scrollToDate: undefined });
+    }, 250);
+    return () => clearTimeout(t);
+  }, [scrollToDate, schedulesQ.data, navigation]);
 
   const setGroceryDay = useMutation({
     mutationFn: (day: number) => settingsApi.update({ groceryShoppingDay: day }),
@@ -218,7 +236,7 @@ export default function PlannerPane() {
 
   return (
     <>
-    <ScrollView style={styles.pane} contentContainerStyle={styles.content}>
+    <ScrollView ref={scrollRef} style={styles.pane} contentContainerStyle={styles.content}>
       <View style={styles.weekNav}>
         <TouchableOpacity onPress={() => shiftWeek(-1)} style={styles.navBtn}><Ionicons name="chevron-back" size={22} color={colors.primary} /></TouchableOpacity>
         <TouchableOpacity onPress={() => setWeekStart(startOfWeek(new Date(), groceryDay))}><Text style={styles.weekLabel}>{weekLabel}</Text></TouchableOpacity>
@@ -226,7 +244,12 @@ export default function PlannerPane() {
       </View>
 
       {days.map((day) => (
-        <TouchableOpacity key={day.date} activeOpacity={0.85} onPress={() => navigation.navigate('AddMeal', { date: day.date })}>
+        <TouchableOpacity
+          key={day.date}
+          activeOpacity={0.85}
+          onLayout={(e) => { dayOffsets.current[day.date] = e.nativeEvent.layout.y; }}
+          onPress={() => navigation.navigate('AddMeal', { date: day.date })}
+        >
           <Card style={[styles.dayCard, day.isToday && styles.todayCard]}>
             <View style={styles.dayHeader}>
               <Text style={[styles.dayName, day.isToday && styles.todayText]}>{day.dayName} {day.dayNum}</Text>
@@ -282,6 +305,9 @@ export default function PlannerPane() {
           </View>
         </View>
         <Divider />
+        {/* Organize is an AI call; this card warns as the weekly budget runs
+            down and, at 100%, explains why Organize is refused (taps to Plan). */}
+        <AiUsageBanner />
         {groceryQ.isLoading ? (
           <ActivityIndicator color={colors.primary} style={{ margin: spacing.md }} />
         ) : list.length === 0 ? (
