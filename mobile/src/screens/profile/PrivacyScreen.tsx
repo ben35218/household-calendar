@@ -5,7 +5,8 @@ import { Card, SectionTitle, SwitchRow } from '../../components/ui';
 import { usePrivacyPrefs, type DataStorage } from '../../lib/privacyPrefs';
 import { useStorageState, daysUntil } from '../../lib/storageState';
 import { replicateAndBuildManifest } from '../../lib/storageMode';
-import { exportEncryptedBackup } from '../../lib/exportData';
+import * as DocumentPicker from 'expo-document-picker';
+import { exportEncryptedBackup, importEncryptedBackup } from '../../lib/exportData';
 import { storageApi } from '../../api';
 import { colors, spacing } from '../../theme';
 
@@ -29,6 +30,7 @@ export default function PrivacyScreen() {
   const { state, setState, refresh } = useStorageState();
   const [busy, setBusy] = useState(false);
   const [exporting, setExporting] = useState(false);
+  const [importing, setImporting] = useState(false);
 
   // Encrypted backup (decision 12): prompt for a passphrase, build the encrypted
   // file from the local replica, and hand it to the share sheet to save/send.
@@ -58,6 +60,41 @@ export default function PrivacyScreen() {
               Alert.alert('Export failed', e?.message || 'Please try again.');
             } finally {
               setExporting(false);
+            }
+          },
+        },
+      ],
+      'secure-text',
+    );
+  }
+
+  // Restore a .hcbackup on a new device: pick the file, ask for its passphrase,
+  // decrypt + upsert into the local replica (LWW keeps newer local records).
+  async function importBackup() {
+    if (Platform.OS !== 'ios') {
+      Alert.alert('Encrypted backup', 'Restoring a backup is available on iOS for now.');
+      return;
+    }
+    const result = await DocumentPicker.getDocumentAsync({ copyToCacheDirectory: true });
+    if (result.canceled) return;
+    const uri = result.assets[0].uri;
+    Alert.prompt(
+      'Restore backup',
+      'Enter the passphrase this backup was protected with.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Restore',
+          onPress: async (passphrase?: string) => {
+            if (!passphrase) return;
+            setImporting(true);
+            try {
+              const { total } = await importEncryptedBackup(uri, passphrase);
+              Alert.alert('Backup restored', `${total} record${total === 1 ? '' : 's'} imported to this device.`);
+            } catch (e: any) {
+              Alert.alert('Restore failed', e?.message || 'Please try again.');
+            } finally {
+              setImporting(false);
             }
           },
         },
@@ -244,6 +281,12 @@ export default function PrivacyScreen() {
             ? <ActivityIndicator size="small" color={colors.primary} />
             : <Ionicons name="download-outline" size={20} color={colors.primary} />}
           <Text style={styles.exportLabel}>Export encrypted backup…</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={styles.exportRow} disabled={importing} onPress={importBackup} activeOpacity={0.7}>
+          {importing
+            ? <ActivityIndicator size="small" color={colors.primary} />
+            : <Ionicons name="push-outline" size={20} color={colors.primary} />}
+          <Text style={styles.exportLabel}>Restore from backup…</Text>
         </TouchableOpacity>
       </Card>
     </ScrollView>

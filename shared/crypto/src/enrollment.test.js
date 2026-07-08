@@ -86,3 +86,28 @@ test('rewrapPassword lets a new password unlock the same key; a new recovery cod
     result.keyPair.privateKey,
   );
 });
+
+test('passkey factor: PRF output wraps and unlocks the same keypair, routed by credentialId', () => {
+  const result = enroll.enroll('some-pass');
+  // The PRF output is 32 authenticator-derived bytes; any high-entropy secret works here.
+  const prfOutput = crypto.randomBytes(32);
+  const credentialId = crypto.b64(crypto.randomBytes(16));
+  const prfSalt = crypto.b64(crypto.randomBytes(32));
+  const factor = enroll.addPasskey(result.keyPair.privateKey, prfOutput, credentialId, prfSalt);
+  assert.equal(factor.factor, 'passkey');
+  assert.equal(factor.credentialId, credentialId);
+  assert.equal(factor.prfSalt, prfSalt);
+
+  const material = {
+    identityPublicKey: result.payload.identityPublicKey,
+    wrappedPrivateKey: [...result.payload.factors, factor],
+  };
+  bytesEqual(
+    enroll.unlockWithPasskeyPrf(material, credentialId, prfOutput).privateKey,
+    result.keyPair.privateKey,
+  );
+  // Wrong PRF output (different passkey/salt) must not unlock.
+  assert.throws(() => enroll.unlockWithPasskeyPrf(material, credentialId, crypto.randomBytes(32)));
+  // Unknown credential id: no factor to open.
+  assert.throws(() => enroll.unlockWithPasskeyPrf(material, crypto.b64(crypto.randomBytes(16)), prfOutput));
+});

@@ -324,6 +324,75 @@ export async function unlockWithRecoveryCode(code: string): Promise<boolean> {
   }
 }
 
+// ── Passkey factor (Face ID / Touch ID unlock) ──────────────────────────────
+
+// Add a passkey as an unlock factor: register a credential, evaluate its PRF,
+// wrap the private key under the PRF output, and store the envelope. Requires
+// an unlocked session (we need the private key to wrap). Throws with a
+// user-facing message when the platform can't evaluate a PRF.
+export async function addPasskeyFactor(userId: string, userName: string): Promise<boolean> {
+  if (!keyPair) return false;
+  const { createPasskeyWithPrf, getPrfForCredentials } = await import('./passkeys');
+  const crypto = await loadHouseholdCrypto();
+  const enroll = await getEnrollment();
+
+  const prfSalt = crypto.b64(crypto.randomBytes(32));
+  const created = await createPasskeyWithPrf({ userId, userName, prfSalt });
+  if (!created) return false; // user canceled the sheet
+
+  // Some authenticators only evaluate the PRF on assertion, not registration —
+  // run one immediately so we get the output while the user is still engaged.
+  let prf = created.prfOutput;
+  if (!prf) {
+    const got = await getPrfForCredentials([{ credentialId: created.credentialId, prfSalt }]);
+    prf = got?.prfOutput ?? null;
+  }
+  if (!prf) {
+    throw new Error(
+      "This device's passkeys don't support encryption (PRF), so the passkey can't unlock your data. You can delete it from your device's password settings.",
+    );
+  }
+
+  const factor = enroll.addPasskey(keyPair.privateKey, crypto.unb64(prf), created.credentialId, prfSalt);
+  await keysApi.putFactor(factor);
+  return true;
+}
+
+// Unlock a locked session with a passkey assertion (e.g. after an app relaunch,
+// where no password is available). Returns false on cancel/failure — the
+// password and recovery-code paths still work.
+export async function unlockWithPasskey(): Promise<boolean> {
+  if (keyPair) return true;
+  const { getPrfForCredentials } = await import('./passkeys');
+  const crypto = await loadHouseholdCrypto();
+  const enroll = await getEnrollment();
+
+  const { data } = await keysApi.me();
+  if (!data.enrolled) return false;
+  const material = data as unknown as StoredKeyMaterial;
+  const creds = material.wrappedPrivateKey
+    .filter((f): f is Extract<typeof f, { factor: 'passkey' | 'recovery' }> => f.factor === 'passkey')
+    .filter((f) => f.credentialId && f.prfSalt)
+    .map((f) => ({ credentialId: f.credentialId as string, prfSalt: f.prfSalt as string }));
+  if (!creds.length) return false;
+
+  const got = await getPrfForCredentials(creds);
+  if (!got) return false;
+  try {
+    keyPair = enroll.unlockWithPasskeyPrf(material, got.credentialId, crypto.unb64(got.prfOutput));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// Whether the account has any passkey factor enrolled (for the settings row).
+export async function hasPasskeyFactor(): Promise<boolean> {
+  const { data } = await keysApi.me();
+  const material = data as unknown as StoredKeyMaterial;
+  return (material.wrappedPrivateKey || []).some((f) => f.factor === 'passkey');
+}
+
 // Re-wrap under a new password (call right after a password change).
 export async function rewrapForNewPassword(newPassword: string): Promise<boolean> {
   if (!keyPair) return false;

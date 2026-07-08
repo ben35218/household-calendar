@@ -3,7 +3,8 @@ import { View, Text, ScrollView, StyleSheet, Alert, ActivityIndicator } from 're
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useAuth } from '../../store/auth';
 import { settingsApi, authApi } from '../../api';
-import { getHDK, sealUpdate, openRecord } from '../../lib/e2ee';
+import { getHDK, sealUpdate, openRecord, isUnlocked, addPasskeyFactor, hasPasskeyFactor } from '../../lib/e2ee';
+import { passkeysSupported } from '../../lib/passkeys';
 import { registerForPushNotifications } from '../../lib/push';
 import { rewrapForNewPassword } from '../../lib/e2ee';
 import { Button, Card, Input, DateField, Select, SectionTitle, Divider } from '../../components/ui';
@@ -135,6 +136,32 @@ export default function AccountScreen() {
     }
   }
 
+  // ── Passkey (biometric unlock factor) ─────────────────────────────────────
+  const [passkeyBusy, setPasskeyBusy] = useState(false);
+  const passkeyQ = useQuery({
+    queryKey: ['passkeyFactor'],
+    queryFn: hasPasskeyFactor,
+    enabled: passkeysSupported(),
+  });
+  async function addPasskey() {
+    if (!isUnlocked()) {
+      Alert.alert('Locked', 'Sign in with your password first, then add a passkey.');
+      return;
+    }
+    setPasskeyBusy(true);
+    try {
+      const ok = await addPasskeyFactor(String(user?._id || ''), user?.email || 'you');
+      if (ok) {
+        qc.invalidateQueries({ queryKey: ['passkeyFactor'] });
+        Alert.alert('Passkey added', 'Face ID / Touch ID can now unlock your encrypted data on this device.');
+      }
+    } catch (e: any) {
+      Alert.alert('Could not add passkey', e?.message || 'Please try again.');
+    } finally {
+      setPasskeyBusy(false);
+    }
+  }
+
   // ── Push ──────────────────────────────────────────────────────────────────
   const [pushBusy, setPushBusy] = useState(false);
   const [pushEnabled, setPushEnabled] = useState(false);
@@ -257,6 +284,24 @@ export default function AccountScreen() {
           </View>
         ) : null}
       </Card>
+
+      {passkeysSupported() ? (
+        <Card style={styles.card}>
+          <SectionTitle>Passkey unlock</SectionTitle>
+          <Text style={styles.cardNote}>
+            {passkeyQ.data
+              ? 'On — Face ID / Touch ID can unlock your encrypted data on this device.'
+              : 'Add a passkey so Face ID / Touch ID can unlock your encrypted data — no password needed after a relaunch.'}
+          </Text>
+          <Button
+            title={passkeyQ.data ? 'Passkey enabled' : passkeyBusy ? 'Adding…' : 'Add a passkey'}
+            variant="ghost"
+            disabled={!!passkeyQ.data || passkeyBusy}
+            loading={passkeyBusy}
+            onPress={addPasskey}
+          />
+        </Card>
+      ) : null}
 
       <Card style={styles.card}>
         <SectionTitle>Push notifications</SectionTitle>

@@ -77,7 +77,33 @@ export function createEnrollment(crypto: HouseholdCrypto) {
     return { factor: crypto.createSecretFactor('recovery', privateKey, recovery.secret), display: recovery.display };
   }
 
-  return { enroll, unlockWithPassword, unlockWithRecovery, rewrapPassword, regenerateRecoveryCode };
+  // Passkey factor (§3.4): the WebAuthn PRF output (32 high-entropy bytes only
+  // the authenticator can reproduce) wraps the private key. credentialId routes
+  // the unlock to the right passkey; prfSalt is the fixed PRF input it was
+  // evaluated with. The result is PUT to /keys/factors like any other factor.
+  function addPasskey(
+    privateKey: Uint8Array,
+    prfOutput: Uint8Array,
+    credentialId: string,
+    prfSalt: string,
+  ): SecretFactorEnvelope {
+    return { ...crypto.createSecretFactor('passkey', privateKey, prfOutput), credentialId, prfSalt };
+  }
+
+  function unlockWithPasskeyPrf(
+    material: StoredKeyMaterial,
+    credentialId: string,
+    prfOutput: Uint8Array,
+  ): IdentityKeyPair {
+    const env = material.wrappedPrivateKey.find(
+      (f): f is SecretFactorEnvelope => f.factor === 'passkey' && (f as SecretFactorEnvelope).credentialId === credentialId,
+    );
+    if (!env) throw new Error('No passkey factor for that credential');
+    const privateKey = crypto.openSecretFactor(env, prfOutput);
+    return { publicKey: crypto.unb64(material.identityPublicKey), privateKey };
+  }
+
+  return { enroll, unlockWithPassword, unlockWithRecovery, rewrapPassword, regenerateRecoveryCode, addPasskey, unlockWithPasskeyPrf };
 }
 
 export type Enrollment = ReturnType<typeof createEnrollment>;

@@ -17,7 +17,16 @@ export const API_URL = `${API_BASE_URL}/api`;
 const extra = (Constants.expoConfig?.extra ?? {}) as {
   revenueCatIosKey?: string;
   revenueCatAndroidKey?: string;
+  passkeyRpId?: string;
 };
+
+// Passkey relying-party ID: a DOMAIN (no scheme/port) associated with this app
+// via apple-app-site-association / assetlinks.json (webcredentials) and listed
+// in app.json ios.associatedDomains. Defaults to the API host, which is right
+// once the API runs on the real product domain.
+const apiHost = API_BASE_URL.replace(/^https?:\/\//, '').split(/[/:]/)[0];
+export const PASSKEY_RP_ID =
+  process.env.EXPO_PUBLIC_PASSKEY_RP_ID || extra.passkeyRpId || apiHost;
 
 export const REVENUECAT_IOS_KEY =
   process.env.EXPO_PUBLIC_RC_IOS_KEY || extra.revenueCatIosKey || '';

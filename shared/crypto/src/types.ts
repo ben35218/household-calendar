@@ -117,6 +117,11 @@ export interface SecretFactorEnvelope {
   factor: 'passkey' | 'recovery';
   nonce: string; // base64url (secretbox)
   ct: string; // base64url
+  // Passkey factor only: which WebAuthn credential evaluates the PRF, and the
+  // fixed PRF input salt to evaluate it with. Both are public routing data —
+  // the secret is the PRF *output*, which never leaves the authenticator flow.
+  credentialId?: string; // base64url
+  prfSalt?: string; // base64url
 }
 
 export type FactorEnvelope = PasswordFactorEnvelope | SecretFactorEnvelope;

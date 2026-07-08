@@ -12,6 +12,7 @@
       "bundleIdentifier": "app.householdcalendar.mobile",
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false,
+        "UIBackgroundModes": ["fetch"],
         "NSCameraUsageDescription": "Take photos of items, receipts, recipes, and booking confirmations to add them automatically.",
         "NSPhotoLibraryUsageDescription": "Attach photos of items, receipts, and confirmations from your library.",
         "NSContactsUsageDescription": "Import family and friends from your contacts so the assistant can suggest activities and remember birthdays."

@@ -4,7 +4,10 @@ import Constants from 'expo-constants';
 import { authApi, householdApi, User } from '../api';
 import { setUnauthorizedHandler } from '../api/client';
 import { loadToken, saveToken, clearToken } from '../lib/secureToken';
-import { ensureEnrolledOnLogin, ensureHouseholdKey, lock as lockE2EE } from '../lib/e2ee';
+import { ensureEnrolledOnLogin, ensureHouseholdKey, unlockWithPasskey, lock as lockE2EE } from '../lib/e2ee';
+import { passkeysSupported } from '../lib/passkeys';
+import { queryClient } from '../lib/queryClient';
+import { clearAll as clearReplica } from '../lib/replica';
 
 // Enroll (or unlock) the E2EE keypair after auth, then make sure this session
 // holds the household key (owner mints it lazily on first unlock). Additive and
@@ -41,6 +44,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     lockE2EE(); // drop the in-memory private key
     await clearToken();
     setUser(null);
+    // The next sign-in may be a different account: query keys aren't scoped by
+    // user, so cached server state and the on-device replica would paint the
+    // previous household's records. Wipe both.
+    queryClient.clear();
+    await clearReplica().catch(() => {});
   }, []);
 
   // Restore a stored token on launch and verify it against /auth/me.
@@ -51,6 +59,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         if (token) {
           const { data } = await authApi.me();
           setUser(data);
+          // A restored session has no password, so E2EE is locked. If the
+          // account has a passkey factor, offer the Face ID / Touch ID sheet
+          // now (cancel just leaves it locked — password unlock still works).
+          if (passkeysSupported()) {
+            try {
+              if (await unlockWithPasskey()) await ensureHouseholdKey();
+            } catch {
+              // canceled / PRF unavailable — stay locked
+            }
+          }
         }
       } catch {
         await clearToken();
