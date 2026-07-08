@@ -1,4 +1,4 @@
-import type { Item, Recipe } from '../api';
+import type { InvitationEventSnapshot, Item, Recipe } from '../api';
 
 // The single, flat route map for the whole app — the React-Navigation analogue
 // of the web's one flat vue-router. Every screen is a sibling route, so any
@@ -19,6 +19,11 @@ export type RootStackParamList = {
   Holidays: undefined;
   Events: undefined;
   Weather: undefined;
+  Invitations: undefined;
+  // Manage one event's invitees. `snapshot` is the decrypted event content the
+  // invite emails/.ics are built from; no `eventId` = a new-event draft whose
+  // invitees queue in lib/inviteeDraft until the event is saved.
+  EventInvitees: { eventId?: string; snapshot: InvitationEventSnapshot };
 
   // ----- Maintenance (item-centric) -----
   MaintenanceHome: undefined;
@@ -68,7 +73,8 @@ export type RootStackParamList = {
   PersonForm: { id?: string; isSelf?: boolean; type?: 'family' | 'friend' | 'service' };
   ContactImport: undefined;
   Household: undefined;
+  NotificationSettings: undefined;
   Privacy: undefined;
-  E2eeMigration: undefined;
+  Security: undefined;
   Paywall: undefined;
 };

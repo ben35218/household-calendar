@@ -213,18 +213,6 @@ export default function PrivacyScreen() {
       </Card>
 
       <Card style={styles.card}>
-        <SectionTitle>Notifications</SectionTitle>
-        <Text style={styles.cardNote}>
-          Reminders for events, tasks, chores, and birthdays are computed on your device — no schedule details leave it.
-        </Text>
-        <SwitchRow
-          label="Reminders"
-          value={prefs.remindersEnabled}
-          onValueChange={(v) => set('remindersEnabled', v)}
-        />
-      </Card>
-
-      <Card style={styles.card}>
         <SectionTitle>Data storage</SectionTitle>
         <Text style={styles.cardNote}>Choose where your app data is kept.</Text>
 

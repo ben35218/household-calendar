@@ -19,6 +19,8 @@ import CalendarColorsScreen from '../screens/calendar/CalendarColorsScreen';
 import HolidaysScreen from '../screens/calendar/HolidaysScreen';
 import EventsScreen from '../screens/calendar/EventsScreen';
 import WeatherScreen from '../screens/calendar/WeatherScreen';
+import InvitationsScreen from '../screens/calendar/InvitationsScreen';
+import EventInviteesScreen from '../screens/calendar/EventInviteesScreen';
 
 // Maintenance (item-centric)
 import MaintenanceScreen from '../screens/maintenance/MaintenanceScreen';
@@ -62,8 +64,9 @@ import PeopleScreen from '../screens/profile/PeopleScreen';
 import PersonFormScreen from '../screens/profile/PersonFormScreen';
 import ContactImportScreen from '../screens/profile/ContactImportScreen';
 import HouseholdScreen from '../screens/profile/HouseholdScreen';
+import NotificationsScreen from '../screens/profile/NotificationsScreen';
 import PrivacyScreen from '../screens/profile/PrivacyScreen';
-import E2eeMigrationScreen from '../screens/profile/E2eeMigrationScreen';
+import SecurityScreen from '../screens/profile/SecurityScreen';
 import PaywallScreen from '../screens/PaywallScreen';
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
@@ -117,6 +120,22 @@ export default function AppNavigator() {
           ),
         })}
       />
+      <Stack.Screen
+        name="Invitations"
+        component={InvitationsScreen}
+        options={({ navigation }) => ({
+          ...hdr(colors.background),
+          headerShadowVisible: false,
+          presentation: 'modal',
+          title: 'Invitations',
+          headerLeft: () => (
+            <TouchableOpacity onPress={() => navigation.goBack()} style={{ paddingHorizontal: 4 }}>
+              <Ionicons name="close" size={26} color="#fff" />
+            </TouchableOpacity>
+          ),
+        })}
+      />
+      <Stack.Screen name="EventInvitees" component={EventInviteesScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Invitees' }} />
       <Stack.Screen name="CalendarColors" component={CalendarColorsScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Calendar Colors' }} />
       <Stack.Screen name="Holidays" component={HolidaysScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Holidays' }} />
       <Stack.Screen name="Weather" component={WeatherScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Weather' }} />
@@ -163,8 +182,9 @@ export default function AppNavigator() {
       <Stack.Screen name="PersonForm" component={PersonFormScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Person' }} />
       <Stack.Screen name="ContactImport" component={ContactImportScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Import Contacts' }} />
       <Stack.Screen name="Household" component={HouseholdScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Household' }} />
+      <Stack.Screen name="NotificationSettings" component={NotificationsScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Notifications' }} />
       <Stack.Screen name="Privacy" component={PrivacyScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Privacy' }} />
-      <Stack.Screen name="E2eeMigration" component={E2eeMigrationScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Encryption' }} />
+      <Stack.Screen name="Security" component={SecurityScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Sign-in & Security' }} />
       <Stack.Screen name="Paywall" component={PaywallScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Plan' }} />
       </Stack.Navigator>
     </View>

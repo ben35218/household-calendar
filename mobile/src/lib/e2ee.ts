@@ -312,6 +312,22 @@ export async function ensureEnrolledOnLogin(
   }
 }
 
+// Unlock a locked session with the account password (e.g. after a relaunch
+// restored only the token) — no re-login required. Mirrors unlockWithPasskey.
+export async function unlockWithPassword(password: string): Promise<boolean> {
+  if (keyPair) return true;
+  const enroll = await getEnrollment();
+  const { data } = await keysApi.me();
+  if (!data.enrolled) return false;
+  try {
+    keyPair = enroll.unlockWithPassword(data as unknown as StoredKeyMaterial, password);
+    return true;
+  } catch {
+    keyPair = null;
+    return false;
+  }
+}
+
 export async function unlockWithRecoveryCode(code: string): Promise<boolean> {
   const enroll = await getEnrollment();
   const { data } = await keysApi.me();

@@ -5,6 +5,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import * as Clipboard from 'expo-clipboard';
 import { householdApi, HouseholdMember, JoinRequestForApprover, JoinRequestMine } from '../../api';
 import { Button, Card, Input, SectionTitle } from '../../components/ui';
+import EncryptionSetupCard from '../../components/EncryptionSetupCard';
 import { ensureHouseholdKey, getHDK, wrapHDKForJoiner, publicKeyFingerprint } from '../../lib/e2ee';
 import { colors, spacing } from '../../theme';
 
@@ -327,6 +328,11 @@ export default function HouseholdScreen() {
           );
         })}
       </Card>
+
+      {/* §9 migration checklist — owner-only, and gone once the household is
+          fully end-to-end encrypted. Members see their personal status on the
+          Sign-in & Security screen instead. */}
+      {household.isOwner && !household.e2eeActive ? <EncryptionSetupCard /> : null}
 
       <Card style={styles.card}>
         {myRequest && myRequest.status === 'pending' ? (

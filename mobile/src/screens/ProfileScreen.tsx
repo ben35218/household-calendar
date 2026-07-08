@@ -18,11 +18,12 @@ type Section = {
 
 // Mirrors client/src/views/ProfileMenu.vue — an iOS-style drill-in hub.
 const SECTIONS: Section[] = [
-  { route: 'Account', label: 'Account', subtitle: 'Name, birthday, timezone, sign-in & push', icon: 'card-outline' },
+  { route: 'Account', label: 'Account', subtitle: 'Name, birthday, timezone & address', icon: 'card-outline' },
+  { route: 'Security', label: 'Sign-in & Security', subtitle: 'Password, Face ID & encryption', icon: 'shield-checkmark-outline' },
   { route: 'Household', label: 'Household', subtitle: 'Shared household and invite code', icon: 'home-outline' },
   { route: 'People', label: 'Contacts', subtitle: 'Family, friends & service providers', icon: 'people-outline' },
-  { route: 'Privacy', label: 'Privacy', subtitle: 'AI features, personal data & storage', icon: 'lock-closed-outline' },
-  { route: 'E2eeMigration', label: 'Encryption', subtitle: 'Encryption status, recovery code & setup', icon: 'shield-checkmark-outline' },
+  { route: 'NotificationSettings', label: 'Notifications', subtitle: 'Reminders for events, tasks & chores', icon: 'notifications-outline' },
+  { route: 'Privacy', label: 'Privacy & Data', subtitle: 'AI, storage & backup', icon: 'lock-closed-outline' },
   { route: 'Paywall', label: 'Plan & billing', subtitle: 'Your plan, usage & upgrades', icon: 'star-outline' },
 ];
 
