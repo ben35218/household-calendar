@@ -1,15 +1,16 @@
 # Household Calendar
 
-A MEVN-stack web application for managing household inventory, product manuals, and maintenance schedules. Built for rural/countryside homeowners who need to track many items and recurring tasks across appliances, vehicles, systems, and land.
+A household management platform for inventory, product manuals, and maintenance schedules. Built for rural/countryside homeowners who need to track many items and recurring tasks across appliances, vehicles, systems, and land. The product ships as a **native mobile app** (Expo/React Native) backed by an Express/MongoDB API, plus a **Vue admin web app** for monetization, households, and plans.
 
 ## Stack
 
 - **MongoDB** (via Mongoose) — data storage
 - **Express.js** — REST API
-- **Vue 3** (Composition API + `<script setup>`) — frontend SPA
+- **Expo / React Native** — native mobile app (primary client)
+- **Vue 3** (Composition API + `<script setup>`) — admin web app
 - **Node.js** — runtime
-- **Vuetify 3** — Material Design UI
-- **Pinia** — state management
+- **Vuetify 3** — Material Design UI (admin)
+- **Pinia** — state management (admin)
 - **node-cron** + **Nodemailer** — scheduled email reminders
 
 ## Features
@@ -38,7 +39,8 @@ git clone <repo-url>
 cd household-calendar
 npm install                    # root (concurrently)
 npm --prefix server install    # server deps
-npm --prefix client install    # client deps
+npm --prefix admin install     # admin web app deps
+npm --prefix mobile install    # mobile app deps
 ```
 
 ### 2. Configure the server
@@ -60,8 +62,8 @@ UPLOAD_DIR=./uploads
 GMAIL_USER=you@gmail.com
 GMAIL_APP_PASSWORD=xxxx-xxxx-xxxx-xxxx
 
-APP_URL=http://localhost:5173
-CLIENT_URL=http://localhost:5173
+APP_URL=http://localhost:5174
+CLIENT_URL=http://localhost:5174
 ```
 
 ### 3. Run in development
@@ -70,9 +72,10 @@ CLIENT_URL=http://localhost:5173
 npm run dev
 ```
 
-This starts both the server (port 3001) and client (port 5173) concurrently.
+This starts the API server (port 3001). Run the clients separately:
 
-- **App:** http://localhost:5173
+- **Admin web app:** `npm --prefix admin run dev` → http://localhost:5174
+- **Mobile app:** `npm --prefix mobile start` (Expo)
 - **API:** http://localhost:3001/api
 
 Register an account — default categories are seeded automatically on first registration.
@@ -98,12 +101,18 @@ The scheduler sends a single daily digest at 07:00 local time for all tasks due 
 
 ```
 /household-calendar
-  /client               # Vue 3 + Vuetify SPA
+  /mobile               # Expo / React Native app (primary client)
+    /src
+      /screens          # App screens
+      /navigation       # React Navigation config
+      /store            # Auth / app state
+      /api, /lib        # API wrappers + client libs (e2ee, weather, ...)
+  /admin                # Vue 3 + Vuetify admin web app
     /src
       /views            # Page components
-      /stores           # Pinia stores (auth)
+      /stores           # Pinia stores
       /router           # Vue Router config
-      /services         # Axios API wrappers
+  /shared               # Packages shared by mobile, admin, and server
   /server               # Express REST API
     /src
       /models           # Mongoose schemas
@@ -183,6 +192,7 @@ mongodump --uri="$MONGODB_URI" --out=./backup/$(date +%F)
 ## Production Deployment
 
 1. Set strong `JWT_SECRET` and real MongoDB URI in environment variables
-2. Build the client: `npm run build` → serve `client/dist/` as static files (nginx, Caddy, or Express static middleware)
-3. Run the server with a process manager: `pm2 start server/src/index.js`
-4. Ensure `UPLOAD_DIR` points to a persistent volume
+2. Deploy the API (see `render.yaml`) — Render Blueprint, `rootDir: server`
+3. Build the admin web app: `npm --prefix admin run build` → serve `admin/dist/` as static files (nginx, Caddy, or a static host)
+4. Build & ship the mobile app via EAS (see `mobile/eas.json` / `mobile/RELEASE.md`)
+5. Ensure `UPLOAD_DIR` points to a persistent volume; set `CORS_ORIGINS` to the admin app's production origin
