@@ -9,6 +9,8 @@
 const express = require('express');
 const MonetizationConfig = require('../models/MonetizationConfig');
 const Household = require('../models/Household');
+const User = require('../models/User');
+const AuditLog = require('../models/AuditLog');
 const { invalidateConfigCache, currentPeriodKey } = require('../middleware/usageMeter');
 const { requireAuth, requireAdmin } = require('../middleware/auth');
 
@@ -41,18 +43,36 @@ router.put('/', async (req, res) => {
   }
 });
 
-// Households + current-week usage, for the temp page's plan management table.
+// Households + usage, for the plan-management table. Returns the current-week
+// counters plus the full per-period usage history (so the admin UI can show
+// trends across weeks) and each household's member count + E2EE state.
 router.get('/households', async (_req, res) => {
   try {
     const period = currentPeriodKey();
-    const households = await Household.find({}, 'name joinCode plan usage').lean();
+    const households = await Household.find({}, 'name joinCode plan usage e2eeActive createdAt revenueCatId').lean();
+
+    // Member counts for all households in one aggregate.
+    const counts = await User.aggregate([
+      { $match: { householdId: { $in: households.map((h) => h._id) } } },
+      { $group: { _id: '$householdId', n: { $sum: 1 } } },
+    ]);
+    const countById = Object.fromEntries(counts.map((c) => [String(c._id), c.n]));
+
     res.json(
       households.map((h) => ({
         _id: h._id,
         name: h.name,
         joinCode: h.joinCode,
         plan: h.plan || 'free',
+        e2eeActive: !!h.e2eeActive,
+        memberCount: countById[String(h._id)] || 0,
+        createdAt: h.createdAt,
+        // Billing source: a RevenueCat mapping means the plan is driven by a
+        // real subscription/webhook; otherwise it's a manual admin override.
+        revenueCatId: h.revenueCatId || null,
+        billingSource: h.revenueCatId ? 'revenuecat' : 'manual',
         usageThisWeek: h.usage?.[period] || {},
+        usageHistory: h.usage || {}, // { 'YYYY-MM-DD': { chat, scan, generation, manualParse, aiHelper } }
       }))
     );
   } catch (err) {
@@ -61,6 +81,7 @@ router.get('/households', async (_req, res) => {
 });
 
 // Override a household's plan from the admin page. Match by joinCode or _id.
+// Audited (plan_changed) so manual overrides leave a trail.
 router.post('/plan', async (req, res) => {
   try {
     const { joinCode, householdId, plan } = req.body;
@@ -68,8 +89,17 @@ router.post('/plan', async (req, res) => {
       return res.status(400).json({ error: 'Invalid plan' });
     }
     const query = householdId ? { _id: householdId } : { joinCode };
+    const before = await Household.findOne(query).select('plan').lean();
     const hh = await Household.findOneAndUpdate(query, { $set: { plan } }, { new: true });
     if (!hh) return res.status(404).json({ error: 'Household not found' });
+    if (before && before.plan !== plan) {
+      await AuditLog.create({
+        userId: req.user._id,
+        householdId: hh._id,
+        event: 'plan_changed',
+        meta: { from: before.plan || 'free', to: plan, source: 'admin_override' },
+      });
+    }
     res.json({ _id: hh._id, name: hh.name, joinCode: hh.joinCode, plan: hh.plan });
   } catch (err) {
     res.status(500).json({ error: err.message });

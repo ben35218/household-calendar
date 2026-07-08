@@ -20,6 +20,7 @@ const User = require('../models/User');
 const HouseholdKeyEnvelope = require('../models/HouseholdKeyEnvelope');
 const AuditLog = require('../models/AuditLog');
 const { computeReadiness, dropUnsetFor } = require('../services/dropReadiness');
+const { sharedTripIds, excludeSharedFilter } = require('../services/tripSharing');
 
 // Content collections scoped by userId. Household is handled separately (by _id).
 const MODELS = {
@@ -59,13 +60,19 @@ async function run() {
   readiness.reasons.forEach((r) => console.log('  - ' + r));
   if (!readiness.ready) { console.log('\nAborting — resolve the above first.'); process.exit(1); }
 
-  // 2) Straggler check — every content record must already carry ciphertext.
+  // 2) Straggler check — every content record must already carry ciphertext,
+  // EXCEPT shared trips (and their items): those stay plaintext on purpose so
+  // cross-household collaborators can read them, so they're exempt here and in
+  // the commit below. See services/tripSharing.js / §6.
   let stragglers = 0;
   const scope = { userId: { $in: memberIds } };
+  const sharedIds = await sharedTripIds(MODELS.Trip, memberIds);
+  if (sharedIds.length) console.log(`  (${sharedIds.length} shared trip(s) + their items are plaintext-exempt)\n`);
   for (const [name, Model] of Object.entries(MODELS)) {
+    const exempt = excludeSharedFilter(name, sharedIds);
     const [sealed, missing] = await Promise.all([
       Model.countDocuments({ ...scope, enc: { $exists: true } }),
-      Model.countDocuments({ ...scope, enc: { $exists: false } }),
+      Model.countDocuments({ ...scope, ...exempt, enc: { $exists: false } }),
     ]);
     stragglers += missing;
     console.log(`  ${name.padEnd(16)} ${sealed} sealed, ${missing} missing enc`);
@@ -90,7 +97,10 @@ async function run() {
   for (const [name, Model] of Object.entries(MODELS)) {
     const unset = dropUnsetFor(name);
     if (!unset) continue;
-    const res = await Model.updateMany({ ...scope, enc: { $exists: true } }, { $unset: unset });
+    // Never null a shared trip's (or its items') plaintext — collaborators outside
+    // the household read it and hold no HDK.
+    const exempt = excludeSharedFilter(name, sharedIds);
+    const res = await Model.updateMany({ ...scope, ...exempt, enc: { $exists: true } }, { $unset: unset });
     console.log(`  ${name.padEnd(16)} nulled ${res.modifiedCount}`);
   }
   if (hh.enc) await Household.updateOne({ _id: hh._id }, { $unset: dropUnsetFor('Household') ? { homeAddress: '', lat: '', lon: '' } : {} });

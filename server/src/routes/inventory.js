@@ -7,6 +7,7 @@ const FoodInventory = require('../models/FoodInventory');
 const { isObjectId, pickRecordEnc } = require('../services/householdKey');
 const { requireAuth } = require('../middleware/auth');
 const { meter } = require('../middleware/usageMeter');
+const { activity } = require('../middleware/activity');
 
 const uploadDir = path.resolve(process.env.UPLOAD_DIR || './uploads', 'receipts');
 fs.mkdirSync(uploadDir, { recursive: true });
@@ -96,7 +97,7 @@ router.get('/', async (req, res) => {
 });
 
 // POST / — create item manually
-router.post('/', async (req, res) => {
+router.post('/', activity('inventoryAdded'), async (req, res) => {
   try {
     const { name, quantity, category, purchaseDate, expirationDate, notes } = req.body;
     if (!name) return res.status(400).json({ error: 'name is required' });

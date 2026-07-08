@@ -36,9 +36,38 @@ export interface WeatherForecast {
   units: { temperature: string; precipitation: string; wind: string };
 }
 
+// Calendar overlay record (a day of weather, forecast or archived).
+export interface WeatherRangeRecord {
+  date: string;
+  weatherCode: number;
+  description: string;
+  tempMax: number;
+  tempMin: number;
+  precipSum: number;
+  precipProbability: number | null;
+  windMax: number;
+  goodWeather: boolean;
+  hours?: WeatherHour[];
+}
+
+export interface OutlookWeek {
+  startDate: string;
+  endDate: string;
+  avgTempMax: number;
+  avgTempMin: number;
+  totalPrecip: number;
+  rainyDays: number;
+  yearsInSample: number;
+}
+
 export const WMO_DESCRIPTIONS: Record<number, string>;
-export function isMowingDay(precipSum: number, precipProb: number, prevPrecipSum: number): boolean;
+export function isMowingDay(precipSum: number, precipProb: number | null, prevPrecipSum: number): boolean;
 export function buildForecast(raw: any): WeatherForecast;
 export function geocode(address: string): Promise<{ lat: number; lon: number }>;
 export function fetchWeather(lat: number, lon: number): Promise<any>;
 export function loadWeatherForAddress(address: string): Promise<WeatherForecast>;
+export function fetchWeatherArchive(lat: number, lon: number, startDate: string, endDate: string): Promise<any>;
+export function buildRangeRecords(args: { archiveRaw: any; forecast?: WeatherDay[]; from: string; to: string }): WeatherRangeRecord[];
+export function loadWeatherRange(address: string, from: string, to: string): Promise<{ records: WeatherRangeRecord[] }>;
+export function buildOutlook(archiveResults: any[], opts?: { today?: Date; days?: number }): { weeks: OutlookWeek[] };
+export function loadOutlook(address: string, opts?: { today?: Date; days?: number }): Promise<{ weeks: OutlookWeek[] }>;

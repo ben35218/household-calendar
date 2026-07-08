@@ -283,21 +283,19 @@ function assembleCalendarData({
     .filter(s => s.scheduledDate && new Date(s.scheduledDate) >= from && new Date(s.scheduledDate) <= to)
     .sort((a, b) => new Date(a.scheduledDate) - new Date(b.scheduledDate));
 
-  // Grocery shopping: one cart event per "meal week".
-  const weeksSeen = new Set();
+  // Grocery shopping day: a weekly marker on the configured weekday for every
+  // week in view — it recurs regardless of whether meals are scheduled that week
+  // (mirrors the planner, which always badges the grocery day). Local-midnight
+  // dates match the birthday/day-cell convention.
   const groceryShopping = [];
-  for (const s of scheduledInRange) {
-    const d = new Date(s.scheduledDate);
-    const diff = (d.getDay() - groceryShoppingDay + 7) % 7;
-    const groceryDate = new Date(d);
-    groceryDate.setDate(d.getDate() - diff);
-    groceryDate.setHours(0, 0, 0, 0);
-    const weekKey = groceryDate.toISOString().slice(0, 10);
-    if (!weeksSeen.has(weekKey)) {
-      weeksSeen.add(weekKey);
-      if (groceryDate >= from && groceryDate <= to) {
-        groceryShopping.push({ id: `grocery-${weekKey}`, date: weekKey, weekStart: weekKey });
-      }
+  {
+    // First grocery weekday on or after `from` (UTC, matching the range bounds
+    // and the toISOString date keys used throughout this engine).
+    const g = new Date(Date.UTC(from.getUTCFullYear(), from.getUTCMonth(), from.getUTCDate()));
+    g.setUTCDate(g.getUTCDate() + ((groceryShoppingDay - g.getUTCDay() + 7) % 7));
+    for (; g <= to; g.setUTCDate(g.getUTCDate() + 7)) {
+      const weekKey = g.toISOString().slice(0, 10);
+      groceryShopping.push({ id: `grocery-${weekKey}`, date: weekKey, weekStart: weekKey });
     }
   }
 

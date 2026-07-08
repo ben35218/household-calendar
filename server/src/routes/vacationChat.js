@@ -148,7 +148,7 @@ router.get('/context', async (req, res) => {
   }
 });
 
-router.post('/', meter('chat'), async (req, res) => {
+router.post('/', meter('chat', 'vacation'), async (req, res) => {
   try {
     const { tripId, messages, trip: clientTrip, items: clientItems } = req.body;
     if (!tripId) return res.status(400).json({ error: 'tripId is required' });
@@ -184,6 +184,7 @@ router.post('/', meter('chat'), async (req, res) => {
     const model = plan === 'free' ? config.models.freeChat : config.models.paidChat;
 
     await streamChat(res, {
+      req,
       client,
       model,
       system: systemPrompt,

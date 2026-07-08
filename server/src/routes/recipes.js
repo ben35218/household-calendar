@@ -7,6 +7,7 @@ const fs = require('fs');
 const Recipe = require('../models/Recipe');
 const { requireAuth } = require('../middleware/auth');
 const { meter } = require('../middleware/usageMeter');
+const { activity } = require('../middleware/activity');
 
 const uploadDir = path.resolve(process.env.UPLOAD_DIR || './uploads', 'recipes');
 fs.mkdirSync(uploadDir, { recursive: true });
@@ -308,16 +309,49 @@ async function attachIngredientTags(parsed) {
   return parsed;
 }
 
+// Pull an explicit timed-wait duration out of each instruction step so the
+// planner/cooking view can show a timer chip. Deterministic (no AI, no tokens):
+// reads the times the generated steps already state, e.g. "simmer for 20 minutes",
+// "bake 25 min", "chill 1 hour". Returns minutes per step (null when none), or
+// null overall when no step states a time.
+function deriveInstructionTimers(instructions) {
+  if (!Array.isArray(instructions) || !instructions.length) return null;
+  // A duration, optionally a range ("20 to 25 minutes") whose upper bound wins.
+  const DUR = /(\d+(?:\.\d+)?)\s*(?:(?:-|–|to|and)\s*(\d+(?:\.\d+)?)\s*)?(hours?|hrs?|minutes?|mins?)\b/gi;
+  let any = false;
+  const timers = instructions.map((step) => {
+    if (typeof step !== 'string') return null;
+    let best = null;
+    DUR.lastIndex = 0;
+    let m;
+    while ((m = DUR.exec(step))) {
+      const isHour = m[3].toLowerCase().startsWith('h');
+      const val = Number(m[2] ?? m[1]); // upper bound of a range, else the value
+      const mins = Math.round(isHour ? val * 60 : val);
+      // A step often mentions several times ("sauté 2 min, then simmer 20 min");
+      // the longest is the meaningful unattended wait to count down.
+      if (mins > 0 && (best == null || mins > best)) best = mins;
+    }
+    if (best != null) any = true;
+    return best;
+  });
+  return any ? timers : null;
+}
+
 // Author a recipe from a natural-language description, with well-sequenced
-// instructions, then tag each step's ingredients before returning.
+// instructions, then tag each step's ingredients and surface any stated
+// timers before returning.
 async function generateRecipeWithAI(description) {
   const parsed = await parseRecipeWithAI(
     `Generate a complete recipe based on this description: "${description}"\n\n${GENERATION_GUIDANCE}`
   );
-  return attachIngredientTags(parsed);
+  await attachIngredientTags(parsed);
+  const timers = deriveInstructionTimers(parsed.instructions);
+  if (timers) parsed.instructionTimers = timers;
+  return parsed;
 }
 
-router.post('/', async (req, res) => {
+router.post('/', activity('recipeAdded'), async (req, res) => {
   try {
     const recipe = await Recipe.create({ ...req.body, userId: req.user._id });
     res.status(201).json(recipe);

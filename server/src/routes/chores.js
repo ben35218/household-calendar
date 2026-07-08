@@ -2,6 +2,7 @@ const express = require('express');
 const { startOfDay, addDays } = require('date-fns');
 const Chore = require('../models/Chore');
 const { requireAuth } = require('../middleware/auth');
+const { activity } = require('../middleware/activity');
 const { computeNextDueDate } = require('../services/recurrence');
 
 const router = express.Router();
@@ -26,7 +27,7 @@ router.get('/', async (req, res) => {
   }
 });
 
-router.post('/', async (req, res) => {
+router.post('/', activity('choreCreated'), async (req, res) => {
   try {
     const data = { ...req.body, userId: { $in: req.scopeIds } };
     if (!data.nextDueDate && data.recurrence) {

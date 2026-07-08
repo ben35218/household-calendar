@@ -1,6 +1,7 @@
 const express = require('express');
 const CalendarEvent    = require('../models/CalendarEvent');
 const { requireAuth }  = require('../middleware/auth');
+const { activity }     = require('../middleware/activity');
 const Person           = require('../models/Person');
 const { collectCalendarRecords, fetchCalendarSources } = require('../services/calendarData');
 const { isObjectId, pickRecordEnc } = require('../services/householdKey');
@@ -80,7 +81,7 @@ router.get('/events/:id', async (req, res) => {
   }
 });
 
-router.post('/events', async (req, res) => {
+router.post('/events', activity('eventCreated'), async (req, res) => {
   try {
     const {
       calendarType, title, description, location, placeId, url,

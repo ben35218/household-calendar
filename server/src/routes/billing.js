@@ -11,7 +11,7 @@ const express = require('express');
 const Household = require('../models/Household');
 const MonetizationConfig = require('../models/MonetizationConfig');
 const { requireAuth, requireAdmin } = require('../middleware/auth');
-const { getConfig, currentPeriodKey, nextPeriodResetAt } = require('../middleware/usageMeter');
+const { getConfig, currentPeriodKey, nextPeriodResetAt, effectivePeriodUsage, upgradeBaselineUpdate, enforcedTokens } = require('../middleware/usageMeter');
 
 const router = express.Router();
 
@@ -62,7 +62,8 @@ router.post('/webhook', async (req, res) => {
 
     await Household.updateOne(
       { _id: household._id },
-      { $set: { plan, revenueCatId: appUserId } }
+      // Fresh pool on upgrade: baseline the current week's counter when moving up.
+      { $set: { plan, revenueCatId: appUserId, ...upgradeBaselineUpdate(household, plan) } }
     );
     res.json({ ok: true, plan });
   } catch (err) {
@@ -78,10 +79,30 @@ router.get('/status', async (req, res) => {
     const plan = req.household?.plan || 'free';
     const period = currentPeriodKey();
     const tiers = config.tiers || {};
+    // Free-tier quotas are per-user; paid tiers share a household pool. Report the
+    // counter that's actually enforced so the usage bars match what the user hits.
+    const perUser = plan === 'free';
+    const usage = perUser
+      ? (req.user?.usage?.[period] || {})
+      : effectivePeriodUsage(req.household, period);
+
+    // Token budget is the enforced metric. Report used / limit / % for the gauge.
+    const weeklyTokenLimit = tiers[plan]?.weeklyTokenLimit ?? null;
+    const tokensUsed = enforcedTokens(req, period);
+    const tokenPct = weeklyTokenLimit
+      ? Math.min(100, Math.round((tokensUsed / weeklyTokenLimit) * 100))
+      : 0;
+
     res.json({
       plan,
       planLabel: tiers[plan]?.label || plan,
-      usage: req.household?.usage?.[period] || {},
+      // Token budget (primary — drives the Plan view gauge).
+      tokensUsed,
+      weeklyTokenLimit,     // null = unlimited
+      tokenPct,             // 0–100 (0 when unlimited)
+      // Per-action counts (analytics / legacy usage list).
+      usage,
+      usageScope: perUser ? 'user' : 'household',
       quotas: tiers[plan]?.quotas || {},
       resetsAt: nextPeriodResetAt().toISOString(),
       models: config.models || {},
@@ -91,6 +112,7 @@ router.get('/status', async (req, res) => {
         label: tiers[key]?.label || key,
         price: tiers[key]?.price ?? 0,
         quotas: tiers[key]?.quotas || {},
+        weeklyTokenLimit: tiers[key]?.weeklyTokenLimit ?? null,
       })),
     });
   } catch (err) {
@@ -109,7 +131,10 @@ router.post('/select', requireAdmin, async (req, res) => {
     if (!req.household) {
       return res.status(400).json({ error: 'Join or create a household first' });
     }
-    await Household.updateOne({ _id: req.household._id }, { $set: { plan: tier } });
+    await Household.updateOne(
+      { _id: req.household._id },
+      { $set: { plan: tier, ...upgradeBaselineUpdate(req.household, tier) } }
+    );
     res.json({ plan: tier });
   } catch (err) {
     res.status(500).json({ error: err.message });

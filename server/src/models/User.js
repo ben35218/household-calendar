@@ -59,6 +59,40 @@ const userSchema = new mongoose.Schema({
   // Set by a client that schedules reminders on-device (Phase 5): the server
   // reminder cron then skips this user to avoid double-notifying. See §7.
   localReminders:    { type: Boolean, default: false },
+  // Last app version this user reported (§9 readiness gate: the whole-household
+  // migration requires every member on a compatible app before the drop).
+  clientVersion:     { type: String },
+  clientPlatform:    { type: String },  // 'web' | 'ios' | 'android'
+  clientVersionAt:   { type: Date },
+  // Last authenticated request from this user, stamped (throttled) by
+  // requireAuth. Content-blind engagement signal powering the admin analytics
+  // DAU/WAU/MAU + retention views. Absent until the user's first request post-deploy.
+  lastActiveAt:      { type: Date, index: true },
+
+  // Per-user weekly AI-action usage: { 'YYYY-MM-DD': { chat, scan, ... } }, same
+  // shape/keying as Household.usage. On the FREE tier each member gets their own
+  // quota, so metering enforces + displays against this counter rather than the
+  // shared household pool (a family member joining shouldn't shrink everyone's
+  // free allowance). Paid tiers stay pooled on the household. See usageMeter.
+  // NOTE: these per-action counts are analytics-only now — enforcement is by the
+  // weekly TOKEN budget (usageTokens below).
+  usage: { type: mongoose.Schema.Types.Mixed, default: () => ({}) },
+  // Per-user weekly TOKEN usage (the enforced metric on the FREE tier):
+  // { 'YYYY-MM-DD': { tokens } } where tokens = input+output+cache read+write.
+  usageTokens: { type: mongoose.Schema.Types.Mixed, default: () => ({}) },
+
+  // ── Storage mode + cloud-purge lifecycle (Phase 6, §4.1/§6) ──────────────
+  // Server-authoritative mirror of the device "store on this device only" pref.
+  // Only settable to 'local' when the user is solo (§6.1). Going local schedules
+  // a 7-day purge of this user's cloud ciphertext, with an undo window.
+  storageMode:              { type: String, enum: ['cloud', 'local'], default: 'cloud' },
+  cloudDeletionScheduledAt: { type: Date, default: null },
+  cloudDeletionState:       { type: String, enum: ['none', 'scheduled', 'purged'], default: 'none' },
+  // Proof the download-first local copy verified before we ever scheduled a
+  // deletion (§6.2 step 3): the server never schedules against an unverified
+  // replica. `manifestHash` is over the user's record ids/updatedAt.
+  localReplicaVerifiedAt:   { type: Date, default: null },
+  localReplicaManifestHash: { type: String, default: '' },
   timezone:          { type: String, default: 'America/Toronto' },
   homeAddress:       { type: String, default: '' },
   lat:               { type: Number },
@@ -68,6 +102,10 @@ const userSchema = new mongoose.Schema({
   groceryShoppingDay:  { type: Number, default: 6 },  // 0=Sun...6=Sat, default Saturday
   grocerySections:     { type: [String], default: () => ['Produce', 'Deli', 'Bakery', 'Meat & Seafood', 'Dairy', 'Frozen', 'Pantry', 'Other'] },
 }, { timestamps: true, toJSON: { virtuals: true } });
+
+// Sparse index for the 7-day cloud-purge sweep (§4.1) — only scheduled users
+// carry a date, so the cron scans a tiny set.
+userSchema.index({ cloudDeletionScheduledAt: 1 }, { sparse: true });
 
 // Convenience getter so existing code using req.user.name keeps working
 userSchema.virtual('name').get(function () {

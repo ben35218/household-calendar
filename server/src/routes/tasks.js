@@ -3,6 +3,7 @@ const { startOfDay, isBefore, addDays } = require('date-fns');
 const MaintenanceTask = require('../models/MaintenanceTask');
 const TaskCompletion = require('../models/TaskCompletion');
 const { requireAuth } = require('../middleware/auth');
+const { activity } = require('../middleware/activity');
 const { computeNextDueDate, computeNextDueKm, estimateDateFromKm, avgKmPerDay } = require('../services/recurrence');
 const OdometerLog = require('../models/OdometerLog');
 
@@ -102,7 +103,7 @@ router.delete('/:id', async (req, res) => {
   }
 });
 
-router.post('/:id/complete', async (req, res) => {
+router.post('/:id/complete', activity('taskCompleted'), async (req, res) => {
   try {
     const task = await MaintenanceTask.findOne({ _id: req.params.id, userId: { $in: req.scopeIds } });
     if (!task) return res.status(404).json({ error: 'Not found' });

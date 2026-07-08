@@ -91,7 +91,7 @@ function propertyForField(field) {
   }
 }
 
-router.post('/', meter('chat'), async (req, res) => {
+router.post('/', meter('chat', 'formAssist'), async (req, res) => {
   try {
     const { formType, fields, current, prompt, includeContacts } = req.body || {};
 

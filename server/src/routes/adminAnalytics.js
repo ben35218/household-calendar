@@ -1,0 +1,142 @@
+// Admin analytics: content-blind product-usage insights for the admin web app.
+// Everything here is metadata only (counts, timestamps, platforms) — no
+// household content, so it holds up under E2EE. Gated requireAuth + requireAdmin.
+//
+//   GET /api/admin/analytics/overview            → headline engagement + growth
+//   GET /api/admin/analytics/growth?weeks=12     → weekly new users + households
+//   GET /api/admin/analytics/platforms           → platform + version distribution
+//   GET /api/admin/analytics/usage?weeks=8        → fleet AI-usage series + chat surfaces
+//   GET /api/admin/analytics/activity?weeks=8     → fleet feature-activity + adoption
+//   GET /api/admin/analytics/retention?weeks=8    → still-active by signup cohort
+
+const express = require('express');
+const User = require('../models/User');
+const Household = require('../models/Household');
+const { requireAuth, requireAdmin } = require('../middleware/auth');
+const {
+  AI_ACTIONS, ACTIVITY_ACTIONS,
+  activeCounts, weeklyGrowth, rollupByPeriod, toSeries,
+  chatSurfaceTotals, adoption, distribution, cohortRetention,
+} = require('./adminAnalyticsHelpers');
+
+const router = express.Router();
+router.use(requireAuth, requireAdmin);
+
+const clampWeeks = (v, def) => Math.min(52, Math.max(1, Number.parseInt(v, 10) || def));
+const MIN_APP_VERSION = () => process.env.E2EE_MIN_APP_VERSION || null;
+
+// Headline numbers for the Overview page.
+router.get('/overview', async (_req, res) => {
+  try {
+    const now = Date.now();
+    const [users, households] = await Promise.all([
+      User.find({}, 'createdAt lastActiveAt householdId').lean(),
+      Household.find({}, 'createdAt plan').lean(),
+    ]);
+
+    const engagement = activeCounts(users.map((u) => u.lastActiveAt), { now });
+
+    // Households with ≥1 member active in the last 7 days (a household-level WAU).
+    const weekAgo = now - 7 * 24 * 60 * 60 * 1000;
+    const activeHouseholdIds = new Set(
+      users.filter((u) => u.householdId && u.lastActiveAt && new Date(u.lastActiveAt).getTime() >= weekAgo)
+        .map((u) => String(u.householdId))
+    );
+
+    const dayAgo = now - 24 * 60 * 60 * 1000;
+    const newUsers7d = users.filter((u) => new Date(u.createdAt).getTime() >= weekAgo).length;
+    const newHouseholds7d = households.filter((h) => new Date(h.createdAt).getTime() >= weekAgo).length;
+
+    res.json({
+      totals: {
+        users: users.length,
+        households: households.length,
+        paidHouseholds: households.filter((h) => h.plan && h.plan !== 'free').length,
+      },
+      engagement,
+      activeHouseholds7d: activeHouseholdIds.size,
+      newUsers7d,
+      newHouseholds7d,
+      newUsers24h: users.filter((u) => new Date(u.createdAt).getTime() >= dayAgo).length,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.get('/growth', async (req, res) => {
+  try {
+    const weeks = clampWeeks(req.query.weeks, 12);
+    const now = Date.now();
+    const [users, households] = await Promise.all([
+      User.find({}, 'createdAt').lean(),
+      Household.find({}, 'createdAt').lean(),
+    ]);
+    res.json({
+      weeks,
+      users: weeklyGrowth(users.map((u) => u.createdAt), { weeks, now }),
+      households: weeklyGrowth(households.map((h) => h.createdAt), { weeks, now }),
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.get('/platforms', async (_req, res) => {
+  try {
+    const users = await User.find({}, 'clientPlatform clientVersion').lean();
+    const min = MIN_APP_VERSION();
+    res.json({
+      platforms: distribution(users.map((u) => u.clientPlatform)),
+      versions: distribution(users.map((u) => u.clientVersion)),
+      minAppVersion: min,
+      reported: users.filter((u) => u.clientVersion).length,
+      total: users.length,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.get('/usage', async (req, res) => {
+  try {
+    const weeks = clampWeeks(req.query.weeks, 8);
+    const maps = (await Household.find({}, 'usage').lean()).map((h) => h.usage || {});
+    const perPeriod = rollupByPeriod(maps, { actions: AI_ACTIONS });
+    res.json({
+      actions: AI_ACTIONS,
+      ...toSeries(perPeriod, AI_ACTIONS, { weeks }),
+      chatBySurface: chatSurfaceTotals(maps),
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.get('/activity', async (req, res) => {
+  try {
+    const weeks = clampWeeks(req.query.weeks, 8);
+    const maps = (await Household.find({}, 'activity').lean()).map((h) => h.activity || {});
+    const perPeriod = rollupByPeriod(maps, { actions: ACTIVITY_ACTIONS });
+    res.json({
+      actions: ACTIVITY_ACTIONS,
+      ...toSeries(perPeriod, ACTIVITY_ACTIONS, { weeks }),
+      adoption: adoption(maps, ACTIVITY_ACTIONS),
+      households: maps.length,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.get('/retention', async (req, res) => {
+  try {
+    const weeks = clampWeeks(req.query.weeks, 8);
+    const users = await User.find({}, 'createdAt lastActiveAt').lean();
+    res.json({ weeks, cohorts: cohortRetention(users, { weeks, now: Date.now() }) });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+module.exports = router;

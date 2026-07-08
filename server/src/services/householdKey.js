@@ -17,6 +17,26 @@ function validateHDKEnvelope(body) {
   return null;
 }
 
+// A rotation payload (§5.2 lazy rotation): a new key version plus one sealed-box
+// envelope per remaining member — the HDK_vN+1 wrapped to each member's public
+// key. The server verifies only the *shape* here; the route additionally checks
+// the version is exactly current+1 and the envelopes cover the live member set.
+// Returns an error string if malformed, or null if valid.
+function validateRotation(body) {
+  if (!body || typeof body !== 'object') return 'invalid body';
+  if (!Number.isInteger(body.keyVersion) || body.keyVersion < 2) return 'invalid keyVersion';
+  if (!Array.isArray(body.envelopes) || body.envelopes.length === 0) return 'envelopes required';
+  const seen = new Set();
+  for (const e of body.envelopes) {
+    if (!e || typeof e !== 'object') return 'invalid envelope';
+    if (!isObjectId(String(e.userId || ''))) return 'invalid envelope userId';
+    if (!isB64(e.wrappedHDK)) return 'invalid envelope wrappedHDK';
+    if (seen.has(String(e.userId))) return 'duplicate envelope userId';
+    seen.add(String(e.userId));
+  }
+  return null;
+}
+
 // base64url with a generous cap for record ciphertext, which (unlike a fixed key
 // envelope) can be large — a long recipe or trip note. ~2 MB of base64 ≈ 1.5 MB
 // plaintext, well under Mongo's 16 MB document limit.
@@ -57,4 +77,4 @@ function pickRecordEnc(body) {
   return out;
 }
 
-module.exports = { validateHDKEnvelope, validateRecordEnvelope, isObjectId, pickRecordEnc };
+module.exports = { validateHDKEnvelope, validateRotation, validateRecordEnvelope, isObjectId, pickRecordEnc };

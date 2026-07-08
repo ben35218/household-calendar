@@ -12,6 +12,7 @@
 // tool result in place to strip private fields before it's sent back to the model.
 
 const { generateFollowups } = require('./chatSuggestions');
+const { recordTokens } = require('../middleware/usageMeter');
 
 async function streamChat(res, opts) {
   const {
@@ -26,7 +27,18 @@ async function streamChat(res, opts) {
     executeTool,
     collectSideEffects,
     maxTokens = 2048,
+    // req + action let us meter token usage. One chat = several Claude calls
+    // (initial + one per tool round-trip); we sum tokens across the whole loop
+    // and report the total to the client so it can show "tokens used".
+    req,
+    action = 'chat',
+    // Optional hook to force a fixed set of follow-up chips based on the side
+    // effects of this turn (e.g. show "Save this to my calendar" / "Edit in
+    // form" after the assistant drafts an event) instead of the generated ones.
+    // Return an array to override, or a falsy value to fall back to generation.
+    followupsOverride,
   } = opts;
+  let tokensUsed = 0;
 
   // Prompt caching: the system prompt + tool definitions are identical on every
   // turn, so cache them as one prefix (render order is tools → system, so a
@@ -69,6 +81,8 @@ async function streamChat(res, opts) {
       });
 
       const final = await stream.finalMessage();
+      // Meter this call's tokens against the weekly budget (best-effort).
+      if (req) { try { tokensUsed += await recordTokens(req, final.usage, action); } catch { /* never break chat */ } }
 
       if (final.stop_reason === 'end_turn') break;
 
@@ -99,8 +113,11 @@ async function streamChat(res, opts) {
       apiMessages.push({ role: 'user', content: toolResults });
     }
 
-    const followups = await generateFollowups(client, apiMessages, accumulated);
-    send('done', { reply: accumulated, followups, ...sideEffects });
+    const override = typeof followupsOverride === 'function' ? followupsOverride(sideEffects) : null;
+    const followups = Array.isArray(override) && override.length
+      ? override
+      : await generateFollowups(client, apiMessages, accumulated);
+    send('done', { reply: accumulated, followups, tokensUsed, ...sideEffects });
     res.end();
   } catch (err) {
     console.error('streamChat error:', err);

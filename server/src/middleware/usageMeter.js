@@ -17,6 +17,7 @@
 // slip one extra call past the cap).
 
 const Household = require('../models/Household');
+const User = require('../models/User');
 const MonetizationConfig = require('../models/MonetizationConfig');
 
 const TIER_ORDER = ['free', 'premium', 'unlimited'];
@@ -93,51 +94,185 @@ function nextTier(plan) {
   return i >= 0 && i < TIER_ORDER.length - 1 ? TIER_ORDER[i + 1] : null;
 }
 
-function meter(action) {
+// Pooled (paid-tier) usage a household has actually consumed this period: the raw
+// counter minus any baseline captured at a mid-week upgrade. The baseline only
+// exists for the period an upgrade landed in, so other periods pass through raw.
+function effectiveUsage(household, period, action) {
+  const raw = household?.usage?.[period]?.[action] || 0;
+  const base = household?.usageBaseline?.[period]?.[action] || 0;
+  return Math.max(0, raw - base);
+}
+
+// Full per-action effective usage map for a period (for billing/status display).
+// Drops the `breakdown` analytics sub-object; it isn't a quota bucket.
+function effectivePeriodUsage(household, period) {
+  const raw = household?.usage?.[period] || {};
+  const out = {};
+  for (const [action, count] of Object.entries(raw)) {
+    if (action === 'breakdown') continue;
+    out[action] = effectiveUsage(household, period, action);
+  }
+  return out;
+}
+
+// ── Token metering (the enforced weekly budget) ──────────────────────────────
+// Total tokens an API response consumed: input + output + cache read + write.
+// This is the literal "tokens used" the app shows and meters against.
+function totalTokens(usage) {
+  if (!usage) return 0;
+  return (usage.input_tokens || 0)
+    + (usage.output_tokens || 0)
+    + (usage.cache_creation_input_tokens || 0)
+    + (usage.cache_read_input_tokens || 0);
+}
+
+// Pooled (paid-tier) tokens this period: raw minus any mid-week upgrade baseline.
+function effectiveTokens(household, period) {
+  const raw = household?.usageTokens?.[period]?.tokens || 0;
+  const base = household?.usageTokensBaseline?.[period]?.tokens || 0;
+  return Math.max(0, raw - base);
+}
+
+// Tokens enforced against this caller for the period: per-user on free, pooled
+// on paid — mirrors the count-scope model.
+function enforcedTokens(req, period) {
+  const plan = req.household?.plan || 'free';
+  if (plan === 'free') return req.user?.usageTokens?.[period]?.tokens || 0;
+  return effectiveTokens(req.household, period);
+}
+
+// Record tokens an AI call consumed. Always bumps the household pool (analytics +
+// paid enforcement); on free also bumps the per-user counter (free enforcement).
+// `action` gets a per-action token split for analytics. Fire-and-forget; returns
+// the token count so handlers can echo `tokensUsed` back to the client.
+async function recordTokens(req, usage, action = null) {
+  const t = totalTokens(usage);
+  if (!t) return 0;
+  const period = currentPeriodKey();
+  const household = req.household;
+  const user = req.user;
+  const perUser = (household?.plan || 'free') === 'free';
+  if (household?._id) {
+    const inc = { [`usageTokens.${period}.tokens`]: t };
+    if (action) inc[`usageTokens.${period}.byAction.${action}`] = t;
+    Household.updateOne({ _id: household._id }, { $inc: inc })
+      .catch((err) => console.error('[recordTokens] household inc failed:', err.message));
+  }
+  if (perUser && user?._id) {
+    User.updateOne({ _id: user._id }, { $inc: { [`usageTokens.${period}.tokens`]: t } })
+      .catch((err) => console.error('[recordTokens] user inc failed:', err.message));
+  }
+  return t;
+}
+
+function isUpgrade(oldPlan, newPlan) {
+  return TIER_ORDER.indexOf(newPlan) > TIER_ORDER.indexOf(oldPlan);
+}
+
+// `$set` fragment that resets the pooled weekly budget when a household moves to a
+// higher tier ("fresh pool on upgrade"): baseline the current period to its raw
+// counts/tokens so effective usage restarts at 0. Only a strict upgrade qualifies,
+// so downgrading can't wipe the counter. Returns {} for non-upgrades.
+function upgradeBaselineUpdate(household, newPlan) {
+  const oldPlan = household?.plan || 'free';
+  if (!isUpgrade(oldPlan, newPlan)) return {};
+  const period = currentPeriodKey();
+  const snapshot = { ...(household?.usage?.[period] || {}) };
+  delete snapshot.breakdown;
+  const tokenSnapshot = { ...(household?.usageTokens?.[period] || {}) };
+  delete tokenSnapshot.byAction;
+  return {
+    usageBaseline: { [period]: snapshot },
+    usageTokensBaseline: { [period]: tokenSnapshot },
+  };
+}
+
+// `action` is the quota bucket (chat/scan/generation/manualParse/aiHelper).
+// Optional `surface` records a finer-grained analytics label (e.g. which chat
+// surface) under a separate `breakdown` path — additive only, it never affects
+// quota enforcement, so a metered action's cap is always on the coarse bucket.
+//
+// Enforcement scope depends on the plan:
+//   - free: per USER (req.user.usage). Each member gets their own free allowance,
+//     so a family member joining doesn't shrink everyone's quota. Also means solo
+//     free users (no household) are tracked properly now.
+//   - paid: per HOUSEHOLD (household.usage) — one subscription funds a shared pool.
+// The household counter is ALWAYS incremented (even on free) so the admin
+// analytics fleet totals/breakdown stay complete regardless of tier.
+function meter(action, surface = null) {
   return async function usageMeter(req, res, next) {
     try {
-      // No household = solo user who hasn't joined one. Treat as free tier,
-      // keyed by their own id so quotas still apply.
       const household = req.household;
+      const user = req.user;
       const plan = household?.plan || 'free';
+      const perUser = plan === 'free';
 
       const config = await getConfig();
       const tier = config.tiers?.[plan] || config.tiers?.free || {};
-      const quota = tier.quotas ? tier.quotas[action] : null;
 
       const period = currentPeriodKey();
 
-      // Unlimited (null) → track only, never block.
-      if (quota !== null && quota !== undefined) {
-        const used = household?.usage?.[period]?.[action] || 0;
-        if (used >= quota) {
+      // The enforced cap is the weekly TOKEN budget (null = unlimited). We only
+      // know a call's token cost AFTER it runs, so this is a pre-check on the
+      // running total: once at/over budget, the NEXT AI call is blocked. Per-user
+      // on free, pooled on paid.
+      const limit = tier.weeklyTokenLimit;
+      if (limit != null) {
+        const used = enforcedTokens(req, period);
+        if (used >= limit) {
           return res.status(402).json({
-            error: 'You’ve reached your weekly limit for this feature.',
-            code: 'QUOTA_EXCEEDED',
+            error: 'You’ve reached your weekly AI limit. Upgrade for more.',
+            code: 'TOKENS_EXCEEDED',
             action,
             plan,
-            limit: quota,
+            scope: perUser ? 'user' : 'household',
+            limit,
             used,
+            pct: Math.min(100, Math.round((used / limit) * 100)),
             upgradeTo: nextTier(plan),
           });
         }
       }
 
-      // Increment on success only. We need a household to attribute usage to;
-      // if there's none, skip the write (solo users get free quotas above but
-      // aren't tracked persistently — acceptable pre-launch).
-      if (household?._id) {
-        res.on('finish', () => {
-          if (res.statusCode >= 200 && res.statusCode < 300) {
-            Household.updateOne(
-              { _id: household._id },
-              { $inc: { [`usage.${period}.${action}`]: 1 } }
-            ).catch((err) => console.error('[usageMeter] increment failed:', err.message));
-          }
-        });
-      }
+      // Increment the per-action COUNT on success (analytics only — no longer a
+      // cap). Token consumption is recorded separately by recordTokens() in each
+      // AI handler, since token cost is known only after the Claude call returns.
+      res.on('finish', () => {
+        if (res.statusCode < 200 || res.statusCode >= 300) return;
+        // Household counter (analytics fleet totals + paid-tier enforcement).
+        if (household?._id) {
+          const inc = { [`usage.${period}.${action}`]: 1 };
+          // Also track the finer-grained surface, when provided, so the admin
+          // app can break "chat" down by feature area without changing quotas.
+          if (surface) inc[`usage.${period}.breakdown.${action}.${surface}`] = 1;
+          Household.updateOne(
+            { _id: household._id },
+            { $inc: inc }
+          ).catch((err) => console.error('[usageMeter] household increment failed:', err.message));
+        }
+        // Per-user counter drives free-tier enforcement + display.
+        if (perUser && user?._id) {
+          User.updateOne(
+            { _id: user._id },
+            { $inc: { [`usage.${period}.${action}`]: 1 } }
+          ).catch((err) => console.error('[usageMeter] user increment failed:', err.message));
+        }
+      });
 
-      next();
+      // Auto-attach the tokens this request consumed to JSON responses, so the
+      // one-shot AI endpoints report `tokensUsed` without per-handler edits.
+      const { withMeter, meteredTokens } = require('../services/aiUsage');
+      const origJson = res.json.bind(res);
+      res.json = (body) => {
+        if (body && typeof body === 'object' && !Array.isArray(body)
+            && body.tokensUsed === undefined && meteredTokens() > 0) {
+          body.tokensUsed = meteredTokens();
+        }
+        return origJson(body);
+      };
+      // Run the rest of the request inside a metering context so the patched
+      // Anthropic client records token usage for every AI call it makes.
+      withMeter(req, action, () => next());
     } catch (err) {
       console.error('[usageMeter] error:', err.message);
       // Fail open: never let a metering bug take down a feature.
@@ -179,4 +314,9 @@ const mapsSweep = setInterval(() => {
 }, 60 * 60 * 1000);
 if (typeof mapsSweep.unref === 'function') mapsSweep.unref();
 
-module.exports = { meter, mapsGuard, getConfig, invalidateConfigCache, currentPeriodKey, nextPeriodResetAt, nextTier, TIER_ORDER };
+module.exports = {
+  meter, mapsGuard, getConfig, invalidateConfigCache, currentPeriodKey, nextPeriodResetAt,
+  nextTier, TIER_ORDER, effectivePeriodUsage, upgradeBaselineUpdate,
+  // Token metering
+  recordTokens, totalTokens, effectiveTokens, enforcedTokens,
+};

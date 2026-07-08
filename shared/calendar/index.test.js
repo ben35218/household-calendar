@@ -115,9 +115,14 @@ test('assemble filters, expands, and shapes the full CalendarData', () => {
   // Birthday: self labelled "you", people without a birthday dropped.
   assert.equal(data.birthdays.length, 1);
   assert.equal(data.birthdays[0].relationship, 'you');
-  // Recipe schedule kept + a grocery week derived.
+  // Recipe schedule kept.
   assert.equal(data.recipes.length, 1);
-  assert.equal(data.groceryShopping.length, 1);
+  // Grocery day recurs weekly across the range: Saturdays Jan 3,10,17,24,31.
+  assert.equal(data.groceryShopping.length, 5);
+  assert.deepEqual(
+    data.groceryShopping.map(g => g.date),
+    ['2026-01-03', '2026-01-10', '2026-01-17', '2026-01-24', '2026-01-31'],
+  );
   // Trip overlay present.
   assert.equal(data.trips.length, 1);
   assert.equal(data.trips[0].ranges.length, 1);

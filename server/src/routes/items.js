@@ -5,6 +5,7 @@ const Item = require('../models/Item');
 const Manual = require('../models/Manual');
 const { requireAuth } = require('../middleware/auth');
 const { meter } = require('../middleware/usageMeter');
+const { activity } = require('../middleware/activity');
 
 const router = express.Router();
 router.use(requireAuth);
@@ -92,7 +93,7 @@ router.get('/', async (req, res) => {
   }
 });
 
-router.post('/', async (req, res) => {
+router.post('/', activity('itemAdded'), async (req, res) => {
   try {
     const item = await Item.create({ ...req.body, userId: req.user._id });
     res.status(201).json(item);

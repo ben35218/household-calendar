@@ -25,13 +25,37 @@ const DROP_FIELDS = {
   Household:      ['homeAddress'],
 };
 
-function computeReadiness({ members = [], envelopes = [], currentKeyVersion = 0 }) {
+// Compare dotted numeric versions ("1.4.0" vs "1.10.2"). Returns -1/0/1.
+// Non-numeric/missing segments count as 0. Used for the min-app-version gate.
+function compareVersions(a, b) {
+  const pa = String(a || '').split('.').map((n) => parseInt(n, 10) || 0);
+  const pb = String(b || '').split('.').map((n) => parseInt(n, 10) || 0);
+  const len = Math.max(pa.length, pb.length);
+  for (let i = 0; i < len; i++) {
+    const x = pa[i] || 0;
+    const y = pb[i] || 0;
+    if (x !== y) return x < y ? -1 : 1;
+  }
+  return 0;
+}
+
+// A member's reported client version satisfies the gate when it's >= the
+// required minimum. An unset requirement passes everyone; an unset client
+// version (member hasn't reported one) fails so we don't drop on unknown apps.
+function versionSatisfied(clientVersion, minAppVersion) {
+  if (!minAppVersion) return true;
+  if (!clientVersion) return false;
+  return compareVersions(clientVersion, minAppVersion) >= 0;
+}
+
+function computeReadiness({ members = [], envelopes = [], currentKeyVersion = 0, minAppVersion = null }) {
   const perMember = members.map((m) => {
     const enrolled = !!m.identityPublicKey;
     const hasEnvelope = envelopes.some(
       (e) => String(e.userId) === String(m._id) && Number(e.keyVersion) === Number(currentKeyVersion),
     );
-    return { userId: String(m._id), email: m.email, enrolled, hasEnvelope };
+    const versionOk = versionSatisfied(m.clientVersion, minAppVersion);
+    return { userId: String(m._id), email: m.email, enrolled, hasEnvelope, clientVersion: m.clientVersion || null, versionOk };
   });
 
   const reasons = [];
@@ -40,11 +64,18 @@ function computeReadiness({ members = [], envelopes = [], currentKeyVersion = 0 
   for (const pm of perMember) {
     if (!pm.enrolled) reasons.push(`${pm.email || pm.userId} has not enrolled keys`);
     else if (!pm.hasEnvelope) reasons.push(`${pm.email || pm.userId} has no key envelope for v${currentKeyVersion}`);
+    if (minAppVersion && !pm.versionOk) {
+      reasons.push(`${pm.email || pm.userId} is on app ${pm.clientVersion || 'unknown'} (needs ${minAppVersion})`);
+    }
   }
 
   return {
-    ready: currentKeyVersion >= 1 && members.length > 0 && perMember.every((pm) => pm.enrolled && pm.hasEnvelope),
+    ready:
+      currentKeyVersion >= 1 &&
+      members.length > 0 &&
+      perMember.every((pm) => pm.enrolled && pm.hasEnvelope && pm.versionOk),
     currentKeyVersion,
+    minAppVersion: minAppVersion || null,
     perMember,
     reasons,
   };
@@ -59,4 +90,4 @@ function dropUnsetFor(collection) {
   return unset;
 }
 
-module.exports = { computeReadiness, dropUnsetFor, DROP_FIELDS };
+module.exports = { computeReadiness, dropUnsetFor, DROP_FIELDS, compareVersions, versionSatisfied };

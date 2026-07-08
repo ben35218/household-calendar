@@ -7,8 +7,11 @@ const AuditLog = require('../models/AuditLog');
 const { requireAuth } = require('../middleware/auth');
 const { rateLimit } = require('../middleware/rateLimit');
 const { dedupeCategoriesForScope } = require('../services/dedupeCategories');
-const { validateHDKEnvelope } = require('../services/householdKey');
-const { computeReadiness } = require('../services/dropReadiness');
+const { validateHDKEnvelope, validateRotation, pickRecordEnc } = require('../services/householdKey');
+const { computeReadiness, DROP_FIELDS } = require('../services/dropReadiness');
+const { cancelDeletionSet } = require('../services/cloudDeletion');
+const { CONTENT_MODELS } = require('../services/contentModels');
+const { sharedTripIds, excludeSharedFilter } = require('../services/tripSharing');
 
 const router = express.Router();
 router.use(requireAuth);
@@ -26,15 +29,25 @@ async function membersOf(householdId) {
 }
 
 // After a member leaves a household: delete it if now empty, otherwise transfer
-// ownership to a remaining member if the departing user was the owner.
+// ownership to a remaining member if the departing user was the owner, and flag
+// a key rotation so the departed member can't read future writes (§5.2). The
+// departed member's stale envelopes are dropped — they're no longer a member.
 async function handleDeparture(householdId, departedUserId) {
   if (!householdId) return;
   const members = await User.find({ householdId }, '_id').sort('createdAt').lean();
-  if (!members.length) { await Household.deleteOne({ _id: householdId }); return; }
-  const hh = await Household.findById(householdId);
-  if (hh && String(hh.ownerId) === String(departedUserId)) {
-    await Household.updateOne({ _id: householdId }, { $set: { ownerId: members[0]._id } });
+  if (!members.length) {
+    await Household.deleteOne({ _id: householdId });
+    await HouseholdKeyEnvelope.deleteMany({ householdId });
+    return;
   }
+  const hh = await Household.findById(householdId);
+  const update = {};
+  if (hh && String(hh.ownerId) === String(departedUserId)) update.ownerId = members[0]._id;
+  // Only rotate a household that actually has a key; a keyless one has nothing to
+  // protect yet (its v1 mint will simply exclude the departed member).
+  if (hh && (hh.currentKeyVersion || 0) >= 1) update.keyRotationPending = true;
+  if (Object.keys(update).length) await Household.updateOne({ _id: householdId }, { $set: update });
+  await HouseholdKeyEnvelope.deleteMany({ householdId, userId: departedUserId });
 }
 
 // Current household + members.
@@ -63,13 +76,87 @@ router.get('/e2ee/readiness', async (req, res) => {
   try {
     if (!req.household) return res.status(404).json({ error: 'No household' });
     const [members, envelopes] = await Promise.all([
-      User.find({ householdId: req.household._id }).select('email identityPublicKey').lean(),
+      User.find({ householdId: req.household._id }).select('email identityPublicKey clientVersion clientPlatform').lean(),
       HouseholdKeyEnvelope.find({ householdId: req.household._id }).select('userId keyVersion').lean(),
     ]);
     res.json({
       e2eeActive: !!req.household.e2eeActive,
-      ...computeReadiness({ members, envelopes, currentKeyVersion: req.household.currentKeyVersion }),
+      ...computeReadiness({
+        members,
+        envelopes,
+        currentKeyVersion: req.household.currentKeyVersion,
+        minAppVersion: process.env.E2EE_MIN_APP_VERSION || null,
+      }),
     });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// §9 straggler re-encrypt pass. Records created before dual-write (or minted
+// server-side, e.g. from a template) lack an `enc` blob and would be lost at the
+// drop. This returns, per collection, the plaintext content fields of records
+// missing ciphertext, so the owner's device can seal them under the current HDK
+// and POST them back to /e2ee/seal. Household-scoped; capped per collection.
+router.get('/e2ee/stragglers', async (req, res) => {
+  try {
+    if (!req.household) return res.status(404).json({ error: 'No household' });
+    const LIMIT = 500;
+    const collections = [];
+    let total = 0;
+    // Shared trips (and their items) stay plaintext for cross-household
+    // collaborators, so they're not stragglers — never offer them for sealing.
+    const sharedIds = await sharedTripIds(CONTENT_MODELS.Trip, req.scopeIds);
+    for (const [collection, Model] of Object.entries(CONTENT_MODELS)) {
+      const fields = DROP_FIELDS[collection];
+      if (!fields) continue;
+      const projection = fields.reduce((p, f) => ((p[f] = 1), p), { keyVersion: 1 });
+      const rows = await Model.find({
+        userId: { $in: req.scopeIds },
+        ...excludeSharedFilter(collection, sharedIds),
+        $or: [{ enc: { $exists: false } }, { enc: null }],
+      }).select(projection).limit(LIMIT).lean();
+      if (rows.length) { collections.push({ collection, fields, records: rows }); total += rows.length; }
+    }
+    res.json({ total, collections });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Write a client-sealed `enc` blob onto an existing record (the seal step of the
+// straggler pass). Content-blind: validates the ciphertext shape + collection
+// allowlist + household scope, and sets only enc/keyVersion.
+router.post('/e2ee/seal', async (req, res) => {
+  try {
+    if (!req.household) return res.status(404).json({ error: 'No household' });
+    const { collection, _id } = req.body || {};
+    const Model = CONTENT_MODELS[collection];
+    if (!Model) return res.status(400).json({ error: 'unknown collection' });
+    let encFields;
+    try { encFields = pickRecordEnc(req.body); } catch (msg) { return res.status(400).json({ error: String(msg) }); }
+    if (!encFields.enc) return res.status(400).json({ error: 'enc required' });
+    const r = await Model.updateOne(
+      { _id, userId: { $in: req.scopeIds } },
+      { $set: encFields },
+    );
+    if (!r.matchedCount) return res.status(404).json({ error: 'record not found in your household' });
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Clients report their app version so the readiness gate can confirm every
+// member is on a compatible build before the drop (§9). Idempotent stamp.
+router.post('/e2ee/client-version', async (req, res) => {
+  try {
+    const { version, platform } = req.body || {};
+    if (!version) return res.status(400).json({ error: 'version required' });
+    await User.updateOne({ _id: req.user._id }, {
+      $set: { clientVersion: String(version), clientPlatform: platform || undefined, clientVersionAt: new Date() },
+    });
+    res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -103,6 +190,10 @@ router.get('/key', async (req, res) => {
       householdId: req.household._id,
       currentKeyVersion: req.household.currentKeyVersion || 0,
       isOwner: String(req.household.ownerId) === String(req.user._id),
+      // Signals the client to drive a lazy rotation (§5.2) after unlock.
+      keyRotationPending: !!req.household.keyRotationPending,
+      // All the caller's envelopes across versions — the client unwraps each so
+      // it can still decrypt historical records sealed under an older HDK.
       envelopes: envelopes.map((e) => ({ keyVersion: e.keyVersion, wrappedHDK: e.wrappedHDK })),
     });
   } catch (err) {
@@ -141,6 +232,106 @@ router.post('/key', async (req, res) => {
       userId: req.user._id, householdId: req.household._id, event: 'hdk_minted', meta: { keyVersion: 1 },
     });
     res.status(201).json({ keyVersion: 1 });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Member removal + lazy HDK rotation (Phase 7 / §5.2) ──────────────────────
+
+// The identity public keys of the current household members (those who've
+// enrolled), so a rotating member can wrap the new HDK to everyone at once.
+router.get('/member-keys', async (req, res) => {
+  try {
+    if (!req.household) return res.status(404).json({ error: 'No household' });
+    const members = await User.find(
+      { householdId: req.household._id, identityPublicKey: { $exists: true, $ne: null } },
+      '_id identityPublicKey',
+    ).lean();
+    res.json(members.map((m) => ({ userId: m._id, identityPublicKey: m.identityPublicKey })));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Owner removes another member: the member is moved to a fresh solo household
+// (their own records travel with them, scoped by userId) and this household is
+// flagged for rotation via handleDeparture so the removed member can't read
+// future writes. The owner cannot remove themselves — they use /leave.
+router.post('/members/:userId/remove', async (req, res) => {
+  try {
+    if (!req.household) return res.status(404).json({ error: 'No household' });
+    if (String(req.household.ownerId) !== String(req.user._id)) {
+      return res.status(403).json({ error: 'Only the household owner can remove members' });
+    }
+    const targetId = req.params.userId;
+    if (String(targetId) === String(req.user._id)) {
+      return res.status(400).json({ error: 'Use “leave household” to remove yourself' });
+    }
+    const target = await User.findOne({ _id: targetId, householdId: req.household._id }, 'firstName');
+    if (!target) return res.status(404).json({ error: 'That member is not in your household' });
+
+    const oldId = req.household._id;
+    const fresh = await Household.createForOwner(target._id, `${target.firstName}'s Household`);
+    await User.updateOne({ _id: target._id }, { $set: { householdId: fresh._id } });
+    await JoinRequest.deleteMany({ requesterUserId: target._id, status: 'pending' });
+    await handleDeparture(oldId, target._id);
+    await AuditLog.create({
+      userId: target._id, householdId: oldId, event: 'member_removed', meta: { removedBy: req.user._id },
+    });
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Complete a lazy rotation: a remaining member generated a fresh HDK_vN+1 and
+// wrapped it to every current member. We atomically bump currentKeyVersion
+// (compare-and-set on version = keyVersion-1, so concurrent rotations can't both
+// win), write the new-version envelopes, and clear the pending flag. Old-version
+// envelopes are kept — remaining members still read historical records with them.
+router.post('/key/rotate', async (req, res) => {
+  try {
+    if (!req.household) return res.status(404).json({ error: 'No household' });
+    const current = req.household.currentKeyVersion || 0;
+    if (current < 1) return res.status(409).json({ error: 'Household key is not ready yet' });
+
+    const err = validateRotation(req.body);
+    if (err) return res.status(400).json({ error: err });
+    if (req.body.keyVersion !== current + 1) {
+      return res.status(409).json({ error: 'Key version moved — please retry' });
+    }
+
+    // The envelopes must cover every current member that can hold a key; refuse a
+    // partial rotation that would lock someone out.
+    const members = await User.find(
+      { householdId: req.household._id, identityPublicKey: { $exists: true, $ne: null } },
+      '_id',
+    ).lean();
+    const provided = new Set(req.body.envelopes.map((e) => String(e.userId)));
+    const missing = members.filter((m) => !provided.has(String(m._id)));
+    if (missing.length) return res.status(400).json({ error: 'Rotation must cover every enrolled member' });
+
+    // Compare-and-set the version so only one rotation from `current` wins.
+    const claimed = await Household.findOneAndUpdate(
+      { _id: req.household._id, currentKeyVersion: current },
+      { $set: { currentKeyVersion: req.body.keyVersion, keyRotationPending: false } },
+    );
+    if (!claimed) return res.status(409).json({ error: 'Key already rotated — please retry' });
+
+    await Promise.all(req.body.envelopes.map((e) => HouseholdKeyEnvelope.updateOne(
+      { householdId: req.household._id, userId: e.userId, keyVersion: req.body.keyVersion },
+      {
+        $set: { wrappedHDK: e.wrappedHDK, wrappedByUserId: req.user._id },
+        $setOnInsert: { householdId: req.household._id, userId: e.userId, keyVersion: req.body.keyVersion },
+      },
+      { upsert: true },
+    )));
+    await AuditLog.create({
+      userId: req.user._id, householdId: req.household._id, event: 'hdk_rotated',
+      meta: { keyVersion: req.body.keyVersion },
+    });
+    res.json({ ok: true, keyVersion: req.body.keyVersion });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -259,7 +450,10 @@ router.post('/join-requests/:id/approve', async (req, res) => {
 
     // The requester's live key must still match what the approver verified and
     // wrapped to; otherwise the key changed mid-flight and we refuse.
-    const requester = await User.findById(request.requesterUserId, 'identityPublicKey householdId');
+    const requester = await User.findById(
+      request.requesterUserId,
+      'identityPublicKey householdId storageMode cloudDeletionState',
+    );
     if (!requester) return res.status(404).json({ error: 'Requester no longer exists' });
     if (requester.identityPublicKey !== request.requesterPublicKey) {
       return res.status(409).json({ error: 'Requester key changed — ask them to request again' });
@@ -275,9 +469,18 @@ router.post('/join-requests/:id/approve', async (req, res) => {
     );
 
     // Move the requester into this household (their own data comes with them) and
-    // clean up the household they left.
+    // clean up the household they left. §6.4 local→household: a member can't be
+    // local-only, so if the joiner had a pending local purge, cancel it and put
+    // them back on cloud sync (their data is now shared with the household).
     const oldId = requester.householdId;
-    await User.updateOne({ _id: requester._id }, { $set: { householdId: req.household._id } });
+    const wasPurgeScheduled = requester.cloudDeletionState === 'scheduled';
+    await User.updateOne(
+      { _id: requester._id },
+      { $set: { householdId: req.household._id, ...cancelDeletionSet() } },
+    );
+    if (wasPurgeScheduled) {
+      await AuditLog.create({ userId: requester._id, householdId: req.household._id, event: 'deletion_canceled' });
+    }
     if (String(oldId) !== String(req.household._id)) await handleDeparture(oldId, requester._id);
 
     // Merge the joiner's default categories into the destination set so identical

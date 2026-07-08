@@ -12,7 +12,10 @@ const { randomInt } = require('crypto');
 const { requireAuth } = require('../middleware/auth');
 const { rateLimit } = require('../middleware/rateLimit');
 const { meter } = require('../middleware/usageMeter');
+const { activity } = require('../middleware/activity');
 const { isObjectId, pickRecordEnc } = require('../services/householdKey');
+const { DROP_FIELDS } = require('../services/dropReadiness');
+const { isTripShared } = require('../services/tripSharing');
 const { resolvePlaceWithTz } = require('../services/geo');
 const { getRates, convert } = require('../services/fx');
 
@@ -580,7 +583,7 @@ router.delete('/:id/settle-payments/:paymentId', async (req, res) => {
   }
 });
 
-router.post('/', async (req, res) => {
+router.post('/', activity('tripCreated'), async (req, res) => {
   try {
     let enc;
     try { enc = pickRecordEnc(req.body); }
@@ -600,9 +603,19 @@ router.put('/:id', async (req, res) => {
     let enc;
     try { enc = pickRecordEnc(req.body); }
     catch (msg) { return res.status(400).json({ error: msg }); }
+    // A shared trip must stay plaintext-readable for cross-household collaborators
+    // (§9.3) — never let an edit re-introduce ciphertext. If this trip is shared,
+    // drop the incoming enc and clear any that lingered.
+    let unset;
+    if (enc.enc) {
+      const existing = await Trip.findOne({ _id: req.params.id, ...accessFilter(req) })
+        .select('shareCode collaborators').lean();
+      if (existing && isTripShared(existing)) { enc = {}; unset = { enc: 1, keyVersion: 1 }; }
+    }
+    const set = { ...pick(req.body, TRIP_FIELDS), ...enc };
     const trip = await Trip.findOneAndUpdate(
       { _id: req.params.id, ...accessFilter(req) },
-      { ...pick(req.body, TRIP_FIELDS), ...enc },
+      unset ? { $set: set, $unset: unset } : set,
       { new: true },
     );
     if (!trip) return res.status(404).json({ error: 'Not found' });
@@ -638,8 +651,12 @@ router.post('/:id/items', async (req, res) => {
       tripId: trip._id,
     });
     applyItemBody(item, req.body, req.user.householdId);
-    try { Object.assign(item, pickRecordEnc(req.body)); }
-    catch (msg) { return res.status(400).json({ error: msg }); }
+    // A shared trip stays plaintext-readable for collaborators (§9.3): never seal
+    // its items. Private-trip items keep the client's ciphertext as usual.
+    try {
+      if (isTripShared(trip)) { item.enc = undefined; item.keyVersion = undefined; }
+      else Object.assign(item, pickRecordEnc(req.body));
+    } catch (msg) { return res.status(400).json({ error: msg }); }
     await item.save();
     res.status(201).json(item);
   } catch (err) {
@@ -649,7 +666,8 @@ router.post('/:id/items', async (req, res) => {
 
 router.put('/:id/items/:itemId', async (req, res) => {
   try {
-    if (!await requireTripAccess(req, res)) return;
+    const trip = await requireTripAccess(req, res);
+    if (!trip) return;
     const item = await TripItem.findOne({ _id: req.params.itemId, tripId: req.params.id });
     if (!item || !canSeeItem(item, req.user.householdId)) return res.status(404).json({ error: 'Not found' });
     // Only the household that created a booking can make it private (which would
@@ -658,8 +676,11 @@ router.put('/:id/items/:itemId', async (req, res) => {
       return res.status(403).json({ error: 'Only the household that created this booking can make it private' });
     }
     const removedKeys = applyItemBody(item, req.body, req.user.householdId);
-    try { Object.assign(item, pickRecordEnc(req.body)); }
-    catch (msg) { return res.status(400).json({ error: msg }); }
+    // A shared trip's items stay plaintext (§9.3); private-trip items keep enc.
+    try {
+      if (isTripShared(trip)) { item.enc = undefined; item.keyVersion = undefined; }
+      else Object.assign(item, pickRecordEnc(req.body));
+    } catch (msg) { return res.status(400).json({ error: msg }); }
     await item.save();
     // Unlink files of families that were dropped from the booking.
     for (const key of removedKeys) {
@@ -929,11 +950,54 @@ router.post('/:id/items/from-confirmation', meter('scan'), memoryUpload.single('
 
 // ── Sharing a trip with anyone (collaborators) ───────────────────────────────────
 
+// Whitelist a client-decrypted record's content fields for the decrypt-on-share
+// re-write. DROP_FIELDS is the authoritative encrypt-subset map (mirrors what the
+// client seals), so this writes back exactly what the drop had nulled.
+function pickPlaintextForShare(collection, src) {
+  const out = {};
+  for (const f of DROP_FIELDS[collection] || []) {
+    if (src && src[f] !== undefined) out[f] = src[f];
+  }
+  return out;
+}
+
 // Enable sharing — returns (creating if needed) the trip's share code. Household only.
 router.post('/:id/share', async (req, res) => {
   try {
     const trip = await Trip.findOne({ _id: req.params.id, ...ownerFilter(req) });
     if (!trip) return res.status(404).json({ error: 'Not found' });
+
+    // Cross-household collaborators hold no HDK, so a shared trip must be readable
+    // as plaintext. Pre-drop the plaintext is always present (dual-write), so
+    // sharing just works. Post-drop a private trip is ciphertext-only — the
+    // owner's device decrypts the trip + its items and posts them back here
+    // (decrypt-on-share), and we re-write them as plaintext, clearing `enc`,
+    // before minting the share code. See services/tripSharing.js / §9.3.
+    if (req.household?.e2eeActive && !trip.shareCode) {
+      const decrypted = req.body?.decrypted;
+      if (!decrypted || typeof decrypted.trip !== 'object') {
+        return res.status(409).json({
+          error: 'decrypt_required',
+          message: 'This trip is end-to-end encrypted. Confirm to make it readable for the people you share it with.',
+        });
+      }
+      const shareCode = genShareCode();
+      // Re-write the trip as plaintext + share code, dropping its ciphertext.
+      await Trip.updateOne(
+        { _id: trip._id },
+        { $set: { ...pickPlaintextForShare('Trip', decrypted.trip), shareCode }, $unset: { enc: 1, keyVersion: 1 } },
+      );
+      // Re-write each of its items as plaintext too (scoped to this trip).
+      for (const it of Array.isArray(decrypted.items) ? decrypted.items : []) {
+        if (!isObjectId(String(it?._id || ''))) continue;
+        await TripItem.updateOne(
+          { _id: it._id, tripId: trip._id },
+          { $set: pickPlaintextForShare('TripItem', it), $unset: { enc: 1, keyVersion: 1 } },
+        );
+      }
+      return res.json({ shareCode });
+    }
+
     if (!trip.shareCode) { trip.shareCode = genShareCode(); await trip.save(); }
     res.json({ shareCode: trip.shareCode });
   } catch (err) {

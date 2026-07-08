@@ -1,6 +1,6 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { buildForecast, isMowingDay, WMO_DESCRIPTIONS } = require('./index');
+const { buildForecast, isMowingDay, WMO_DESCRIPTIONS, buildRangeRecords, buildOutlook } = require('./index');
 
 test('isMowingDay: dry day is good, wet day is not', () => {
   assert.equal(isMowingDay(0, 10, 0), true);
@@ -56,4 +56,46 @@ test('buildForecast tolerates a missing current block', () => {
 test('WMO table has the common codes', () => {
   assert.equal(WMO_DESCRIPTIONS[0], 'Clear sky');
   assert.equal(WMO_DESCRIPTIONS[95], 'Thunderstorm');
+});
+
+test('buildRangeRecords merges archive + forecast, forecast wins overlaps, clipped to range', () => {
+  const archiveRaw = {
+    daily: {
+      time: ['2026-07-04', '2026-07-05', '2026-07-06'],
+      weather_code: [0, 61, 3],
+      temperature_2m_max: [24, 20, 22],
+      temperature_2m_min: [13, 12, 14],
+      precipitation_sum: [0, 9, 1],
+      wind_speed_10m_max: [10, 18, 12],
+    },
+  };
+  const forecast = [
+    { date: '2026-07-06', weatherCode: 1, description: 'Mainly clear', tempMax: 26, tempMin: 15, precipSum: 0, precipProbability: 5, windMax: 11, goodWeather: true, hours: [] },
+    { date: '2026-07-07', weatherCode: 2, description: 'Partly cloudy', tempMax: 27, tempMin: 16, precipSum: 0, precipProbability: 10, windMax: 9, goodWeather: true, hours: [] },
+  ];
+  const recs = buildRangeRecords({ archiveRaw, forecast, from: '2026-07-05', to: '2026-07-07' });
+  assert.deepEqual(recs.map((r) => r.date), ['2026-07-05', '2026-07-06', '2026-07-07']); // 07-04 clipped out
+  assert.equal(recs[0].precipProbability, null);       // archive day (no prob)
+  assert.equal(recs[1].weatherCode, 1);                // forecast won the 07-06 overlap
+  assert.equal(recs[1].precipProbability, 5);
+});
+
+test('buildOutlook averages years into weeks', () => {
+  const today = new Date('2026-07-06T12:00:00Z');
+  const days = 14;
+  // Two "years" of flat data: maxes 20 and 30 -> avg 25; precip 0 and 2 -> avg 1.
+  const mk = (max, min, precip) => ({
+    daily: {
+      time: Array.from({ length: days }, (_, i) => `d${i}`),
+      temperature_2m_max: Array(days).fill(max),
+      temperature_2m_min: Array(days).fill(min),
+      precipitation_sum: Array(days).fill(precip),
+    },
+  });
+  const { weeks } = buildOutlook([mk(20, 10, 0), mk(30, 14, 2)], { today, days });
+  assert.equal(weeks.length, 2);
+  assert.equal(weeks[0].avgTempMax, 25);
+  assert.equal(weeks[0].avgTempMin, 12);
+  assert.equal(weeks[0].rainyDays, 7);           // avgPrecip 1 >= 1 on every day
+  assert.equal(weeks[0].yearsInSample, 2);
 });

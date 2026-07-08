@@ -53,20 +53,28 @@ const tripRoutes = require('./routes/trips');
 const householdRoutes = require('./routes/household');
 const keyRoutes = require('./routes/keys');
 const notificationRoutes = require('./routes/notifications');
+const storageRoutes = require('./routes/storage');
 const billingRoutes = require('./routes/billing');
 const monetizationConfigRoutes = require('./routes/monetizationConfig');
+const adminRoutes = require('./routes/admin');
+const adminAnalyticsRoutes = require('./routes/adminAnalytics');
+
+// Patch the Anthropic SDK once so one-shot AI calls auto-record token usage
+// against the weekly budget (see services/aiUsage.js). Streaming chat records
+// separately in chatStream.js.
+require('./services/aiUsage').patchAnthropic();
 
 const app = express();
 
 app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } }));
 
-// CORS allowlist. Browser clients (web app + admin app) send an Origin and must
-// be allowed explicitly; the native mobile app sends no Origin and is allowed
-// through (the `!origin` case). Set CORS_ORIGINS (comma-separated) for
-// production; CLIENT_URL is honored as a fallback. In non-production we always
-// add the local dev ports for the consumer web client (5173) and admin app
-// (5174) so both run out of the box even when CLIENT_URL pins a single origin.
-const DEV_ORIGINS = ['http://localhost:5173', 'http://localhost:5174'];
+// CORS allowlist. The admin web app sends an Origin and must be allowed
+// explicitly; the native mobile app sends no Origin and is allowed through
+// (the `!origin` case). Set CORS_ORIGINS (comma-separated) for production;
+// CLIENT_URL is honored as a fallback. In non-production we always add the
+// local dev port for the admin app (5174) so it runs out of the box even when
+// CLIENT_URL pins a single origin.
+const DEV_ORIGINS = ['http://localhost:5174'];
 const configuredOrigins = (process.env.CORS_ORIGINS || process.env.CLIENT_URL || '')
   .split(',')
   .map((o) => o.trim())
@@ -112,10 +120,17 @@ app.use('/api/trips', tripRoutes);
 app.use('/api/household', householdRoutes);
 app.use('/api/keys', keyRoutes);
 app.use('/api/notifications', notificationRoutes);
+app.use('/api/storage', storageRoutes);
 app.use('/api/billing', billingRoutes);
 // Admin-only monetization config (consumed by the separate admin web app).
 // Gated by requireAuth + requireAdmin inside the router.
 app.use('/api/monetization-config', monetizationConfigRoutes);
+// Admin analytics (content-blind product-usage insights). requireAdmin-gated.
+// Mounted before the broader /api/admin so its paths match without falling
+// through that router's auth stack first.
+app.use('/api/admin/analytics', adminAnalyticsRoutes);
+// Admin-only ops surfaces (users, E2EE readiness, audit log). requireAdmin-gated.
+app.use('/api/admin', adminRoutes);
 
 app.get('/api/health', (req, res) => res.json({ status: 'ok' }));
 

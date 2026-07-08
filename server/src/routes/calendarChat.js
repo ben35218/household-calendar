@@ -450,7 +450,7 @@ Use list_events to see what's scheduled. It returns EVERY calendar shown on the 
 You can only create, edit, or delete Activities and Appointments (calendar events). Maintenance, chores, meals, grocery days, birthdays, and vacations are managed elsewhere — surface them for planning, but don't try to modify them.
 
 You do NOT directly create, edit, or delete events. Instead, you open the appropriate form pre-filled with details and let the user review and confirm the action.
-- To add an event: call open_create_event_form with the details the user provided. Tell the user you've opened the form for them to review and save.
+- To add an event: call open_create_event_form with the details the user provided. Then briefly recap the event's details and tell the user they can tap "Save this to my calendar" to add it, or "Edit in form" to review and adjust it first. Do NOT say you've already opened a form or already saved the event — nothing is saved until the user taps one of those.
 - To edit/update an event: call list_events to find the event ID, then call open_edit_event_form. In your reply, tell the user what to change in the form.
 - To delete an event: call list_events to find the event ID, then call open_delete_event_form. Tell the user to click the Delete button in the form.
 
@@ -479,24 +479,34 @@ function upcomingBirthdays(people, days = 30) {
   return out.sort((a, b) => a.date - b.date);
 }
 
-function buildContextSummary(people) {
+function buildContextSummary(people, includePersonalInfo = true) {
   const count = people.length;
-  return {
-    sees: [
-      'Every calendar — activities, appointments, maintenance, chores, meals & grocery days',
-      'Recurring items expanded into each occurrence',
-      'Vacation dates (the itinerary lives in the Vacation Assistant)',
+  const sees = [
+    'Every calendar — activities, appointments, maintenance, chores, meals & grocery days',
+    'Recurring items expanded into each occurrence',
+    'Vacation dates (the itinerary lives in the Vacation Assistant)',
+  ];
+  // Only advertise access to household details when the privacy toggle allows it —
+  // otherwise the panel would claim to "see" people the prompt never receives.
+  if (includePersonalInfo) {
+    sees.push(
       count
         ? `Your household & friends (${count} ${count === 1 ? 'person' : 'people'}, with birthdays & interests)`
         : 'Your household members & friends',
-      'The weather forecast',
-    ],
+    );
+  }
+  sees.push('The weather forecast');
+
+  return {
+    sees,
     can: [
       'Open pre-filled event forms for you to review & save',
       'Place AI phone calls to cancel or reschedule appointments',
       'Suggest activities and good-weather days',
     ],
-    note: 'Nothing is saved or called without your confirmation.',
+    note: includePersonalInfo
+      ? 'Nothing is saved or called without your confirmation.'
+      : 'Personal & contact info is turned off in Privacy, so I won’t use your household details. Nothing is saved or called without your confirmation.',
   };
 }
 
@@ -514,9 +524,12 @@ function buildSuggestedPrompts(people) {
 // Context + starter prompts shown when the assistant first opens.
 router.get('/context', async (req, res) => {
   try {
-    const people = await loadPeople(req);
+    // Privacy toggle (query flag): when off, don't load household contacts, so the
+    // panel and starter prompts don't surface people the assistant can't use.
+    const includePersonalInfo = req.query.includePersonalInfo !== 'false';
+    const people = includePersonalInfo ? await loadPeople(req) : [];
     res.json({
-      context: buildContextSummary(people),
+      context: buildContextSummary(people, includePersonalInfo),
       suggestedPrompts: buildSuggestedPrompts(people),
     });
   } catch (err) {
@@ -525,9 +538,9 @@ router.get('/context', async (req, res) => {
   }
 });
 
-router.post('/', meter('chat'), async (req, res) => {
+router.post('/', meter('chat', 'calendar'), async (req, res) => {
   try {
-    const { messages, people: clientPeople, calendarSources, weather } = req.body;
+    const { messages, people: clientPeople, calendarSources, weather, includePersonalInfo = true } = req.body;
     if (!Array.isArray(messages) || messages.length === 0) {
       return res.status(400).json({ error: 'messages array is required' });
     }
@@ -540,7 +553,14 @@ router.post('/', meter('chat'), async (req, res) => {
     // prompt) and calendar sources (list_events / call_business, expanded by the
     // shared engine) so the server needn't read stored plaintext. Dual-write: with
     // neither present it reads the DB exactly as before.
-    const people = Array.isArray(clientPeople) ? clientPeople : await loadPeople(req);
+    //
+    // Privacy toggle ("Use personal & contact info in prompts"): when the client
+    // sends includePersonalInfo:false, withhold the household contact list from the
+    // prompt entirely — including the DB fallback — so no names/addresses/birthdays
+    // reach the model. The assistant still works on the calendar itself.
+    const people = includePersonalInfo
+      ? (Array.isArray(clientPeople) ? clientPeople : await loadPeople(req))
+      : [];
     const systemPrompt = buildSystemPrompt(req, people);
     const client = new Anthropic({ apiKey });
 
@@ -550,6 +570,7 @@ router.post('/', meter('chat'), async (req, res) => {
     const model = plan === 'free' ? config.models.freeChat : config.models.paidChat;
 
     await streamChat(res, {
+      req,
       client,
       model,
       system: systemPrompt,
@@ -562,7 +583,15 @@ router.post('/', meter('chat'), async (req, res) => {
       }),
       collectSideEffects: (block, result, acc) => {
         if (result && result.navigateTo) acc.navigateTo = result.navigateTo;
+        // When the assistant drafts a new event, surface the structured fields so
+        // the client can offer "Save this to my calendar" (create it directly) or
+        // "Edit in form" (open the create form pre-filled). Keep the last one.
+        if (block.name === 'open_create_event_form') acc.pendingEvent = block.input;
       },
+      // After drafting an event, the only two sensible next actions are to save it
+      // or tweak it in the form — pin those instead of generated free-text chips.
+      followupsOverride: (acc) =>
+        acc.pendingEvent ? ['Save this to my calendar', 'Edit in form'] : null,
     });
   } catch (err) {
     console.error('Calendar chat error:', err);

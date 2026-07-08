@@ -14,6 +14,13 @@ async function requireAuth(req, res, next) {
     const user = await User.findById(payload.userId).select('-passwordHash');
     if (!user) return res.status(401).json({ error: 'Unauthorized' });
     req.user = user;
+    // Throttled engagement stamp (≤ once/hour/user) for the analytics DAU/WAU/MAU
+    // + retention views. Content-blind and fire-and-forget so it never adds
+    // latency or fails a request.
+    const nowMs = Date.now();
+    if (!user.lastActiveAt || nowMs - user.lastActiveAt.getTime() > 60 * 60 * 1000) {
+      User.updateOne({ _id: user._id }, { $set: { lastActiveAt: new Date(nowMs) } }).catch(() => {});
+    }
     // Household scope: ids of all members sharing this household (incl. self).
     // Data is scoped by `userId: { $in: req.scopeIds }`, so a member's own
     // documents are automatically shared once they join a household.
