@@ -2,6 +2,25 @@
 # Dashboard → New + → Blueprint → connect this repo; Render reads this file.
 # Secrets marked `sync: false` are entered in the Render UI, never committed.
 services:
+  # Marketing/legal static site at householdcalendar.com (terms + privacy are
+  # App Store review requirements; the paywall and email CTAs link here).
+  - type: web
+    runtime: static
+    name: household-calendar-web
+    rootDir: static
+    buildCommand: ""
+    staticPublishPath: .
+    domains:
+      - householdcalendar.com
+      - www.householdcalendar.com
+    routes:
+      - type: rewrite
+        source: /terms
+        destination: /terms.html
+      - type: rewrite
+        source: /privacy
+        destination: /privacy.html
+
   - type: web
     name: household-calendar-api
     runtime: node
