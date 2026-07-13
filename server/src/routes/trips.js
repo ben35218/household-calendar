@@ -6,9 +6,9 @@ const Anthropic = require('@anthropic-ai/sdk');
 const { simpleParser } = require('mailparser');
 const Trip = require('../models/Trip');
 const TripItem = require('../models/TripItem');
+const TripInvitation = require('../models/TripInvitation');
 const User = require('../models/User');
 const Household = require('../models/Household');
-const { randomInt } = require('crypto');
 const { requireAuth } = require('../middleware/auth');
 const { rateLimit } = require('../middleware/rateLimit');
 const { meter } = require('../middleware/usageMeter');
@@ -16,6 +16,8 @@ const { activity } = require('../middleware/activity');
 const { isObjectId, pickRecordEnc } = require('../services/householdKey');
 const { DROP_FIELDS } = require('../services/dropReadiness');
 const { isTripShared } = require('../services/tripSharing');
+const { sendTripShareInvitation } = require('../services/mailer');
+const { normalizePhone } = require('../services/phone');
 const { resolvePlaceWithTz } = require('../services/geo');
 const { getRates, convert } = require('../services/fx');
 
@@ -97,22 +99,16 @@ function ownerFilter(req) {
 }
 // Verify the user can access the trip; responds 404 and returns null if not.
 async function requireTripAccess(req, res) {
-  // shareCode/collaborators must ride along: the item write guards call
+  // sharedWithOutside/collaborators must ride along: the item write guards call
   // isTripShared(trip) on this object to keep a shared trip's items plaintext.
   const trip = await Trip.findOne({ _id: req.params.id, ...accessFilter(req) })
-    .select('_id userId shareCode collaborators').lean();
+    .select('_id userId sharedWithOutside collaborators').lean();
   if (!trip) { res.status(404).json({ error: 'Trip not found' }); return null; }
   return trip;
 }
-function genShareCode() {
-  const a = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-  let s = '';
-  for (let i = 0; i < 8; i++) s += a[randomInt(a.length)];
-  return s;
-}
 
-// Throttle code-guessing on the join endpoint: a handful of tries per minute is
-// plenty for a real invite, but makes brute-force enumeration infeasible.
+// Throttle abuse of the invite-accept endpoint: a handful of tries per minute is
+// plenty for a real invite, but caps enumeration.
 const joinLimiter = rateLimit({
   windowMs: 60 * 1000,
   max: 10,
@@ -251,7 +247,94 @@ router.get('/', async (req, res) => {
     const filter = accessFilter(req);
     if (req.query.status) filter.status = req.query.status;
     const trips = await Trip.find(filter).sort({ startDate: 1, createdAt: -1 }).lean();
+    // The outside-share list is the owning household's business — strip it from
+    // trips a collaborator only has guest access to.
+    for (const t of trips) {
+      if (!req.scopeIds.some((id) => String(id) === String(t.userId))) t.sharedWithOutside = [];
+    }
     res.json(trips);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Trip-share invitations addressed to me (before /:id so it isn't shadowed) ─
+
+// Invitations addressed to a user: to their account, or (before claiming) to
+// their email or saved phone.
+function addressedToUser(user) {
+  const or = [{ toUserId: user._id }];
+  if (user.email) or.push({ toEmail: user.email.toLowerCase() });
+  if (user.phone) or.push({ toPhone: user.phone });
+  return or;
+}
+
+router.get('/invitations', async (req, res) => {
+  try {
+    const email = (req.user.email || '').toLowerCase();
+    const phone = req.user.phone || '';
+    const invitations = await TripInvitation
+      .find({ $or: addressedToUser(req.user) })
+      .sort('-createdAt');
+    // Lazily claim email/phone-only invitations sent before this account existed.
+    const unclaimed = invitations.filter(
+      (i) => !i.toUserId && ((i.toEmail && i.toEmail === email) || (i.toPhone && i.toPhone === phone)),
+    );
+    if (unclaimed.length) {
+      await TripInvitation.updateMany(
+        { _id: { $in: unclaimed.map((i) => i._id) } },
+        { toUserId: req.user._id },
+      );
+    }
+    res.json(invitations);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Accept → become a collaborator on the trip (live access to it and its items).
+router.post('/invitations/:id/accept', joinLimiter, async (req, res) => {
+  try {
+    const invitation = await TripInvitation.findOne({
+      _id: req.params.id,
+      $or: addressedToUser(req.user),
+    });
+    if (!invitation) return res.status(404).json({ error: 'Invitation not found' });
+
+    invitation.toUserId = invitation.toUserId || req.user._id;
+    invitation.status = 'accepted';
+    invitation.respondedAt = new Date();
+    await invitation.save();
+
+    const trip = await Trip.findByIdAndUpdate(
+      invitation.tripId,
+      { $addToSet: { collaborators: req.user._id } },
+      { new: true },
+    ).select('name').lean();
+    if (!trip) return res.status(404).json({ error: 'Trip no longer exists' });
+    res.json({ invitation, tripId: invitation.tripId, name: trip.name });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/invitations/:id/decline', async (req, res) => {
+  try {
+    const invitation = await TripInvitation.findOne({
+      _id: req.params.id,
+      $or: addressedToUser(req.user),
+    });
+    if (!invitation) return res.status(404).json({ error: 'Invitation not found' });
+
+    // Declining after accepting also gives up access.
+    if (invitation.status === 'accepted' && invitation.toUserId) {
+      await Trip.updateOne({ _id: invitation.tripId }, { $pull: { collaborators: invitation.toUserId } });
+    }
+    invitation.toUserId = invitation.toUserId || req.user._id;
+    invitation.status = 'declined';
+    invitation.respondedAt = new Date();
+    await invitation.save();
+    res.json({ invitation });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -293,6 +376,9 @@ router.get('/:id', async (req, res) => {
       })
       .map(i => shapeItem(i, familyId, names));             // strip other families' private fields
     const isOwner = req.scopeIds.some(id => String(id) === String(trip.userId));
+    // The outside-share list (and who else collaborates) is the owner's business;
+    // a collaborator only sees that the trip is shared, not the guest list.
+    if (!isOwner) { trip.sharedWithOutside = []; trip.collaborators = []; }
     res.json({ trip, items, isOwner });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -614,7 +700,7 @@ router.put('/:id', async (req, res) => {
     let unset;
     if (enc.enc) {
       const existing = await Trip.findOne({ _id: req.params.id, ...accessFilter(req) })
-        .select('shareCode collaborators').lean();
+        .select('sharedWithOutside collaborators').lean();
       if (existing && isTripShared(existing)) { enc = {}; unset = { enc: 1, keyVersion: 1 }; }
     }
     const set = { ...pick(req.body, TRIP_FIELDS), ...enc };
@@ -971,7 +1057,12 @@ router.post('/:id/items/from-confirmation', meter('scan'), memoryUpload.single('
   }
 });
 
-// ── Sharing a trip with anyone (collaborators) ───────────────────────────────────
+// ── Sharing a trip with outside emails (invitations → collaborators) ──────────
+//
+// Mirrors shared-calendar sharing (routes/calendars.js): the owner keeps a list
+// of outside emails on the trip; each new email gets a TripInvitation + email,
+// each removed email revokes the invitation and unseats the collaborator. The
+// recipient accepts from their Invitations inbox to become a collaborator.
 
 // Whitelist a client-decrypted record's content fields for the decrypt-on-share
 // re-write. DROP_FIELDS is the authoritative encrypt-subset map (mirrors what the
@@ -984,19 +1075,103 @@ function pickPlaintextForShare(collection, src) {
   return out;
 }
 
-// Enable sharing — returns (creating if needed) the trip's share code. Household only.
-router.post('/:id/share', async (req, res) => {
-  try {
-    const trip = await Trip.findOne({ _id: req.params.id, ...ownerFilter(req) });
-    if (!trip) return res.status(404).json({ error: 'Not found' });
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-    // Cross-household collaborators hold no HDK, so a shared trip must be readable
-    // as plaintext. Pre-drop the plaintext is always present (dual-write), so
-    // sharing just works. Post-drop a private trip is ciphertext-only — the
-    // owner's device decrypts the trip + its items and posts them back here
-    // (decrypt-on-share), and we re-write them as plaintext, clearing `enc`,
-    // before minting the share code. See services/tripSharing.js / §9.3.
-    if (req.household?.e2eeActive && !trip.shareCode) {
+// Canonical key for an outside-share entry (email or phone), used to dedupe and
+// to diff the previous vs. next lists in syncTripInvitations.
+const entryKey = (e) => e?.email || e?.phone || '';
+
+// Normalize the client's outside-share list into `{ email }` or `{ phone }`
+// entries. Accepts either objects ({ email } / { phone }) or bare email strings
+// (legacy clients that sent `emails: string[]`).
+function normalizeRecipients(list) {
+  const seen = new Set();
+  const out = [];
+  for (const raw of Array.isArray(list) ? list : []) {
+    if (raw && raw.phone !== undefined && raw.phone !== null && raw.phone !== '') {
+      const phone = normalizePhone(raw.phone);
+      if (phone && !seen.has(phone)) { seen.add(phone); out.push({ phone }); }
+      continue;
+    }
+    const email = String(raw?.email ?? raw ?? '').trim().toLowerCase();
+    if (EMAIL_RE.test(email) && !seen.has(email)) { seen.add(email); out.push({ email }); }
+  }
+  return out;
+}
+
+// Reconcile a trip's outside recipients with their invitations: new addresses
+// get a pending TripInvitation (emailed, or texted from the owner's device for a
+// phone); removed ones are revoked (invitation deleted, accepted collaborator
+// unseated). Never throws — sharing bookkeeping must not fail the save that
+// triggered it.
+async function syncTripInvitations(trip, prevEntries, req) {
+  const prev = new Map((prevEntries || []).map((e) => [entryKey(e), e]));
+  const next = new Map((trip.sharedWithOutside || []).map((e) => [entryKey(e), e]));
+  const fromName = [req.user.firstName, req.user.lastName].filter(Boolean).join(' ');
+
+  for (const [key, entry] of next) {
+    if (prev.has(key)) continue;
+    try {
+      const recipient = entry.phone
+        ? await User.findOne({ phone: entry.phone }).select('_id').lean()
+        : await User.findOne({ email: entry.email }).select('_id').lean();
+      await TripInvitation.create({
+        fromUserId: req.user._id,
+        fromName,
+        fromEmail: req.user.email,
+        toEmail: entry.email || undefined,
+        toPhone: entry.phone || undefined,
+        toUserId: recipient?._id,
+        tripId: trip._id,
+        tripName: trip.name || 'Our trip',
+        destination: trip.destination,
+      });
+      // Phone invites carry no email — the owner's device texts them.
+      if (entry.email) {
+        sendTripShareInvitation({
+          toEmail: entry.email, fromName, tripName: trip.name || 'Our trip',
+          destination: trip.destination, hasAccount: !!recipient,
+        });
+      }
+    } catch (err) {
+      console.error('[trips] invitation create failed:', err.message);
+    }
+  }
+
+  for (const [key, entry] of prev) {
+    if (next.has(key)) continue;
+    try {
+      const inv = await TripInvitation.findOneAndDelete(
+        entry.phone
+          ? { tripId: trip._id, toPhone: entry.phone }
+          : { tripId: trip._id, toEmail: entry.email },
+      );
+      if (inv?.toUserId) {
+        await Trip.updateOne({ _id: trip._id }, { $pull: { collaborators: inv.toUserId } });
+      }
+    } catch (err) {
+      console.error('[trips] invitation revoke failed:', err.message);
+    }
+  }
+}
+
+// Set the trip's outside-share emails. Household (owner) only. On an E2EE-active
+// household, the first outside email flips the trip from ciphertext to the
+// plaintext a collaborator can read (§9.3): the owner's device posts the
+// decrypted trip + items, which we re-write as plaintext, clearing `enc`.
+router.put('/:id/share', async (req, res) => {
+  try {
+    const existing = await Trip.findOne({ _id: req.params.id, ...ownerFilter(req) })
+      .select('sharedWithOutside collaborators').lean();
+    if (!existing) return res.status(404).json({ error: 'Not found' });
+
+    const prevEntries = existing.sharedWithOutside || [];
+    const prevKeys = new Set(prevEntries.map((e) => entryKey(e)));
+    // Accept `recipients: [{email?|phone?}]` (new) or `emails: string[]` (legacy).
+    const nextEntries = normalizeRecipients(req.body?.recipients ?? req.body?.emails);
+    const addingNew = nextEntries.some((e) => !prevKeys.has(entryKey(e)));
+
+    if (req.household?.e2eeActive && !isTripShared(existing) && addingNew) {
       const decrypted = req.body?.decrypted;
       if (!decrypted || typeof decrypted.trip !== 'object') {
         return res.status(409).json({
@@ -1004,80 +1179,76 @@ router.post('/:id/share', async (req, res) => {
           message: 'This trip is end-to-end encrypted. Confirm to make it readable for the people you share it with.',
         });
       }
-      const shareCode = genShareCode();
-      // Re-write the trip as plaintext + share code, dropping its ciphertext.
+      // Re-write the trip and each item as plaintext, dropping their ciphertext.
       await Trip.updateOne(
-        { _id: trip._id },
-        { $set: { ...pickPlaintextForShare('Trip', decrypted.trip), shareCode }, $unset: { enc: 1, keyVersion: 1 } },
+        { _id: existing._id },
+        { $set: pickPlaintextForShare('Trip', decrypted.trip), $unset: { enc: 1, keyVersion: 1 } },
       );
-      // Re-write each of its items as plaintext too (scoped to this trip).
       for (const it of Array.isArray(decrypted.items) ? decrypted.items : []) {
         if (!isObjectId(String(it?._id || ''))) continue;
         await TripItem.updateOne(
-          { _id: it._id, tripId: trip._id },
+          { _id: it._id, tripId: existing._id },
           { $set: pickPlaintextForShare('TripItem', it), $unset: { enc: 1, keyVersion: 1 } },
         );
       }
-      return res.json({ shareCode });
     }
 
-    if (!trip.shareCode) { trip.shareCode = genShareCode(); await trip.save(); }
-    res.json({ shareCode: trip.shareCode });
+    const trip = await Trip.findOneAndUpdate(
+      { _id: existing._id },
+      { $set: { sharedWithOutside: nextEntries } },
+      { new: true },
+    ).lean();
+    await syncTripInvitations(trip, prevEntries, req);
+    res.json({ sharedWithOutside: trip.sharedWithOutside });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// Disable sharing — clears the code and removes all collaborators. Household only.
+// Disable sharing — clears every outside email + collaborator and deletes the
+// invitations. Household only.
 router.delete('/:id/share', async (req, res) => {
   try {
     const trip = await Trip.findOneAndUpdate(
       { _id: req.params.id, ...ownerFilter(req) },
-      { $unset: { shareCode: 1 }, $set: { collaborators: [] } },
+      { $set: { sharedWithOutside: [], collaborators: [] } },
       { new: true },
     );
     if (!trip) return res.status(404).json({ error: 'Not found' });
+    await TripInvitation.deleteMany({ tripId: trip._id }).catch(() => {});
     res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// Join a shared trip by its code → become a collaborator.
-router.post('/join', joinLimiter, async (req, res) => {
-  try {
-    const code = (req.body.shareCode || '').trim().toUpperCase();
-    if (!code) return res.status(400).json({ error: 'Share code required' });
-    const trip = await Trip.findOne({ shareCode: code });
-    if (!trip) return res.status(404).json({ error: 'No trip found for that code' });
-    // Owners (household members) already have access.
-    const isHouseholdMember = req.scopeIds.some(id => String(id) === String(trip.userId));
-    if (!isHouseholdMember && !trip.collaborators.some(c => String(c) === String(req.user._id))) {
-      trip.collaborators.push(req.user._id);
-      await trip.save();
-    }
-    res.json({ tripId: trip._id, name: trip.name });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// Stop collaborating on a shared trip (a guest removes themselves).
+// Stop collaborating on a shared trip (a guest removes themselves). Also retires
+// their invitation so they aren't shown as a pending collaborator.
 router.post('/:id/leave-share', async (req, res) => {
   try {
     await Trip.updateOne({ _id: req.params.id }, { $pull: { collaborators: req.user._id } });
+    await TripInvitation.updateOne(
+      { tripId: req.params.id, toUserId: req.user._id },
+      { $set: { status: 'declined', respondedAt: new Date() } },
+    ).catch(() => {});
     res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// Remove a specific collaborator. Household only.
+// Remove a specific collaborator. Household only. Pulls them from collaborators,
+// drops their email from the share list, and deletes their invitation (so the
+// revoke is complete and they can't be re-seated).
 router.delete('/:id/collaborators/:userId', async (req, res) => {
   try {
+    const inv = await TripInvitation.findOneAndDelete({ tripId: req.params.id, toUserId: req.params.userId });
+    const pull = { collaborators: req.params.userId };
+    if (inv?.toEmail) pull.sharedWithOutside = { email: inv.toEmail };
+    else if (inv?.toPhone) pull.sharedWithOutside = { phone: inv.toPhone };
     const trip = await Trip.findOneAndUpdate(
       { _id: req.params.id, ...ownerFilter(req) },
-      { $pull: { collaborators: req.params.userId } },
+      { $pull: pull },
       { new: true },
     );
     if (!trip) return res.status(404).json({ error: 'Not found' });

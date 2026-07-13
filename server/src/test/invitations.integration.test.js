@@ -134,6 +134,169 @@ test('.ics download renders the snapshot as an all-day VEVENT', async () => {
   assert.match(res.text, /LOCATION:Sandbanks/);
 });
 
+test('organizer invitee list: visible in event scope only, tracks the accept linkage', async () => {
+  const { sender, eventId, snapshot } = await setupSenderWithEvent();
+  const recipient = await registerUser();
+  await request().post('/api/invitations')
+    .set('Authorization', sender.auth)
+    .send({ eventId, email: recipient.user.email, event: snapshot });
+  await request().post('/api/invitations')
+    .set('Authorization', sender.auth)
+    .send({ eventId, email: 'other@example.com', event: snapshot });
+
+  // The organizer sees every invitee for the event…
+  let sent = await request().get('/api/invitations/sent').query({ eventId }).set('Authorization', sender.auth);
+  assert.equal(sent.status, 200);
+  assert.equal(sent.body.length, 2);
+
+  // …the recipient does not (the source event isn't in their scope), and their
+  // accepted copy has a different id that maps to no invitations.
+  const denied = await request().get('/api/invitations/sent').query({ eventId }).set('Authorization', recipient.auth);
+  assert.equal(denied.status, 404);
+
+  const inv = sent.body.find((i) => i.toEmail === recipient.user.email);
+  const accepted = await request().post(`/api/invitations/${inv._id}/accept`).set('Authorization', recipient.auth);
+  assert.equal(String(accepted.body.event.invitationId), String(inv._id));
+  const viaCopy = await request().get('/api/invitations/sent')
+    .query({ eventId: accepted.body.event._id }).set('Authorization', recipient.auth);
+  assert.equal(viaCopy.status, 200);
+  assert.equal(viaCopy.body.length, 0);
+
+  sent = await request().get('/api/invitations/sent').query({ eventId }).set('Authorization', sender.auth);
+  const row = sent.body.find((i) => i.toEmail === recipient.user.email);
+  assert.equal(row.status, 'accepted');
+  assert.equal(String(row.acceptedEventId), String(accepted.body.event._id));
+});
+
+test('leave deletes the recipient copy and retires the invitation to left', async () => {
+  const { sender, eventId, snapshot } = await setupSenderWithEvent();
+  const recipient = await registerUser();
+  const inv = (await request().post('/api/invitations')
+    .set('Authorization', sender.auth)
+    .send({ eventId, email: recipient.user.email, event: snapshot })).body.invitation;
+
+  // Leaving before accepting is rejected.
+  const early = await request().post(`/api/invitations/${inv._id}/leave`).set('Authorization', recipient.auth);
+  assert.equal(early.status, 400);
+
+  const accepted = await request().post(`/api/invitations/${inv._id}/accept`).set('Authorization', recipient.auth);
+  const copyId = accepted.body.event._id;
+
+  const left = await request().post(`/api/invitations/${inv._id}/leave`).set('Authorization', recipient.auth);
+  assert.equal(left.status, 200);
+  assert.equal(left.body.invitation.status, 'left');
+  assert.equal(await CalendarEvent.findById(copyId), null);
+
+  // The organizer's list still records the invitee (as left); the original stays.
+  const sent = await request().get('/api/invitations/sent').query({ eventId }).set('Authorization', sender.auth);
+  assert.equal(sent.body[0].status, 'left');
+  assert.notEqual(await CalendarEvent.findById(eventId), null);
+});
+
+test('organizer revoke removes the invitation — and the copy if it was accepted', async () => {
+  const { sender, eventId, snapshot } = await setupSenderWithEvent();
+  const recipient = await registerUser();
+
+  // Pending revoke: the invite vanishes from the recipient's inbox.
+  const pending = (await request().post('/api/invitations')
+    .set('Authorization', sender.auth)
+    .send({ eventId, email: recipient.user.email, event: snapshot })).body.invitation;
+
+  // Only the organizer side can revoke.
+  const notYours = await request().delete(`/api/invitations/${pending._id}`).set('Authorization', recipient.auth);
+  assert.equal(notYours.status, 404);
+
+  const revoked = await request().delete(`/api/invitations/${pending._id}`).set('Authorization', sender.auth);
+  assert.equal(revoked.status, 200);
+  const inbox = await request().get('/api/invitations').set('Authorization', recipient.auth);
+  assert.equal(inbox.body.length, 0);
+
+  // Accepted revoke: the recipient's copy goes too.
+  const again = (await request().post('/api/invitations')
+    .set('Authorization', sender.auth)
+    .send({ eventId, email: recipient.user.email, event: snapshot })).body.invitation;
+  const accepted = await request().post(`/api/invitations/${again._id}/accept`).set('Authorization', recipient.auth);
+  await request().delete(`/api/invitations/${again._id}`).set('Authorization', sender.auth);
+  assert.equal(await CalendarEvent.findById(accepted.body.event._id), null);
+});
+
+test('an invited copy is read-only for the recipient — leave is the only exit; the original stays editable', async () => {
+  const { sender, eventId, snapshot } = await setupSenderWithEvent();
+  const recipient = await registerUser();
+  const inv = (await request().post('/api/invitations')
+    .set('Authorization', sender.auth)
+    .send({ eventId, email: recipient.user.email, event: snapshot })).body.invitation;
+  const accepted = await request().post(`/api/invitations/${inv._id}/accept`).set('Authorization', recipient.auth);
+  const copyId = accepted.body.event._id;
+
+  const edit = await request().put(`/api/calendar/events/${copyId}`)
+    .set('Authorization', recipient.auth).send({ title: 'Hijacked' });
+  assert.equal(edit.status, 403);
+  const del = await request().delete(`/api/calendar/events/${copyId}`).set('Authorization', recipient.auth);
+  assert.equal(del.status, 403);
+  assert.equal((await CalendarEvent.findById(copyId).lean()).title, 'Lake day');
+
+  // The organizer's household still edits (and could delete) the original.
+  const orig = await request().put(`/api/calendar/events/${eventId}`)
+    .set('Authorization', sender.auth).send({ title: 'Lake day (moved)' });
+  assert.equal(orig.status, 200);
+  assert.equal(orig.body.title, 'Lake day (moved)');
+
+  // Leave still works — the sanctioned way out for the invitee.
+  const left = await request().post(`/api/invitations/${inv._id}/leave`).set('Authorization', recipient.auth);
+  assert.equal(left.status, 200);
+  assert.equal(await CalendarEvent.findById(copyId), null);
+});
+
+test('phone invite: normalized number, no account resolution, no duplicates on resend', async () => {
+  const { sender, eventId, snapshot } = await setupSenderWithEvent();
+
+  const res = await request().post('/api/invitations')
+    .set('Authorization', sender.auth)
+    .send({ eventId, phone: '+1 (415) 555-0134', event: snapshot });
+  assert.equal(res.status, 201);
+  assert.equal(res.body.userExists, false);
+  assert.equal(res.body.invitation.toPhone, '+14155550134');
+  assert.equal(res.body.invitation.toEmail ?? null, null);
+  assert.equal(res.body.invitation.toUserId ?? null, null);
+  assert.equal(res.body.invitation.status, 'pending');
+  assert.ok(res.body.invitation.shareToken);
+
+  // Re-inviting the same number (formatted differently) refreshes in place.
+  const again = await request().post('/api/invitations')
+    .set('Authorization', sender.auth)
+    .send({ eventId, phone: '+1 415.555.0134', event: snapshot });
+  assert.equal(again.status, 201);
+  assert.equal(String(again.body.invitation._id), String(res.body.invitation._id));
+
+  const sent = await request().get('/api/invitations/sent').query({ eventId }).set('Authorization', sender.auth);
+  assert.equal(sent.body.length, 1);
+
+  // Too short / empty numbers are rejected.
+  const bad = await request().post('/api/invitations')
+    .set('Authorization', sender.auth)
+    .send({ eventId, phone: '12345', event: snapshot });
+  assert.equal(bad.status, 400);
+});
+
+test('public .ics link: shareToken grants unauthenticated download, wrong token does not', async () => {
+  const { sender, eventId, snapshot } = await setupSenderWithEvent();
+  const inv = (await request().post('/api/invitations')
+    .set('Authorization', sender.auth)
+    .send({ eventId, phone: '+14155550134', event: snapshot })).body.invitation;
+
+  const res = await request().get(`/api/invitations/public/${inv._id}/ics`).query({ k: inv.shareToken });
+  assert.equal(res.status, 200);
+  assert.match(res.headers['content-type'], /text\/calendar/);
+  assert.match(res.text, /SUMMARY:Lake day/);
+
+  const wrong = await request().get(`/api/invitations/public/${inv._id}/ics`)
+    .query({ k: 'f'.repeat(inv.shareToken.length) });
+  assert.equal(wrong.status, 404);
+  const missing = await request().get(`/api/invitations/public/${inv._id}/ics`);
+  assert.equal(missing.status, 404);
+});
+
 test('guard rails: self-invite, same-household recipient, bad email, out-of-scope event', async () => {
   const { sender, eventId, snapshot } = await setupSenderWithEvent();
 
@@ -163,4 +326,61 @@ test('guard rails: self-invite, same-household recipient, bad email, out-of-scop
     .send({ eventId, email: housemate.user.email, event: snapshot });
   assert.equal(sameHouse.status, 400);
   assert.match(sameHouse.body.error, /household/);
+});
+
+test('guest list: invitees see who else is invited unless the organizer turns it off', async () => {
+  const { sender, eventId, snapshot } = await setupSenderWithEvent();
+  const recipient = await registerUser();
+  const inv = (await request().post('/api/invitations')
+    .set('Authorization', sender.auth)
+    .send({ eventId, email: recipient.user.email, event: snapshot })).body.invitation;
+  await request().post('/api/invitations')
+    .set('Authorization', sender.auth)
+    .send({ eventId, email: 'other@example.com', event: snapshot });
+  await request().post('/api/invitations')
+    .set('Authorization', sender.auth)
+    .send({ eventId, phone: '+14155550134', event: snapshot });
+
+  // Default: visible — the recipient sees every sibling invite (email and
+  // phone), the organizer's identity, and no capability secrets.
+  const res = await request().get(`/api/invitations/${inv._id}/guests`).set('Authorization', recipient.auth);
+  assert.equal(res.status, 200);
+  assert.equal(res.body.visible, true);
+  assert.equal(res.body.organizer.email, sender.user.email);
+  assert.equal(res.body.guests.length, 3);
+  const addresses = res.body.guests.map((g) => g.toEmail ?? g.toPhone).sort();
+  assert.deepEqual(addresses, ['+14155550134', 'other@example.com', recipient.user.email].sort());
+  assert.ok(res.body.guests.every((g) => g.shareToken === undefined));
+
+  // Only someone the invitation is addressed to can ask.
+  const stranger = await registerUser();
+  const denied = await request().get(`/api/invitations/${inv._id}/guests`).set('Authorization', stranger.auth);
+  assert.equal(denied.status, 404);
+
+  // An event predating the flag (field absent) reads as visible.
+  await CalendarEvent.updateOne({ _id: eventId }, { $unset: { guestListVisible: '' } });
+  const legacy = await request().get(`/api/invitations/${inv._id}/guests`).set('Authorization', recipient.auth);
+  assert.equal(legacy.body.visible, true);
+
+  // The organizer flips guestListVisible off → the list goes dark.
+  const off = await request().put(`/api/calendar/events/${eventId}`)
+    .set('Authorization', sender.auth).send({ guestListVisible: false });
+  assert.equal(off.status, 200);
+  assert.equal(off.body.guestListVisible, false);
+  const hidden = await request().get(`/api/invitations/${inv._id}/guests`).set('Authorization', recipient.auth);
+  assert.equal(hidden.status, 200);
+  assert.deepEqual(hidden.body, { visible: false, guests: [] });
+
+  // Back on — and RSVP statuses ride along once the recipient accepts.
+  await request().put(`/api/calendar/events/${eventId}`)
+    .set('Authorization', sender.auth).send({ guestListVisible: true });
+  await request().post(`/api/invitations/${inv._id}/accept`).set('Authorization', recipient.auth);
+  const after = await request().get(`/api/invitations/${inv._id}/guests`).set('Authorization', recipient.auth);
+  assert.equal(after.body.visible, true);
+  assert.equal(after.body.guests.find((g) => g.toEmail === recipient.user.email).status, 'accepted');
+
+  // A deleted source event hides the list (nothing left to gate on).
+  await request().delete(`/api/calendar/events/${eventId}`).set('Authorization', sender.auth);
+  const gone = await request().get(`/api/invitations/${inv._id}/guests`).set('Authorization', recipient.auth);
+  assert.equal(gone.body.visible, false);
 });

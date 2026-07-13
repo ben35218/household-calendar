@@ -2,19 +2,38 @@ import React from 'react';
 import { TouchableOpacity, View, Text, StyleSheet } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useQuery } from '@tanstack/react-query';
-import { invitationsApi } from '../api';
+import { invitationsApi, customCalendarsApi, tripsApi, householdApi } from '../api';
 import { colors } from '../theme';
 
 // The invitations button in the bottom-right floating pill on the Calendar and
 // Events views (opens the Invitations modal). Shows a count badge while any
-// invitation is awaiting a reply. Sized to match the pill's other buttons.
+// invitation — event, calendar, trip, or household — is awaiting a reply. Sized
+// to match the pill's other buttons.
 export default function InvitationsButton({ onPress }: { onPress: () => void }) {
   const invQ = useQuery({
     queryKey: ['invitations'],
     queryFn: async () => (await invitationsApi.list()).data,
     staleTime: 60_000,
   });
-  const pending = (invQ.data ?? []).filter((i) => i.status === 'pending').length;
+  const calInvQ = useQuery({
+    queryKey: ['calendarInvitations'],
+    queryFn: async () => (await customCalendarsApi.invitations()).data,
+    staleTime: 60_000,
+  });
+  const tripInvQ = useQuery({
+    queryKey: ['tripInvitations'],
+    queryFn: async () => (await tripsApi.invitations()).data,
+    staleTime: 60_000,
+  });
+  const hhInvQ = useQuery({
+    queryKey: ['householdInvitations', 'mine'],
+    queryFn: async () => (await householdApi.myInvitations()).data,
+    staleTime: 60_000,
+  });
+  const countPending = (rows?: { status: string }[]) => (rows ?? []).filter((i) => i.status === 'pending').length;
+  const pending =
+    countPending(invQ.data) + countPending(calInvQ.data) +
+    countPending(tripInvQ.data) + countPending(hhInvQ.data);
 
   return (
     <TouchableOpacity style={styles.btn} onPress={onPress}>

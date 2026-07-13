@@ -13,6 +13,7 @@
 //   and app.json must list it under ios.associatedDomains.
 import * as passkeys from 'react-native-passkeys';
 import { loadHouseholdCrypto } from '@household/crypto/adapters/native';
+import { authApi, type PasskeyChallenge } from '../api';
 import { PASSKEY_RP_ID } from '../config';
 
 export function passkeysSupported(): boolean {
@@ -29,32 +30,48 @@ export interface CreatedPasskey {
 }
 
 // Register a new passkey for this account and evaluate the PRF at `prfSalt`.
+// The creation options (challenge, rp, user) come from the server so it can
+// verify the attestation and keep the credential's public key — that's what
+// makes the same passkey usable for SIGN-IN, not just E2EE unlock.
 // Returns null if the user cancels the sheet.
 export async function createPasskeyWithPrf(opts: {
-  userId: string;
-  userName: string;
   prfSalt: string; // base64url
 }): Promise<CreatedPasskey | null> {
-  const crypto = await loadHouseholdCrypto();
+  const { data: options } = await authApi.passkeyRegisterOptions();
   const res = await passkeys.create({
-    challenge: crypto.b64(crypto.randomBytes(32)),
-    rp: { id: PASSKEY_RP_ID, name: 'Household Calendar' },
-    user: {
-      id: crypto.b64(new TextEncoder().encode(opts.userId)),
-      name: opts.userName,
-      displayName: opts.userName,
-    },
-    pubKeyCredParams: [
-      { type: 'public-key', alg: -7 },   // ES256
-      { type: 'public-key', alg: -257 }, // RS256
-    ],
-    authenticatorSelection: { residentKey: 'required', userVerification: 'required' },
-    extensions: { prf: { eval: { first: opts.prfSalt } } },
+    ...(options as any),
+    extensions: { ...(options as any).extensions, prf: { eval: { first: opts.prfSalt } } },
+  });
+  if (!res) return null;
+  await authApi.passkeyRegister(res);
+  const prf = (res.clientExtensionResults as any)?.prf;
+  const first = prf?.results?.first;
+  return { credentialId: res.id, prfOutput: typeof first === 'string' ? first : null };
+}
+
+// Passkey SIGN-IN assertion against a server-issued challenge. Evaluates each
+// credential's PRF salt in the same ceremony, so the one Face ID tap yields
+// both the assertion (session) and the PRF output (E2EE unlock).
+// Returns null on cancel.
+export async function assertPasskeyForLogin(ch: PasskeyChallenge): Promise<{
+  response: unknown;
+  credentialId: string;
+  prfOutput: string | null;
+} | null> {
+  const withSalts = ch.allowCredentials.filter((c) => c.prfSalt);
+  const res = await passkeys.get({
+    challenge: ch.challenge,
+    rpId: ch.rpId || PASSKEY_RP_ID,
+    allowCredentials: ch.allowCredentials.map((c) => ({ id: c.id, type: 'public-key' as const })),
+    userVerification: 'required',
+    extensions: withSalts.length
+      ? { prf: { evalByCredential: Object.fromEntries(withSalts.map((c) => [c.id, { first: c.prfSalt as string }])) } }
+      : undefined,
   });
   if (!res) return null;
   const prf = (res.clientExtensionResults as any)?.prf;
   const first = prf?.results?.first;
-  return { credentialId: res.id, prfOutput: typeof first === 'string' ? first : null };
+  return { response: res, credentialId: res.id, prfOutput: typeof first === 'string' ? first : null };
 }
 
 // Assert with one of the given credentials and get the PRF output evaluated at

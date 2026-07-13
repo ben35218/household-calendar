@@ -12,7 +12,7 @@ import { colors, spacing } from '../theme';
 // from it. The purge countdown is scoped to this section rather than app-wide.
 const PROFILE_ROUTES = new Set([
   'ProfileHome', 'Account', 'People', 'PersonForm', 'ContactImport',
-  'Household', 'Privacy', 'Security', 'Paywall',
+  'Household', 'Plan', 'ComparePlans', 'AiUsage',
 ]);
 
 // Persistent countdown banner shown while a cloud purge is pending (§6.2 step 5),

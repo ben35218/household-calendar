@@ -101,7 +101,7 @@ router.post('/users/:id/role', async (req, res) => {
 router.get('/e2ee', async (_req, res) => {
   try {
     const households = await Household.find({})
-      .select('name joinCode e2eeActive currentKeyVersion ownerId')
+      .select('name e2eeActive currentKeyVersion ownerId')
       .lean();
     const ids = households.map((h) => h._id);
     const [members, envelopes] = await Promise.all([
@@ -123,7 +123,6 @@ router.get('/e2ee', async (_req, res) => {
       return {
         _id: h._id,
         name: h.name,
-        joinCode: h.joinCode,
         e2eeActive: !!h.e2eeActive,
         currentKeyVersion: h.currentKeyVersion,
         memberCount: (membersByHh[String(h._id)] || []).length,
@@ -145,7 +144,7 @@ router.get('/e2ee/:householdId', async (req, res) => {
       return res.status(400).json({ error: 'Invalid household id' });
     }
     const household = await Household.findById(req.params.householdId)
-      .select('name joinCode e2eeActive currentKeyVersion ownerId').lean();
+      .select('name e2eeActive currentKeyVersion ownerId').lean();
     if (!household) return res.status(404).json({ error: 'Household not found' });
 
     const [members, envelopes] = await Promise.all([

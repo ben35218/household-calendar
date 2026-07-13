@@ -1,4 +1,4 @@
-import React, { useMemo, useRef, useState } from 'react';
+import React, { useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -21,11 +21,12 @@ import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { recipesApi, Recipe } from '../../api';
 import { openRecord } from '../../lib/e2ee';
 import * as replica from '../../lib/replica';
-import { Card, Input, Badge } from '../../components/ui';
+import { Card, Input, Badge, RoundIconButton } from '../../components/ui';
 import { KitchenStackParamList } from '../../navigation/KitchenNavigator';
+import { useCalendarColors } from '../../lib/calendarPrefs';
 import { colors, radius, spacing } from '../../theme';
 
-type Nav = NativeStackNavigationProp<KitchenStackParamList, 'KitchenHome'>;
+type Nav = NativeStackNavigationProp<KitchenStackParamList, 'Recipes'>;
 
 // Recipes with no tags collect under this pseudo-category.
 const UNTAGGED = 'Untagged';
@@ -102,13 +103,22 @@ function SwipeableRow({ children, onDelete }: { children: React.ReactNode; onDel
   );
 }
 
-export default function RecipesPane() {
+// The recipe library, a standalone screen reached from the Meals view's
+// Recipes button (it used to be a segmented pane inside KitchenScreen).
+export default function RecipesScreen() {
   const navigation = useNavigation<Nav>();
   const qc = useQueryClient();
+  const accent = useCalendarColors().colors.recipes;
   const [search, setSearch] = useState('');
   const [selectedTag, setSelectedTag] = useState<string | null>(null);
   // The recipe awaiting delete confirmation (drives the confirm modal).
   const [pendingDelete, setPendingDelete] = useState<Recipe | null>(null);
+
+  useLayoutEffect(() => {
+    navigation.setOptions({
+      headerRight: () => <RoundIconButton icon="add" onPress={() => navigation.navigate('RecipeForm', {})} bg={accent} />,
+    });
+  }, [navigation, accent]);
 
   const recipesQ = useQuery({
     queryKey: ['recipes'],
@@ -259,7 +269,7 @@ export default function RecipesPane() {
 }
 
 const styles = StyleSheet.create({
-  pane: { flex: 1 },
+  pane: { flex: 1, backgroundColor: colors.background },
   content: { padding: spacing.md, paddingBottom: 96 },
   chips: { gap: spacing.xs, paddingTop: spacing.sm, paddingBottom: spacing.xs },
   chip: { paddingVertical: 6, paddingHorizontal: 12, borderRadius: 16, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border },

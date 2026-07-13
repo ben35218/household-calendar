@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { View, Text, ScrollView, StyleSheet, Alert, TouchableOpacity } from 'react-native';
+import React, { useLayoutEffect, useState } from 'react';
+import { View, Text, StyleSheet, Alert, TouchableOpacity } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import { useQueryClient } from '@tanstack/react-query';
@@ -9,10 +9,11 @@ import { sealNew, sealUpdate } from '../../lib/e2ee';
 // Encrypted person content (type/birthday stay plaintext during dual-write).
 const PERSON_ENC = (p: Record<string, unknown>) => ({
   name: p.name, relationship: p.relationship, interests: p.interests,
-  notes: p.notes, address: p.address, phone: p.phone, email: p.email,
+  notes: p.notes, address: p.address, businessName: p.businessName, phone: p.phone, email: p.email,
   birthday: p.birthday, // encrypted now (§9.1 P6): cron gated (P3), calendar reads decrypted (P2)
 });
-import { Button, Card, Input, DateField, SegmentedControl, useHeaderCheckButton } from '../../components/ui';
+import { Button, Input, DateField, Screen, SectionTitle, Select, useHeaderCheckButton } from '../../components/ui';
+import { form as fs, GroupCard, CardDivider } from '../../components/formStyles';
 import FormAssist from '../../components/FormAssist';
 import { useFormAssist } from '../../hooks/useFormAssist';
 import PlacesAutocomplete from '../../components/PlacesAutocomplete';
@@ -28,25 +29,33 @@ export default function PersonFormScreen() {
   const nav = useNavigation();
   const qc = useQueryClient();
   const { params } = useRoute<R>();
-  const { id, isSelf, type: initialType } = params || {};
+  const { id, isSelf, type: initialType, prefills, queueIndex = 0 } = params || {};
 
   const people = qc.getQueryData<Person[]>(['people']) || [];
   const editing = id ? people.find((p) => p._id === id) : undefined;
 
+  // Review-mode import: the contact currently being reviewed, and whether more
+  // follow it in the queue.
+  const prefill = prefills?.[queueIndex];
+  const inQueue = !!prefills && prefills.length > 0;
+  const hasNext = inQueue && queueIndex + 1 < prefills!.length;
+  const src = editing || prefill; // shared field source for initial values
+
   const [type, setType] = useState<'family' | 'friend' | 'service'>(
-    (editing?.type as 'family' | 'friend' | 'service') || initialType || 'family'
+    (src?.type as 'family' | 'friend' | 'service') || initialType || 'family'
   );
   const isService = type === 'service';
   const [form, setForm] = useState({
-    name: editing?.name ?? '',
-    relationship: editing?.relationship ?? '',
-    birthday: editing?.birthday ? String(editing.birthday).slice(0, 10) : '',
-    address: editing?.address ?? '',
-    notes: editing?.notes ?? '',
-    phone: editing?.phone ?? '',
-    email: editing?.email ?? '',
+    name: src?.name ?? '',
+    relationship: src?.relationship ?? '',
+    businessName: src?.businessName ?? '',
+    birthday: src?.birthday ? String(src.birthday).slice(0, 10) : '',
+    address: src?.address ?? '',
+    notes: src?.notes ?? '',
+    phone: src?.phone ?? '',
+    email: src?.email ?? '',
   });
-  const [interests, setInterests] = useState<string[]>(editing?.interests ? [...editing.interests] : []);
+  const [interests, setInterests] = useState<string[]>(src?.interests ? [...src.interests] : []);
   const [interestDraft, setInterestDraft] = useState('');
   const [saving, setSaving] = useState(false);
   const assist = useFormAssist();
@@ -62,6 +71,7 @@ export default function PersonFormScreen() {
   const assistFields: FormAssistField[] = [
     { name: 'name', type: 'text', label: 'Name' },
     { name: 'relationship', type: 'text', label: 'Relationship / how you know them' },
+    { name: 'businessName', type: 'text', label: 'Business name (for professionals)' },
     { name: 'birthday', type: 'date', label: 'Birthday' },
     { name: 'address', type: 'text', label: 'Address' },
     { name: 'interests', type: 'multiselect', label: 'Interests / hobbies' },
@@ -112,6 +122,12 @@ export default function PersonFormScreen() {
     setInterestDraft('');
   }
 
+  // In review mode, saving one contact advances to the next (or ends the queue).
+  function advance() {
+    if (hasNext) (nav as any).replace('PersonForm', { prefills, queueIndex: queueIndex + 1 });
+    else nav.goBack();
+  }
+
   async function save() {
     if (!form.name.trim()) return;
     setSaving(true);
@@ -120,17 +136,20 @@ export default function PersonFormScreen() {
         type,
         name: form.name.trim(),
         relationship: form.relationship.trim() || undefined,
+        businessName: isService ? form.businessName.trim() || undefined : undefined,
         birthday: form.birthday || undefined,
         address: form.address.trim() || undefined,
         interests: interests.filter(Boolean),
         notes: form.notes.trim() || undefined,
         phone: form.phone.trim() || undefined,
         email: form.email.trim() || undefined,
+        deviceContactId: prefill?.deviceContactId || undefined,
       };
       if (editing?._id) await peopleApi.update(editing._id, await sealUpdate('Person', editing._id, payload, PERSON_ENC(payload)));
       else await peopleApi.create(await sealNew('Person', payload, PERSON_ENC(payload)));
       qc.invalidateQueries({ queryKey: ['people'] });
-      nav.goBack();
+      if (inQueue) advance();
+      else nav.goBack();
     } catch (e: any) {
       Alert.alert('Error', e?.response?.data?.error || 'Save failed');
     } finally {
@@ -156,142 +175,202 @@ export default function PersonFormScreen() {
 
   useHeaderCheckButton(nav, { onPress: save, loading: saving, color: colors.primary, disabled: !form.name.trim() });
 
+  // Review-mode progress in the header title (e.g. "Review 2 of 5").
+  useLayoutEffect(() => {
+    if (inQueue) nav.setOptions({ title: `Review ${queueIndex + 1} of ${prefills!.length}` });
+  }, [nav, inQueue, queueIndex, prefills]);
+
   return (
-    <ScrollView style={styles.container} contentContainerStyle={styles.content}>
+    <Screen>
       {!isSelf ? (
-        <>
-          <FormAssist
-            formType="person / contact"
-            title="AI Assistant"
-            placeholder={'Describe the person, e.g. "my sister Sarah, birthday June 3, loves hiking and photography"'}
-            fields={assistFields}
-            current={{ ...form, interests }}
-            onApply={applyPatch}
-          />
-          <TouchableOpacity style={styles.importRow} onPress={() => (nav as any).navigate('ContactImport')}>
-            <Ionicons name="people-outline" size={18} color={colors.primary} />
-            <Text style={styles.importText}>Import from Contacts</Text>
-          </TouchableOpacity>
-        </>
+        <FormAssist
+          formType="person / contact"
+          placeholder={'Describe the person, e.g. "my sister Sarah, birthday June 3, loves hiking and photography"'}
+          fields={assistFields}
+          current={{ ...form, interests }}
+          onApply={applyPatch}
+        />
       ) : null}
 
-      <Card style={styles.card}>
+      <GroupCard>
+        <Input
+          value={form.name}
+          onChangeText={set('name')}
+          placeholder="Name"
+          editable={!isSelf}
+          containerStyle={fs.headField}
+          style={[fs.headInput, assist.changed.has('name') && fs.headInputHighlight]}
+        />
         {!isSelf ? (
-          <View style={styles.typeRow}>
-            <SegmentedControl
+          <>
+            <CardDivider />
+            <Select
+              inlineLabel="Type"
               value={type}
               options={[
                 { label: 'Family', value: 'family' },
                 { label: 'Friend', value: 'friend' },
-                { label: 'Service', value: 'service' },
+                { label: 'Professional', value: 'service' },
               ]}
-              onChange={(v) => setType(v)}
+              onChange={(v) => v && setType(v as 'family' | 'friend' | 'service')}
+              containerStyle={fs.dtFieldWrap}
+              fieldStyle={fs.rowField}
+              valueStyle={fs.dtValue}
+              chevronIcon="chevron-expand"
             />
-          </View>
-        ) : null}
-
-        <Input label="Name" value={form.name} onChangeText={set('name')} editable={!isSelf} highlight={assist.changed.has('name')} />
-        {isSelf ? (
-          <Text style={styles.hint}>Your name, birthday and home address are managed in Account.</Text>
-        ) : (
-          <>
+            <CardDivider />
             <Input
-              label={
+              value={form.relationship}
+              onChangeText={set('relationship')}
+              placeholder={
                 isService
-                  ? 'Service / business (e.g. plumber, dentist)'
+                  ? 'Service (e.g. plumber, dentist)'
                   : type === 'family'
                   ? 'Relationship (e.g. spouse, daughter)'
                   : 'How you know them (e.g. neighbor)'
               }
-              value={form.relationship}
-              onChangeText={set('relationship')}
-              highlight={assist.changed.has('relationship')}
+              containerStyle={fs.headField}
+              style={[fs.headInput, assist.changed.has('relationship') && fs.headInputHighlight]}
             />
-            {!isService ? (
-              <DateField label="Birthday (optional)" value={form.birthday} onChange={set('birthday')} clearable highlight={assist.changed.has('birthday')} />
+            {isService ? (
+              <>
+                <CardDivider />
+                <Input
+                  value={form.businessName}
+                  onChangeText={set('businessName')}
+                  placeholder="Business name (e.g. Joe's Plumbing)"
+                  containerStyle={fs.headField}
+                  style={[fs.headInput, assist.changed.has('businessName') && fs.headInputHighlight]}
+                />
+              </>
             ) : null}
+            {!isService ? (
+              <>
+                <CardDivider />
+                <DateField
+                  inlineLabel="Birthday"
+                  clearable
+                  placeholder="None"
+                  value={form.birthday}
+                  onChange={set('birthday')}
+                  highlight={assist.changed.has('birthday')}
+                  containerStyle={fs.dtFieldWrap}
+                  fieldStyle={fs.rowField}
+                  valueStyle={fs.dtValue}
+                  hideIcon
+                />
+              </>
+            ) : null}
+            <CardDivider />
             <PlacesAutocomplete
-              label={isService ? 'Address or business name (optional)' : 'Address (optional)'}
               value={form.address}
               onChangeText={set('address')}
-              placeholder={isService ? "e.g. Joe's Plumbing or 123 Main St" : '123 Main St, Toronto, ON'}
+              placeholder={isService ? 'Business address' : 'Address (optional)'}
               type={isService ? 'business' : 'address'}
               onSelect={isService ? onServiceSelect : undefined}
-              highlight={assist.changed.has('address')}
+              containerStyle={fs.headField}
+              inputStyle={[fs.headInput, assist.changed.has('address') && fs.headInputHighlight]}
             />
           </>
-        )}
+        ) : null}
+      </GroupCard>
+      {isSelf ? (
+        <Text style={styles.hint}>Your name, birthday and home address are managed in Account.</Text>
+      ) : null}
 
-        {!isService ? (
-          <>
-            <Text style={styles.fieldLabel}>Interests / hobbies</Text>
+      {!isService ? (
+        <>
+          <SectionTitle>Interests / hobbies</SectionTitle>
+          <GroupCard>
             <View style={styles.tagInputRow}>
-              <View style={styles.tagInputWrap}>
-                <Input
-                  value={interestDraft}
-                  onChangeText={setInterestDraft}
-                  placeholder="e.g. hockey, hiking"
-                  onSubmitEditing={addInterest}
-                  returnKeyType="done"
-                />
-              </View>
-              <Button title="Add" variant="ghost" onPress={addInterest} />
+              <Input
+                value={interestDraft}
+                onChangeText={setInterestDraft}
+                placeholder="e.g. hockey, hiking"
+                onSubmitEditing={addInterest}
+                returnKeyType="done"
+                containerStyle={[fs.headField, styles.tagInputWrap]}
+                style={fs.headInput}
+              />
+              <TouchableOpacity onPress={addInterest} disabled={!interestDraft.trim()} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                <Ionicons name="add-circle" size={28} color={interestDraft.trim() ? colors.primary : colors.border} />
+              </TouchableOpacity>
             </View>
             {interests.length > 0 ? (
-              <View style={styles.tags}>
-                {interests.map((i) => (
-                  <TouchableOpacity
-                    key={i}
-                    style={styles.tag}
-                    onPress={() => setInterests((arr) => arr.filter((x) => x !== i))}
-                  >
-                    <Text style={styles.tagText}>{i}</Text>
-                    <Ionicons name="close" size={14} color={colors.primary} />
-                  </TouchableOpacity>
-                ))}
-              </View>
+              <>
+                <CardDivider />
+                <View style={styles.tags}>
+                  {interests.map((i) => (
+                    <TouchableOpacity
+                      key={i}
+                      style={styles.tag}
+                      onPress={() => setInterests((arr) => arr.filter((x) => x !== i))}
+                    >
+                      <Text style={styles.tagText}>{i}</Text>
+                      <Ionicons name="close" size={14} color={colors.primary} />
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              </>
             ) : null}
-          </>
-        ) : null}
+          </GroupCard>
+        </>
+      ) : null}
 
-        <Input
-          label="Notes for AI (optional)"
-          value={form.notes}
-          onChangeText={set('notes')}
-          multiline
-          numberOfLines={3}
-          style={styles.notes}
-          highlight={assist.changed.has('notes')}
-        />
+      <SectionTitle>Notes for AI</SectionTitle>
+      <Input
+        value={form.notes}
+        onChangeText={set('notes')}
+        multiline
+        numberOfLines={3}
+        placeholder="Anything the assistant should know about them…"
+        style={styles.notes}
+        highlight={assist.changed.has('notes')}
+      />
 
-        {!isSelf ? (
-          <>
-            <Input label="Phone (optional)" value={form.phone} onChangeText={set('phone')} keyboardType="phone-pad" highlight={assist.changed.has('phone')} />
-            <Input label="Email (optional)" value={form.email} onChangeText={set('email')} keyboardType="email-address" autoCapitalize="none" highlight={assist.changed.has('email')} />
-          </>
-        ) : null}
-      </Card>
+      {!isSelf ? (
+        <GroupCard>
+          <Input
+            value={form.phone}
+            onChangeText={set('phone')}
+            placeholder="Phone (optional)"
+            keyboardType="phone-pad"
+            containerStyle={fs.headField}
+            style={[fs.headInput, assist.changed.has('phone') && fs.headInputHighlight]}
+          />
+          <CardDivider />
+          <Input
+            value={form.email}
+            onChangeText={set('email')}
+            placeholder="Email (optional)"
+            keyboardType="email-address"
+            autoCapitalize="none"
+            containerStyle={fs.headField}
+            style={[fs.headInput, assist.changed.has('email') && fs.headInputHighlight]}
+          />
+        </GroupCard>
+      ) : null}
 
-      {canDelete ? <Button title="Delete" variant="danger" onPress={remove} /> : null}
-    </ScrollView>
+      {inQueue ? (
+        <View style={fs.footer}>
+          <Button title={hasNext ? 'Skip this contact' : 'Skip & finish'} variant="ghost" onPress={advance} />
+        </View>
+      ) : null}
+
+      {canDelete ? (
+        <View style={fs.footer}>
+          <Button title="Delete" variant="danger" onPress={remove} />
+        </View>
+      ) : null}
+    </Screen>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: colors.background },
-  content: { padding: spacing.md },
-  card: { marginBottom: spacing.md },
-  importRow: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: spacing.sm,
-    paddingVertical: spacing.sm, marginBottom: spacing.md,
-  },
-  importText: { color: colors.primary, fontSize: 15, fontWeight: '600' },
-  typeRow: { marginBottom: spacing.md },
-  hint: { fontSize: 12, color: colors.textMuted, marginTop: -4, marginBottom: spacing.sm },
-  fieldLabel: { fontSize: 13, fontWeight: '600', color: colors.text, marginBottom: 4, marginTop: 4 },
-  tagInputRow: { flexDirection: 'row', alignItems: 'flex-start', gap: spacing.sm },
+  hint: { fontSize: 12, color: colors.textMuted, marginTop: -spacing.sm, marginBottom: spacing.md },
+  tagInputRow: { flexDirection: 'row', alignItems: 'center', paddingRight: 14 },
   tagInputWrap: { flex: 1 },
-  tags: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginBottom: spacing.sm },
+  tags: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, padding: 14 },
   tag: {
     flexDirection: 'row', alignItems: 'center', gap: 4,
     borderWidth: 1, borderColor: colors.primary, borderRadius: 16,

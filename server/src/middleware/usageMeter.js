@@ -141,24 +141,25 @@ function enforcedTokens(req, period) {
   return effectiveTokens(req.household, period);
 }
 
-// Record tokens an AI call consumed. Always bumps the household pool (analytics +
-// paid enforcement); on free also bumps the per-user counter (free enforcement).
-// `action` gets a per-action token split for analytics. Fire-and-forget; returns
-// the token count so handlers can echo `tokensUsed` back to the client.
+// Record tokens an AI call consumed. Always bumps BOTH the household pool
+// (fleet analytics + paid enforcement) and the per-user counter (free
+// enforcement + per-user admin attribution — on paid plans the user counter is
+// analytics-only, enforcedTokens never reads it there). `action` gets a
+// per-action token split for analytics. Fire-and-forget; returns the token
+// count so handlers can echo `tokensUsed` back to the client.
 async function recordTokens(req, usage, action = null) {
   const t = totalTokens(usage);
   if (!t) return 0;
   const period = currentPeriodKey();
   const household = req.household;
   const user = req.user;
-  const perUser = (household?.plan || 'free') === 'free';
   if (household?._id) {
     const inc = { [`usageTokens.${period}.tokens`]: t };
     if (action) inc[`usageTokens.${period}.byAction.${action}`] = t;
     Household.updateOne({ _id: household._id }, { $inc: inc })
       .catch((err) => console.error('[recordTokens] household inc failed:', err.message));
   }
-  if (perUser && user?._id) {
+  if (user?._id) {
     User.updateOne({ _id: user._id }, { $inc: { [`usageTokens.${period}.tokens`]: t } })
       .catch((err) => console.error('[recordTokens] user inc failed:', err.message));
   }
@@ -220,6 +221,14 @@ function meter(action, surface = null) {
       if (limit != null) {
         const used = enforcedTokens(req, period);
         if (used >= limit) {
+          // Count the refusal per user: repeated attempts after hitting the cap
+          // are the primary abuse signal the admin AI-usage view surfaces.
+          if (user?._id) {
+            User.updateOne(
+              { _id: user._id },
+              { $inc: { [`usageBlocked.${period}.${action}`]: 1 } }
+            ).catch((err) => console.error('[usageMeter] blocked-attempt inc failed:', err.message));
+          }
           return res.status(402).json({
             error: 'You’ve reached your weekly AI limit. Upgrade for more.',
             code: 'TOKENS_EXCEEDED',

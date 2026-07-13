@@ -54,6 +54,8 @@ async function fetchWeather(lat, lon) {
         'precipitation_sum',
         'precipitation_probability_max',
         'wind_speed_10m_max',
+        'sunrise',
+        'sunset',
       ].join(','),
       hourly: [
         'temperature_2m',
@@ -121,6 +123,8 @@ function buildForecast(raw) {
         daily.precipitation_probability_max[i],
         prevPrecip
       ),
+      sunrise: daily.sunrise?.[i],
+      sunset: daily.sunset?.[i],
       hours: hourlyByDate[date] ?? [],
     };
   });

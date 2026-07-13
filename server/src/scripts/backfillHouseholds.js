@@ -20,7 +20,7 @@ async function run() {
     let household = await Household.findOne({ ownerId: user._id });
     if (!household) household = await Household.createForOwner(user._id, `${user.firstName || 'My'}'s Household`);
     await User.updateOne({ _id: user._id }, { $set: { householdId: household._id } });
-    console.log(`  ✓ ${user.email || user._id} → household ${household._id} (code ${household.joinCode})`);
+    console.log(`  ✓ ${user.email || user._id} → household ${household._id}`);
   }
   console.log('Done.');
   process.exit(0);

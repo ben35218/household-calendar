@@ -2,6 +2,25 @@
 # Dashboard → New + → Blueprint → connect this repo; Render reads this file.
 # Secrets marked `sync: false` are entered in the Render UI, never committed.
 services:
+  # Marketing/legal static site at householdcalendar.com (terms + privacy are
+  # App Store review requirements; the paywall and email CTAs link here).
+  - type: web
+    runtime: static
+    name: household-calendar-web
+    rootDir: static
+    buildCommand: ""
+    staticPublishPath: .
+    domains:
+      - householdcalendar.com
+      - www.householdcalendar.com
+    routes:
+      - type: rewrite
+        source: /terms
+        destination: /terms.html
+      - type: rewrite
+        source: /privacy
+        destination: /privacy.html
+
   - type: web
     name: household-calendar-api
     runtime: node
@@ -25,8 +44,38 @@ services:
         value: 7d
       - key: UPLOAD_DIR
         value: /var/data/uploads
+      # --- outbound email (Migadu, services/mailer.js) ---
+      - key: SMTP_HOST
+        value: smtp.migadu.com
+      - key: SMTP_PORT
+        value: "465"
+      - key: SMTP_USER
+        value: no-reply@householdcalendar.com
+      - key: MAIL_FROM
+        value: Household Calendar <no-reply@householdcalendar.com>
+      # --- support inbox in the admin app (Migadu, services/supportMail.js) ---
+      - key: SUPPORT_EMAIL_USER
+        value: support@householdcalendar.com
+      # App-download links in email CTAs — set store URLs once the listings exist
+      - key: APP_STORE_URL
+        sync: false
+      - key: PLAY_STORE_URL
+        sync: false
+      - key: WEB_URL
+        value: https://householdcalendar.com
+      # --- passkey sign-in (routes/authPasskey.js) ---
+      # RP ID must match the mobile app's PASSKEY_RP_ID and the domain serving
+      # the AASA/assetlinks association files. PASSKEY_ORIGINS defaults to
+      # https://<rp-id> (what iOS asserts from); append the Android
+      # android:apk-key-hash:<hash> origin (comma-separated) for Play builds.
+      - key: PASSKEY_RP_ID
+        value: householdcalendar.com
       # --- secrets / set in the Render dashboard ---
       - key: MONGODB_URI
+        sync: false
+      - key: SMTP_PASS
+        sync: false
+      - key: SUPPORT_EMAIL_PASS
         sync: false
       - key: ANTHROPIC_API_KEY
         sync: false

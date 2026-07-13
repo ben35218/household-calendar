@@ -1,4 +1,4 @@
-import React, { useMemo, useRef } from 'react';
+import React, { forwardRef, useImperativeHandle, useMemo, useRef } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, FlatList } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
@@ -6,22 +6,31 @@ import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useQuery } from '@tanstack/react-query';
 import { loadCalendarData } from '../../lib/calendarData';
-import { useAuth } from '../../store/auth';
-import { getCanadianHolidays } from '../../lib/holidays';
-import { useCalendarVisibility, useHolidayPrefs, useCalendarColors } from '../../lib/calendarPrefs';
+import { getHolidays } from '../../lib/holidays';
+import { useCalendarVisibility, useHolidayCalendars, holidayEnabledIds, useCalendarColors } from '../../lib/calendarPrefs';
 import { SegmentedControl } from '../../components/ui';
-import AssistantIcon from '../../components/AssistantIcon';
-import InvitationsButton from '../../components/InvitationsButton';
-import { useAiEnabled } from '../../lib/privacyPrefs';
 import { colors, spacing } from '../../theme';
 import type { CalendarStackParamList } from '../../navigation/CalendarNavigator';
 
 type Nav = NativeStackNavigationProp<CalendarStackParamList>;
 
-// Solid backing for the floating button clusters (matches CalendarScreen).
-const PILL_BG = colors.surface;
-const BTN_FG = '#fff';
-const TOP_BAR_ROW = 52;
+// Imperative handle shared with CalendarGrid so the host's single Today button
+// can drive whichever layer is active.
+export type TodayHandle = { scrollToToday: (animated?: boolean) => void };
+
+const TOP_BAR_ROW = 52; // matches CalendarScreen's floating button row
+
+// Lazy data window. loadCalendarData decrypts and recurrence-expands the whole
+// requested range on-device, so a fixed ±5y load is the expensive part — not
+// the list itself (already virtualized). Start with a generous window around
+// today and widen by 2-year chunks when the user scrolls near either edge,
+// capped at ±5y (the old fixed range).
+const INITIAL_PAST_MONTHS = 12;
+const INITIAL_FUTURE_MONTHS = 24;
+const EXTEND_MONTHS = 24;
+const MAX_MONTHS = 60;
+// Extend the past once the user scrolls within ~3 screens of the top.
+const PAST_TRIGGER_PX = 2400;
 
 // Fixed row heights — deterministic so getItemLayout is exact, which lets the
 // list paint directly at the Today marker via initialScrollIndex (no scroll-from-top).
@@ -34,14 +43,15 @@ const CARD_H1 = 52;
 const CARD_H2 = 68;
 const EMPTY_H = 240;
 
-const CAL_COLORS: Record<string, string> = {
-  maintenance: '#1976D2', activities: '#388E3C', appointments: '#7B1FA2',
-  chores: '#F57C00', 'canadian-holidays': '#D32F2F', birthdays: '#E91E63',
-};
 const CAL_ICONS: Record<string, string> = {
   maintenance: 'wrench', activities: 'run', appointments: 'stethoscope',
-  chores: 'broom', 'canadian-holidays': 'flag', birthdays: 'cake-variant',
+  chores: 'broom', birthdays: 'cake-variant',
 };
+
+// Icon for a calendar row: per-country holiday calendars (holiday-XX) all use a
+// flag; everything else falls back to CAL_ICONS.
+const iconForCalendar = (calendarType: string): string =>
+  CAL_ICONS[calendarType] ?? (calendarType.startsWith('holiday-') ? 'flag' : 'calendar');
 
 type AgendaItem = {
   _id: string;
@@ -91,40 +101,57 @@ function dayLabel(dateStr: string): string {
 
 function timeLabel(item: AgendaItem): string {
   if (item.allDay) return 'All day';
-  const start = new Date(item.startDate).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+  const start = new Date(item.startDate).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit', hour12: true });
   if (!item.endDate) return start;
-  return `${start} – ${new Date(item.endDate).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}`;
+  return `${start} – ${new Date(item.endDate).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit', hour12: true })}`;
 }
 
 // Mirrors client/src/views/EventsView.vue — a unified agenda of tasks, chores,
-// events, and holidays grouped by day with a Today marker. Chrome-free with the
-// same floating buttons as the calendar (the list button becomes a "back to
-// calendar" button); opens painted directly at Today.
-export default function EventsScreen() {
+// events, and holidays grouped by day with a Today marker; opens painted
+// directly at Today. Rendered as a content layer inside CalendarScreen's view
+// toggle: the host owns all floating chrome (avatar, pills) and crossfades this
+// layer against the month grid, so this draws no buttons of its own — just the
+// list and a black backdrop under the host's top button row.
+const AgendaView = forwardRef<TodayHandle>(function AgendaView(_props, ref) {
   const nav = useNavigation<Nav>();
-  const aiEnabled = useAiEnabled();
   const insets = useSafeAreaInsets();
-  const { user } = useAuth();
   const { visibility } = useCalendarVisibility();
-  const { enabledIds } = useHolidayPrefs();
+  const { calendars: holidayCals } = useHolidayCalendars();
   const { colors: calColors } = useCalendarColors();
   const [timeFilter, setTimeFilter] = React.useState<'all' | 'upcoming' | 'past'>('all');
 
   const listRef = useRef<FlatList<Row>>(null);
   const topOffset = insets.top + TOP_BAR_ROW + 8;
 
+  const [pastMonths, setPastMonths] = React.useState(INITIAL_PAST_MONTHS);
+  const [futureMonths, setFutureMonths] = React.useState(INITIAL_FUTURE_MONTHS);
+
   const range = useMemo(() => {
     const now = new Date();
-    const from = new Date(now.getFullYear() - 5, now.getMonth(), now.getDate());
-    const to = new Date(now.getFullYear() + 5, now.getMonth(), now.getDate());
+    const from = new Date(now.getFullYear(), now.getMonth() - pastMonths, now.getDate());
+    const to = new Date(now.getFullYear(), now.getMonth() + futureMonths, now.getDate());
     return { from, to };
-  }, []);
+  }, [pastMonths, futureMonths]);
 
-  const { data, isLoading } = useQuery({
-    queryKey: ['calendar', 'events-list'],
+  // placeholderData keeps the current rows on screen while a widened window
+  // loads, so extending the range never blanks the list back to a spinner.
+  const { data, isLoading, isFetching } = useQuery({
+    queryKey: ['calendar', 'events-list', pastMonths, futureMonths],
     queryFn: async () =>
       loadCalendarData({ from: range.from.toISOString(), to: range.to.toISOString() }),
+    placeholderData: (prev) => prev,
   });
+
+  // Widening is scroll-driven and idempotent at the caps; skip directions the
+  // active filter can't show, and don't stack loads while one is in flight.
+  const extendPast = () => {
+    if (isFetching || timeFilter === 'upcoming') return;
+    setPastMonths((m) => Math.min(MAX_MONTHS, m + EXTEND_MONTHS));
+  };
+  const extendFuture = () => {
+    if (isFetching || timeFilter === 'past') return;
+    setFutureMonths((m) => Math.min(MAX_MONTHS, m + EXTEND_MONTHS));
+  };
 
   // Build flattened rows + the index of the Today marker + per-row offsets.
   const { rows, todayIndex, offsets } = useMemo(() => {
@@ -160,11 +187,13 @@ export default function EventsScreen() {
           startDate: b.date + 'T12:00:00Z', allDay: true,
         });
       }
-      for (const h of getCanadianHolidays(range.from, range.to, enabledIds)) {
-        items.push({
-          _id: `holiday-${h.date}-${h.id}`, calendarType: 'canadian-holidays', title: h.name,
-          startDate: h.date + 'T12:00:00Z', allDay: true,
-        });
+      for (const cal of holidayCals) {
+        for (const h of getHolidays(cal.country, range.from, range.to, holidayEnabledIds(cal))) {
+          items.push({
+            _id: `${cal.id}-${h.date}-${h.id}`, calendarType: cal.id, title: h.name,
+            startDate: h.date + 'T12:00:00Z', allDay: true,
+          });
+        }
       }
 
       const today = ymd(new Date());
@@ -207,12 +236,14 @@ export default function EventsScreen() {
     for (const r of out) { offs.push(acc); acc += rowHeight(r); }
 
     return { rows: out, todayIndex: tIdx, offsets: offs };
-  }, [data, visibility, enabledIds, timeFilter, range, nav]);
+  }, [data, visibility, holidayCals, timeFilter, range, nav]);
 
   const scrollToToday = (animated: boolean) => {
     if (todayIndex < 0) return;
     listRef.current?.scrollToIndex({ index: todayIndex, animated });
   };
+
+  useImperativeHandle(ref, () => ({ scrollToToday: (animated = true) => scrollToToday(animated) }));
 
   const renderRow = ({ item: row }: { item: Row }) => {
     if (row.kind === 'filter') {
@@ -264,7 +295,7 @@ export default function EventsScreen() {
         activeOpacity={0.7}
       >
         <MaterialCommunityIcons
-          name={(CAL_ICONS[item.calendarType] ?? 'calendar') as any}
+          name={iconForCalendar(item.calendarType) as any}
           size={24}
           color={color}
           style={styles.cardIcon}
@@ -277,8 +308,6 @@ export default function EventsScreen() {
       </RowWrap>
     );
   };
-
-  const initial = user?.firstName?.charAt(0).toUpperCase() ?? '?';
 
   return (
     <View style={styles.container}>
@@ -295,6 +324,19 @@ export default function EventsScreen() {
           contentContainerStyle={{ paddingHorizontal: spacing.md, paddingTop: topOffset, paddingBottom: insets.bottom + 80 }}
           initialNumToRender={20}
           windowSize={11}
+          onScroll={(e) => {
+            if (e.nativeEvent.contentOffset.y < PAST_TRIGGER_PX) extendPast();
+          }}
+          scrollEventThrottle={32}
+          onEndReached={extendFuture}
+          onEndReachedThreshold={2}
+          // Keep the viewport anchored when a past extension prepends rows.
+          maintainVisibleContentPosition={{ minIndexForVisible: 0 }}
+          // Visible while widening toward the future (a past widening fills in
+          // above the viewport, so no indicator is needed there).
+          ListFooterComponent={
+            isFetching && !isLoading ? <ActivityIndicator color={colors.primary} style={styles.footerLoader} /> : null
+          }
           onScrollToIndexFailed={(info) => {
             listRef.current?.scrollToOffset({ offset: info.averageItemLength * info.index, animated: false });
             setTimeout(() => scrollToToday(false), 60);
@@ -302,46 +344,13 @@ export default function EventsScreen() {
         />
       )}
 
-      {/* ── Black top bar holding the top button groups ───────────────────────── */}
-      <View style={[styles.topBar, { height: insets.top + TOP_BAR_ROW, paddingTop: insets.top }]}>
-        <TouchableOpacity style={styles.avatar} activeOpacity={0.8} onPress={() => nav.navigate('ProfileHome')}>
-          <Text style={styles.avatarText}>{initial}</Text>
-        </TouchableOpacity>
-        <View style={styles.pill}>
-          <TouchableOpacity style={styles.pillBtn} onPress={() => nav.navigate('CalendarHome')}>
-            <Ionicons name="calendar" size={22} color={BTN_FG} />
-          </TouchableOpacity>
-          <TouchableOpacity style={styles.pillBtn} onPress={() => nav.navigate('CalendarSearch')}>
-            <Ionicons name="search" size={20} color={BTN_FG} />
-          </TouchableOpacity>
-          <TouchableOpacity style={styles.pillBtn} onPress={() => nav.navigate('EventForm', {})}>
-            <Ionicons name="add" size={26} color={BTN_FG} />
-          </TouchableOpacity>
-        </View>
-      </View>
-
-      {/* ── Bottom-left: Today ───────────────────────────────────────────────── */}
-      <View style={[styles.pill, styles.bottomLeft, { bottom: insets.bottom + 16 }]}>
-        <TouchableOpacity style={styles.todayBtn} onPress={() => scrollToToday(true)}>
-          <Text style={styles.todayBtnText}>Today</Text>
-        </TouchableOpacity>
-      </View>
-
-      {/* ── Bottom-right: Calendars + Invitations + Assistant ─────────────────── */}
-      <View style={[styles.pill, styles.bottomRight, { bottom: insets.bottom + 16 }]}>
-        <TouchableOpacity style={styles.bottomPillBtn} onPress={() => nav.navigate('Calendars')}>
-          <MaterialCommunityIcons name="calendar-multiple" size={22} color={BTN_FG} />
-        </TouchableOpacity>
-        <InvitationsButton onPress={() => nav.navigate('Invitations')} />
-        {aiEnabled && (
-          <TouchableOpacity style={styles.bottomPillBtn} onPress={() => nav.navigate('CalendarAssistant')}>
-            <AssistantIcon size={22} color={BTN_FG} />
-          </TouchableOpacity>
-        )}
-      </View>
+      {/* Black backdrop so scrolled content doesn't show behind the host's top buttons. */}
+      <View style={[styles.topBackdrop, { height: insets.top + TOP_BAR_ROW }]} />
     </View>
   );
-}
+});
+
+export default AgendaView;
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#000' },
@@ -359,28 +368,6 @@ const styles = StyleSheet.create({
   cardTitle: { fontSize: 15, fontWeight: '500', color: colors.text },
   cardSub: { fontSize: 12, color: colors.textMuted, marginTop: 2 },
   cardTime: { fontSize: 12, color: colors.textMuted, marginLeft: spacing.sm },
-
-  // ── Top bar + floating buttons (mirror CalendarScreen) ──
-  topBar: {
-    position: 'absolute', top: 0, left: 0, right: 0, zIndex: 10,
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    paddingHorizontal: spacing.md, backgroundColor: '#000',
-  },
-  avatar: {
-    width: 44, height: 44, borderRadius: 22,
-    backgroundColor: PILL_BG, alignItems: 'center', justifyContent: 'center',
-    shadowColor: '#000', shadowOpacity: 0.15, shadowRadius: 4, shadowOffset: { width: 0, height: 2 }, elevation: 3,
-  },
-  avatarText: { color: BTN_FG, fontSize: 18, fontWeight: '700' },
-  pill: {
-    flexDirection: 'row', alignItems: 'center', backgroundColor: PILL_BG,
-    borderRadius: 999, paddingHorizontal: 6, paddingVertical: 4,
-    shadowColor: '#000', shadowOpacity: 0.15, shadowRadius: 4, shadowOffset: { width: 0, height: 2 }, elevation: 3,
-  },
-  bottomLeft: { position: 'absolute', left: spacing.md, zIndex: 10 },
-  bottomRight: { position: 'absolute', right: spacing.md, zIndex: 10 },
-  pillBtn: { paddingHorizontal: 8, paddingVertical: 6 },
-  bottomPillBtn: { paddingHorizontal: 12, paddingVertical: 6 },
-  todayBtn: { paddingHorizontal: 22, paddingVertical: 6 },
-  todayBtnText: { color: BTN_FG, fontSize: 17, fontWeight: '700' },
+  topBackdrop: { position: 'absolute', top: 0, left: 0, right: 0, backgroundColor: '#000', zIndex: 10 },
+  footerLoader: { paddingVertical: spacing.lg },
 });

@@ -22,6 +22,8 @@ const HouseholdKeyEnvelope = require('../models/HouseholdKeyEnvelope');
 const AuditLog = require('../models/AuditLog');
 const { computeReadiness, dropUnsetFor } = require('../services/dropReadiness');
 const { sharedTripIds, excludeSharedFilter } = require('../services/tripSharing');
+const { outsideSharedCalendarKeys, excludeOutsideCalendarFilter } = require('../services/calendarSharing');
+const CustomCalendar = require('../models/CustomCalendar');
 
 // Content collections scoped by userId. Household is handled separately (by _id).
 const MODELS = {
@@ -75,8 +77,12 @@ async function dropPlaintext(householdId, { commit = false, log = () => {} } = {
   const scope = { userId: { $in: memberIds } };
   const sharedIds = await sharedTripIds(MODELS.Trip, memberIds);
   if (sharedIds.length) log(`  (${sharedIds.length} shared trip(s) + their items are plaintext-exempt)\n`);
+  // Events on outside-shared custom calendars are likewise plaintext-exempt
+  // (§9.5) — collaborators outside the household hold no HDK.
+  const sharedCalKeys = await outsideSharedCalendarKeys(CustomCalendar, memberIds);
+  if (sharedCalKeys.length) log(`  (events on ${sharedCalKeys.length} outside-shared calendar(s) are plaintext-exempt)\n`);
   for (const [name, Model] of Object.entries(MODELS)) {
-    const exempt = excludeSharedFilter(name, sharedIds);
+    const exempt = { ...excludeSharedFilter(name, sharedIds), ...excludeOutsideCalendarFilter(name, sharedCalKeys) };
     const [sealed, missing] = await Promise.all([
       Model.countDocuments({ ...scope, enc: { $exists: true } }),
       Model.countDocuments({ ...scope, ...exempt, enc: { $exists: false } }),
@@ -105,9 +111,10 @@ async function dropPlaintext(householdId, { commit = false, log = () => {} } = {
   for (const [name, Model] of Object.entries(MODELS)) {
     const unset = dropUnsetFor(name);
     if (!unset) continue;
-    // Never null a shared trip's (or its items') plaintext — collaborators outside
-    // the household read it and hold no HDK.
-    const exempt = excludeSharedFilter(name, sharedIds);
+    // Never null a shared trip's (or its items') plaintext, nor an event's on
+    // an outside-shared calendar — collaborators outside the household read
+    // them and hold no HDK.
+    const exempt = { ...excludeSharedFilter(name, sharedIds), ...excludeOutsideCalendarFilter(name, sharedCalKeys) };
     const res = await Model.updateMany({ ...scope, ...exempt, enc: { $exists: true } }, { $unset: unset });
     nulled[name] = res.modifiedCount;
     log(`  ${name.padEnd(16)} nulled ${res.modifiedCount}`);

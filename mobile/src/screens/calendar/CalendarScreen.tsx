@@ -1,5 +1,5 @@
-import React, { useMemo, useRef, useState } from 'react';
-import { View, Text, StyleSheet, ActivityIndicator, FlatList, TouchableOpacity, useWindowDimensions, NativeSyntheticEvent, NativeScrollEvent } from 'react-native';
+import React, { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
+import { View, Text, StyleSheet, ActivityIndicator, FlatList, TouchableOpacity, useWindowDimensions, Animated, NativeSyntheticEvent, NativeScrollEvent } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useQuery } from '@tanstack/react-query';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
@@ -9,14 +9,15 @@ import { CalendarData, Chore } from '../../api';
 import { loadCalendarData } from '../../lib/calendarData';
 import { useAuth } from '../../store/auth';
 import { weekBars, WeekBar, CALENDAR_COLORS, eventColor, ymd } from '../../lib/calendar';
-import { getCanadianHolidays } from '../../lib/holidays';
-import { useCalendarVisibility, useHolidayPrefs, useCalendarColors } from '../../lib/calendarPrefs';
+import { getHolidays } from '../../lib/holidays';
+import { useCalendarVisibility, useHolidayCalendars, holidayEnabledIds, useCalendarColors } from '../../lib/calendarPrefs';
 import { mdiName } from '../../lib/recurrence';
 import { CalendarStackParamList } from '../../navigation/CalendarNavigator';
 import { colors, spacing } from '../../theme';
 import AssistantIcon from '../../components/AssistantIcon';
 import InvitationsButton from '../../components/InvitationsButton';
 import { useAiEnabled } from '../../lib/privacyPrefs';
+import AgendaView, { TodayHandle } from './AgendaView';
 
 type Nav = NativeStackNavigationProp<CalendarStackParamList, 'CalendarHome'>;
 
@@ -53,9 +54,13 @@ const eventLd = (e: { allDay?: boolean }, iso: string) => (e.allDay ? ld(iso) : 
 // Compact start-time label for chips: on-the-hour drops the minutes ("9:00 AM" → "9AM").
 const chipTimeLabel = (iso: string) =>
   new Date(iso)
-    .toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })
+    .toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit', hour12: true })
     .replace(':00', '')
     .replace(/\s+/g, '');
+
+// Whether this app launch already auto-opened an in-progress trip (module-level
+// so returning to the calendar later in the session doesn't re-hijack it).
+let autoOpenedTrip = false;
 
 type Chip = { key: string; label: string; color: string; time?: string };
 type CellContent = { chips: Chip[]; tasks: number; chores: Chore[]; recipes: number; grocery: boolean };
@@ -71,14 +76,17 @@ function monthWindow(): { year: number; month: number }[] {
   });
 }
 
-export default function CalendarScreen() {
+// The scrolling month grid plus its fixed header rows (sticky Month Year +
+// weekday labels). A content layer inside CalendarScreen's view toggle: the
+// host owns all floating chrome (avatar, pills) and crossfades this layer
+// against the agenda, so the header's top row is just empty space under the
+// host's buttons.
+const CalendarGrid = forwardRef<TodayHandle>(function CalendarGrid(_props, ref) {
   const navigation = useNavigation<Nav>();
   const insets = useSafeAreaInsets();
-  const aiEnabled = useAiEnabled();
-  const { user } = useAuth();
   const { width } = useWindowDimensions();
   const { visibility } = useCalendarVisibility();
-  const { enabledIds } = useHolidayPrefs();
+  const { calendars: holidayCals } = useHolidayCalendars();
   const { colors: calColors } = useCalendarColors();
 
   const cellSize = (width - spacing.md * 2) / 7;
@@ -110,11 +118,13 @@ export default function CalendarScreen() {
     return { gridStart, rangeEnd };
   }, [win]);
 
-  // Open on the week that holds the 1st of the current month.
+  // Open on the week that contains today. Round the day count first so a DST
+  // hour shift between gridStart and today can't tip the floor across a week.
   const initialWeekIndex = useMemo(() => {
     const now = new Date();
-    const monthFirst = new Date(now.getFullYear(), now.getMonth(), 1);
-    return Math.max(0, Math.floor((+monthFirst - +grid.gridStart) / (7 * 86400000)));
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const days = Math.round((+today - +grid.gridStart) / 86400000);
+    return Math.max(0, Math.floor(days / 7));
   }, [grid]);
 
   const [curIdx, setCurIdx] = useState(initialWeekIndex);
@@ -124,13 +134,33 @@ export default function CalendarScreen() {
     queryFn: async () => loadCalendarData({ from: range.from, to: range.to }),
   });
 
+  // While on a trip, land on its detail screen instead of the grid (once per
+  // launch, and only if the user hasn't already navigated somewhere else).
+  // TripDetail is pushed over this screen, so its back button pops to the calendar.
+  useEffect(() => {
+    if (autoOpenedTrip || !calQ.data) return;
+    autoOpenedTrip = true;
+    if (!navigation.isFocused()) return;
+    const today = ymd(new Date());
+    const current = (calQ.data.trips ?? []).find(
+      (t) => t.status !== 'considering' && (t.ranges ?? []).some((r) => ld(r.start) <= today && today <= ld(r.end)),
+    );
+    if (current) navigation.navigate('TripDetail', { id: current.id });
+  }, [calQ.data, navigation]);
+
+  // Holidays from every visible per-country calendar, each tagged with its own
+  // colour so a day can carry (say) Canadian and US holidays side by side.
   const holidaysByDate = useMemo(() => {
-    const map: Record<string, { id: string; name: string; date: string }[]> = {};
-    for (const h of getCanadianHolidays(range.fromDate, range.toDate, enabledIds)) {
-      (map[h.date] ??= []).push(h);
+    const map: Record<string, { id: string; name: string; color: string }[]> = {};
+    for (const cal of holidayCals) {
+      if (visibility[cal.id] === false) continue;
+      const color = calColors[cal.id] ?? cal.color;
+      for (const h of getHolidays(cal.country, range.fromDate, range.toDate, holidayEnabledIds(cal))) {
+        (map[h.date] ??= []).push({ id: `${cal.id}-${h.id}`, name: h.name, color });
+      }
     }
     return map;
-  }, [range, enabledIds]);
+  }, [range, holidayCals, visibility, calColors]);
 
   const visible = (id: string) => visibility[id] !== false;
 
@@ -151,7 +181,7 @@ export default function CalendarScreen() {
     const content = (dateStr: string): CellContent => {
       if (!data) return { chips: [], tasks: 0, chores: [], recipes: 0, grocery: false };
       const chips: Chip[] = [];
-      if (visible('canadian-holidays')) for (const h of holidaysByDate[dateStr] ?? []) chips.push({ key: `hol-${h.id}`, label: h.name, color: calColors['canadian-holidays'] });
+      for (const h of holidaysByDate[dateStr] ?? []) chips.push({ key: `hol-${h.id}`, label: h.name, color: h.color });
       if (visible('birthdays')) for (const b of data.birthdays ?? []) if (ld(b.date) === dateStr) chips.push({ key: `b-${b.id}`, label: b.name, color: calColors.birthdays });
       for (const e of data.events ?? []) {
         if (!visible(e.calendarType)) continue;
@@ -224,12 +254,23 @@ export default function CalendarScreen() {
   }, [calQ.data, visData, holidaysByDate, visibility, grid, charsPerLine, calColors]);
 
   // Place today's week at the top of the viewport, just below the sticky header.
-  const goToday = () =>
+  const goToday = (animated = true) =>
     listRef.current?.scrollToOffset({
       offset: Math.max(0, topPad + todayWeekOffset - headerH),
-      animated: true,
+      animated,
     });
-  const initial = user?.firstName?.charAt(0).toUpperCase() ?? '?';
+
+  useImperativeHandle(ref, () => ({ scrollToToday: (animated = true) => goToday(animated) }));
+
+  // initialScrollIndex positions the list using pre-data week heights (all
+  // MIN_WEEK); once real data lands the earlier weeks grow and today's week
+  // shifts down, so snap back to it with the final offsets.
+  const snappedToToday = useRef(false);
+  useEffect(() => {
+    if (snappedToToday.current || !calQ.data) return;
+    snappedToToday.current = true;
+    goToday(false);
+  }, [calQ.data, todayWeekOffset]);
 
   // Track which week sits at the top of the viewport so the sticky header can
   // show that week's "Month Year" label. offsets[i] is week i's top within the content.
@@ -294,8 +335,11 @@ export default function CalendarScreen() {
       })}
 
       {week.bars.map((bar) => (
-        <View
+        <TouchableOpacity
           key={bar.key}
+          disabled={!bar.tripId}
+          activeOpacity={0.7}
+          onPress={() => bar.tripId && navigation.navigate('TripDetail', { id: bar.tripId })}
           style={[
             styles.spanBar,
             {
@@ -307,7 +351,7 @@ export default function CalendarScreen() {
           ]}
         >
           <Text style={styles.spanBarText} numberOfLines={1} ellipsizeMode="clip">{bar.label}</Text>
-        </View>
+        </TouchableOpacity>
       ))}
     </View>
   );
@@ -328,25 +372,10 @@ export default function CalendarScreen() {
         scrollEventThrottle={16}
       />
 
-      {/* ── Fixed 3-row header: buttons · sticky Month Year · weekday labels ───── */}
+      {/* ── Fixed 3-row header: (host button row) · sticky Month Year · weekday labels ── */}
       <View style={[styles.topBar, { height: headerH, paddingTop: insets.top }]}>
-        {/* Row 1 — avatar + action buttons */}
-        <View style={[styles.headerButtonRow, { height: TOP_BAR_ROW }]}>
-          <TouchableOpacity style={styles.avatar} activeOpacity={0.8} onPress={() => navigation.navigate('ProfileHome')}>
-            <Text style={styles.avatarText}>{initial}</Text>
-          </TouchableOpacity>
-          <View style={styles.pill}>
-            <TouchableOpacity style={styles.pillBtn} onPress={() => navigation.navigate('Events')}>
-              <Ionicons name="list" size={22} color={BTN_FG} />
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.pillBtn} onPress={() => navigation.navigate('CalendarSearch')}>
-              <Ionicons name="search" size={20} color={BTN_FG} />
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.pillBtn} onPress={() => navigation.navigate('EventForm', {})}>
-              <Ionicons name="add" size={26} color={BTN_FG} />
-            </TouchableOpacity>
-          </View>
-        </View>
+        {/* Row 1 — empty space under the host's avatar + action buttons */}
+        <View style={{ height: TOP_BAR_ROW }} />
 
         {/* Row 2 — current month, updated as the user scrolls */}
         <View style={[styles.headerMonthRow, { height: HEADER_MONTH_H }]}>
@@ -362,10 +391,86 @@ export default function CalendarScreen() {
           ))}
         </View>
       </View>
+    </View>
+  );
+});
+
+// Hosts the month grid and the agenda list as two always-black layers under
+// shared floating chrome. The list/calendar button is a mode toggle, not
+// navigation: both layers stay mounted (agenda lazily, after first use) and
+// crossfade in place with a slight zoom, so the chrome never moves.
+export default function CalendarScreen() {
+  const navigation = useNavigation<Nav>();
+  const insets = useSafeAreaInsets();
+  const aiEnabled = useAiEnabled();
+  const { user } = useAuth();
+
+  const [mode, setMode] = useState<'grid' | 'agenda'>('grid');
+  const [agendaMounted, setAgendaMounted] = useState(false);
+  const progress = useRef(new Animated.Value(0)).current; // 0 = grid, 1 = agenda
+  const gridRef = useRef<TodayHandle>(null);
+  const agendaRef = useRef<TodayHandle>(null);
+
+  const toggleMode = () => {
+    const next = mode === 'grid' ? 'agenda' : 'grid';
+    if (next === 'agenda') setAgendaMounted(true);
+    setMode(next);
+    Animated.timing(progress, {
+      toValue: next === 'agenda' ? 1 : 0,
+      duration: 220,
+      useNativeDriver: true,
+    }).start();
+  };
+
+  const gridLayer = {
+    opacity: progress.interpolate({ inputRange: [0, 1], outputRange: [1, 0] }),
+    transform: [{ scale: progress.interpolate({ inputRange: [0, 1], outputRange: [1, 0.97] }) }],
+  };
+  const agendaLayer = {
+    opacity: progress,
+    transform: [{ scale: progress.interpolate({ inputRange: [0, 1], outputRange: [0.97, 1] }) }],
+  };
+
+  const initial = user?.firstName?.charAt(0).toUpperCase() ?? '?';
+
+  return (
+    <View style={styles.screen}>
+      <Animated.View style={[StyleSheet.absoluteFill, gridLayer]} pointerEvents={mode === 'grid' ? 'auto' : 'none'}>
+        <CalendarGrid ref={gridRef} />
+      </Animated.View>
+      {agendaMounted ? (
+        <Animated.View style={[StyleSheet.absoluteFill, agendaLayer]} pointerEvents={mode === 'agenda' ? 'auto' : 'none'}>
+          <AgendaView ref={agendaRef} />
+        </Animated.View>
+      ) : null}
+
+      {/* ── Top row: avatar + view-toggle/search/add (shared by both layers) ──── */}
+      <View
+        style={[styles.topChrome, { paddingTop: insets.top, height: insets.top + TOP_BAR_ROW }]}
+        pointerEvents="box-none"
+      >
+        <TouchableOpacity style={styles.avatar} activeOpacity={0.8} onPress={() => navigation.navigate('ProfileHome')}>
+          <Text style={styles.avatarText}>{initial}</Text>
+        </TouchableOpacity>
+        <View style={styles.pill}>
+          <TouchableOpacity style={styles.pillBtn} onPress={toggleMode}>
+            <Ionicons name={mode === 'grid' ? 'list' : 'calendar'} size={22} color={BTN_FG} />
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.pillBtn} onPress={() => navigation.navigate('CalendarSearch')}>
+            <Ionicons name="search" size={20} color={BTN_FG} />
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.pillBtn} onPress={() => navigation.navigate('EventForm', {})}>
+            <Ionicons name="add" size={26} color={BTN_FG} />
+          </TouchableOpacity>
+        </View>
+      </View>
 
       {/* ── Bottom-left: Today ───────────────────────────────────────────────── */}
       <View style={[styles.pill, styles.bottomLeft, { bottom: insets.bottom + 16 }]}>
-        <TouchableOpacity style={styles.todayBtn} onPress={goToday}>
+        <TouchableOpacity
+          style={styles.todayBtn}
+          onPress={() => (mode === 'grid' ? gridRef : agendaRef).current?.scrollToToday(true)}
+        >
           <Text style={styles.todayText}>Today</Text>
         </TouchableOpacity>
       </View>
@@ -373,7 +478,7 @@ export default function CalendarScreen() {
       {/* ── Bottom-right: Calendars + Invitations + Assistant ─────────────────── */}
       <View style={[styles.pill, styles.bottomRight, { bottom: insets.bottom + 16 }]}>
         <TouchableOpacity style={styles.bottomPillBtn} onPress={() => navigation.navigate('Calendars')}>
-          <MaterialCommunityIcons name="calendar-multiple" size={22} color={BTN_FG} />
+          <MaterialCommunityIcons name="menu" size={22} color={BTN_FG} />
         </TouchableOpacity>
         <InvitationsButton onPress={() => navigation.navigate('Invitations')} />
         {aiEnabled && (
@@ -428,7 +533,11 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.md, backgroundColor: '#000',
     borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border,
   },
-  headerButtonRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  topChrome: {
+    position: 'absolute', top: 0, left: 0, right: 0, zIndex: 20,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingHorizontal: spacing.md,
+  },
   headerMonthRow: { justifyContent: 'center' },
   avatar: {
     width: 44, height: 44, borderRadius: 22, backgroundColor: PILL_BG,

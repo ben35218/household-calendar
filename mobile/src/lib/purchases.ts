@@ -30,6 +30,18 @@ export async function getCurrentOffering(): Promise<PurchasesOffering | null> {
   return offerings.current ?? null;
 }
 
+// Record which household member is buying. All members share one app_user_id
+// (the household), so this subscriber attribute — set just before purchase and
+// carried on the webhook event — is the only signal of who the purchaser is.
+export async function setPurchaserAttribute(userId: string): Promise<void> {
+  if (!configured) return;
+  try {
+    await Purchases.setAttributes({ purchaser_user_id: userId });
+  } catch {
+    // Attribution is best-effort; never block a purchase on it.
+  }
+}
+
 // Purchase a package; resolves with the updated CustomerInfo. The plan change
 // itself is applied server-side via the webhook, so callers should refetch
 // billing status afterwards.

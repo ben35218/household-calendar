@@ -7,7 +7,7 @@
     </div>
 
     <v-text-field
-      v-model="search" placeholder="Search by name or join code" prepend-inner-icon="mdi-magnify"
+      v-model="search" placeholder="Search by name" prepend-inner-icon="mdi-magnify"
       density="comfortable" variant="outlined" hide-details clearable class="mb-4" style="max-width: 420px" />
 
     <v-card rounded="lg" variant="outlined">
@@ -18,7 +18,6 @@
             <tr>
               <th style="width: 40px"></th>
               <th>Household</th>
-              <th>Join code</th>
               <th class="text-center">Members</th>
               <th class="text-center">E2EE</th>
               <th style="width: 170px">Plan</th>
@@ -33,7 +32,6 @@
                     size="x-small" variant="text" @click="toggle(h._id)" />
                 </td>
                 <td class="font-weight-medium">{{ h.name }}</td>
-                <td><code>{{ h.joinCode }}</code></td>
                 <td class="text-center">{{ h.memberCount ?? '—' }}</td>
                 <td class="text-center">
                   <v-chip v-if="h.e2eeActive" size="x-small" color="success" variant="tonal">Live</v-chip>
@@ -52,7 +50,7 @@
                 </td>
               </tr>
               <tr v-if="expanded === h._id">
-                <td colspan="7" class="bg-grey-lighten-4">
+                <td colspan="6" class="bg-grey-lighten-4">
                   <div class="py-2 px-1">
                     <div class="text-caption text-medium-emphasis mb-2">
                       Weekly usage history (windows reset Wednesdays 5PM ET) · created {{ fmtDate(h.createdAt) }}
@@ -97,7 +95,7 @@
               </tr>
             </template>
             <tr v-if="!filtered.length">
-              <td colspan="7" class="text-medium-emphasis py-4">No households found.</td>
+              <td colspan="6" class="text-medium-emphasis py-4">No households found.</td>
             </tr>
           </tbody>
         </v-table>
@@ -139,7 +137,7 @@ const filtered = computed(() => {
   const q = (search.value || '').trim().toLowerCase();
   if (!q) return households.value;
   return households.value.filter(
-    (h) => h.name.toLowerCase().includes(q) || (h.joinCode || '').toLowerCase().includes(q)
+    (h) => h.name.toLowerCase().includes(q)
   );
 });
 

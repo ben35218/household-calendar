@@ -117,6 +117,7 @@ export interface WeekBar {
   startCol: number;
   endCol: number;
   lane: number;
+  tripId?: string; // set for trip bars so tapping one opens the trip
 }
 
 export function weekBars(data: CalendarData | undefined, weekDates: string[], maxLanes = 2): WeekBar[] {
@@ -129,12 +130,12 @@ export function weekBars(data: CalendarData | undefined, weekDates: string[], ma
     return weekDates.indexOf(dateStr);
   };
 
-  const spans: { color: string; label: string; start: string; end: string }[] = [];
+  const spans: { color: string; label: string; start: string; end: string; tripId?: string }[] = [];
   for (const t of data.trips ?? []) {
     for (const r of t.ranges ?? []) {
       const s = localDate(r.start);
       const e = localDate(r.end);
-      if (e >= weekStart && s <= weekEnd) spans.push({ color: t.color || colorOf('vacations'), label: t.name, start: s, end: e });
+      if (e >= weekStart && s <= weekEnd) spans.push({ color: t.color || colorOf('vacations'), label: t.name, start: s, end: e, tripId: t.id });
     }
   }
   for (const ev of data.events ?? []) {
@@ -152,7 +153,7 @@ export function weekBars(data: CalendarData | undefined, weekDates: string[], ma
     let lane = laneEnds.findIndex((end) => startCol > end);
     if (lane === -1) { lane = laneEnds.length; laneEnds.push(endCol); }
     else laneEnds[lane] = endCol;
-    if (lane < maxLanes) bars.push({ key: `${sp.label}-${sp.start}-${lane}`, color: sp.color, label: sp.label, startCol, endCol, lane });
+    if (lane < maxLanes) bars.push({ key: `${sp.label}-${sp.start}-${lane}`, color: sp.color, label: sp.label, startCol, endCol, lane, tripId: sp.tripId });
   }
   return bars;
 }

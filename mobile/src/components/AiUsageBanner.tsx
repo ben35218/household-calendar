@@ -1,10 +1,9 @@
 import React from 'react';
 import { Text, TouchableOpacity, StyleSheet } from 'react-native';
-import { useQuery } from '@tanstack/react-query';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { Ionicons } from '@expo/vector-icons';
-import { billingApi } from '../api';
+import { useBilling } from '../hooks/useBilling';
 import type { RootStackParamList } from '../navigation/types';
 import { colors, radius, spacing } from '../theme';
 
@@ -14,7 +13,7 @@ import { colors, radius, spacing } from '../theme';
 const WARN_AT = 80;
 
 // A tappable heads-up rendered inside the AI assistants once weekly token usage
-// crosses WARN_AT. Tapping it opens the Plan screen (Paywall). Renders nothing
+// crosses WARN_AT. Tapping it opens the focused Upsell sheet. Renders nothing
 // on unlimited plans or below the threshold, so it's a no-op for most sessions.
 //
 // Important: this only *informs*. Usage never hard-blocks a prompt below 100%,
@@ -24,11 +23,7 @@ const WARN_AT = 80;
 // remaining budget (and the upgrade path) visible before they hit the wall.
 export default function AiUsageBanner() {
   const nav = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
-  const { data } = useQuery({
-    queryKey: ['billing', 'status'],
-    queryFn: async () => (await billingApi.status()).data,
-    staleTime: 60_000,
-  });
+  const { data } = useBilling();
 
   const limit = data?.weeklyTokenLimit ?? null;
   const pct = data?.tokenPct ?? 0;
@@ -38,13 +33,13 @@ export default function AiUsageBanner() {
   // reads "100%" once the budget is fully spent.
   const over = pct >= 100;
   const message = over
-    ? 'You’ve used all your AI tokens for the week. Tap to see your plan.'
-    : `You’ve used ${pct}% of your AI tokens for the week. Tap to see your plan.`;
+    ? 'You’ve used all your AI tokens for the week. Tap to see your options.'
+    : `You’ve used ${pct}% of your AI tokens for the week. Tap to see your options.`;
 
   return (
     <TouchableOpacity
       style={[styles.wrap, over ? styles.over : styles.warn]}
-      onPress={() => nav.navigate('Paywall')}
+      onPress={() => nav.navigate('Upsell', { reason: over ? 'quota' : 'warning' })}
       activeOpacity={0.7}
       accessibilityRole="button"
       accessibilityLabel={message}

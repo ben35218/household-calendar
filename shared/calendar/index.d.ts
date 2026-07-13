@@ -16,6 +16,8 @@ export interface AssembleInput {
   toDate: Date | string | number;
   selfId?: string | null;
   groceryShoppingDay?: number;
+  groceryFrequency?: 'weekly' | 'biweekly';
+  groceryAnchor?: string | null;
 }
 
 export interface CalendarBirthday {

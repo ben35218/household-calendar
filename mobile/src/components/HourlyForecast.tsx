@@ -2,59 +2,118 @@ import React from 'react';
 import { View, Text, ScrollView, StyleSheet } from 'react-native';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { WeatherHour } from '../api';
-import { wmoIcon, weatherColor } from '../lib/weatherIcons';
-import { colors, spacing, radius } from '../theme';
+import WeatherIcon from './WeatherIcon';
+import { zonedParts } from '../lib/tz';
+import { spacing } from '../theme';
 
-function hourLabel(h: number): string {
-  if (h === 0) return '12am';
-  if (h < 12) return `${h}am`;
-  if (h === 12) return '12pm';
-  return `${h - 12}pm`;
+// The slice of a forecast day this strip needs (WeatherData.forecast entries).
+export interface ForecastDay {
+  date: string;
+  sunrise?: string;
+  sunset?: string;
+  hours?: WeatherHour[];
 }
 
-// Daytime hourly strip (6am–9pm) mirroring the web day view's hourly breakdown.
-// `date` is the yyyy-MM-dd the hours belong to, used to highlight the current hour.
-export default function HourlyForecast({ hours, date }: { hours?: WeatherHour[]; date: string }) {
-  const slots = (hours ?? []).filter((h) => h.hour >= 6 && h.hour <= 21);
-  if (!slots.length) return null;
+type StripItem =
+  | { kind: 'hour'; time: string; h: WeatherHour; night: boolean }
+  | { kind: 'sun'; time: string; event: 'Sunrise' | 'Sunset' };
 
-  const now = new Date();
-  const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
-  const nowHour = now.getHours();
-  const isNow = (h: WeatherHour) => date === todayStr && h.hour === nowHour;
+const GOLD = '#F4C542';
+
+function hourLabel(h: number): string {
+  if (h === 0) return '12AM';
+  if (h < 12) return `${h}AM`;
+  if (h === 12) return '12PM';
+  return `${h - 12}PM`;
+}
+
+// '2026-07-11T21:04' → '9:04PM'
+function sunLabel(iso: string): string {
+  const hh = parseInt(iso.slice(11, 13), 10);
+  const mm = iso.slice(14, 16);
+  const h12 = hh % 12 === 0 ? 12 : hh % 12;
+  return `${h12}:${mm}${hh < 12 ? 'AM' : 'PM'}`;
+}
+
+// Apple-style 24h strip: today's remaining hours + tomorrow's up to the same
+// hour, with Sunrise/Sunset entries inserted chronologically. `days` is the
+// forecast array starting at the day to show; a non-today first day (e.g. a
+// future calendar day) shows that day's full 24 hours instead.
+export default function HourlyForecast({ days, tz }: { days: ForecastDay[]; tz?: string }) {
+  // "Now" in `tz` when given (forecast hours are location-local, e.g. a trip
+  // destination); otherwise the device clock.
+  const { dateStr: todayStr, minutes } = zonedParts(new Date(), tz);
+  const nowHour = Math.floor(minutes / 60);
+
+  const todayIdx = days.findIndex((d) => d.date === todayStr);
+  const day = todayIdx >= 0 ? days[todayIdx] : days[0];
+  const next = todayIdx >= 0 ? days[todayIdx + 1] : undefined;
+  const isToday = day?.date === todayStr;
+  if (!day?.hours?.length) return null;
+
+  // An hour is night if it falls before its own day's sunrise or after sunset
+  // (ISO strings share the date prefix, so string comparison is chronological).
+  const isNight = (d: ForecastDay, iso: string) =>
+    Boolean((d.sunrise && iso < d.sunrise) || (d.sunset && iso > d.sunset));
+
+  const items: StripItem[] = [];
+  const pushHours = (d: ForecastDay, keep: (h: WeatherHour) => boolean) => {
+    (d.hours ?? []).filter(keep).forEach((h) => items.push({ kind: 'hour', time: h.time, h, night: isNight(d, h.time) }));
+  };
+
+  if (isToday) {
+    pushHours(day, (h) => h.hour >= nowHour);
+    if (next) pushHours(next, (h) => h.hour < nowHour);
+  } else {
+    // Not today (e.g. a future calendar day): the full 24 hours of that day.
+    pushHours(day, () => true);
+  }
+
+  // Sunrise/sunset markers that land inside the window shown above.
+  const first = items[0]?.time;
+  const last = items[items.length - 1]?.time;
+  for (const d of [day, next]) {
+    if (d?.sunrise && d.sunrise >= first && d.sunrise <= last) items.push({ kind: 'sun', time: d.sunrise, event: 'Sunrise' });
+    if (d?.sunset && d.sunset >= first && d.sunset <= last) items.push({ kind: 'sun', time: d.sunset, event: 'Sunset' });
+  }
+  items.sort((a, b) => (a.time < b.time ? -1 : 1));
+
+  if (!items.length) return null;
 
   return (
-    <View>
-      <Text style={styles.heading}>HOURLY</Text>
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.strip}>
-        {slots.map((h) => {
-          const wet = h.precipitation > 0;
-          const current = isNow(h);
-          return (
-            <View key={h.time} style={[styles.slot, wet ? styles.slotWet : styles.slotDry, current && styles.slotNow]}>
-              <Text style={[styles.label, current && styles.labelNow]}>{current ? 'Now' : hourLabel(h.hour)}</Text>
-              <MaterialCommunityIcons name={wmoIcon(h.weatherCode) as any} size={20} color={weatherColor(h.weatherCode)} style={{ marginVertical: 2 }} />
-              <Text style={styles.temp}>{Math.round(h.temperature)}°</Text>
-              {h.precipProbability > 0 ? <Text style={styles.prob}>{h.precipProbability}%</Text> : null}
-              {h.precipitation > 0 ? <Text style={styles.mm}>{h.precipitation}mm</Text> : null}
-            </View>
-          );
-        })}
-      </ScrollView>
-    </View>
+    <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.strip}>
+      {items.map((item) =>
+        item.kind === 'sun' ? (
+          <View key={item.time + item.event} style={styles.slot}>
+            <Text style={styles.label}>{sunLabel(item.time)}</Text>
+            <MaterialCommunityIcons
+              name={item.event === 'Sunrise' ? 'weather-sunset-up' : 'weather-sunset-down'}
+              size={24}
+              color={GOLD}
+              style={styles.icon}
+            />
+            <Text style={styles.temp}>{item.event}</Text>
+          </View>
+        ) : (
+          <View key={item.time} style={styles.slot}>
+            <Text style={styles.label}>
+              {isToday && item.h.hour === nowHour && item.time.slice(0, 10) === todayStr ? 'Now' : hourLabel(item.h.hour)}
+            </Text>
+            <WeatherIcon code={item.h.weatherCode} night={item.night} size={24} style={styles.icon} />
+            <Text style={styles.temp}>{Math.round(item.h.temperature)}°</Text>
+            {item.h.precipProbability > 0 ? <Text style={styles.prob}>{item.h.precipProbability}%</Text> : null}
+          </View>
+        ),
+      )}
+    </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
-  heading: { fontSize: 11, fontWeight: '700', letterSpacing: 0.5, color: colors.textMuted, marginBottom: spacing.sm },
-  strip: { gap: spacing.sm, paddingBottom: 2 },
-  slot: { minWidth: 54, alignItems: 'center', paddingVertical: spacing.sm, paddingHorizontal: 4, borderRadius: radius.sm, borderWidth: 1 },
-  slotDry: { backgroundColor: colors.background, borderColor: colors.border },
-  slotWet: { backgroundColor: colors.primary + '14', borderColor: colors.primary + '40' },
-  slotNow: { borderColor: colors.primary, borderWidth: 2 },
-  label: { fontSize: 12, fontWeight: '600', color: colors.textMuted },
-  labelNow: { color: colors.primary },
-  temp: { fontSize: 12, fontWeight: '600', color: colors.text },
-  prob: { fontSize: 11, color: colors.primary },
-  mm: { fontSize: 11, color: colors.primary, fontWeight: '600' },
+  strip: { gap: spacing.md, paddingVertical: spacing.xs },
+  slot: { minWidth: 56, alignItems: 'center' },
+  label: { fontSize: 15, fontWeight: '600', color: '#fff' },
+  icon: { marginVertical: 14 },
+  temp: { fontSize: 17, fontWeight: '600', color: '#fff' },
+  prob: { fontSize: 11, color: '#CFE8FF', marginTop: 2 },
 });

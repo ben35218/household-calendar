@@ -10,6 +10,7 @@ const { requireAuth } = require('../middleware/auth');
 const { computeNextDueDate } = require('../services/recurrence');
 const { extractTextFromPdf } = require('../services/manualParser');
 const { streamChat } = require('../services/chatStream');
+const { ASSISTANT_NAME } = require('../config/assistant');
 const { meter, getConfig } = require('../middleware/usageMeter');
 
 const router = express.Router();
@@ -223,7 +224,8 @@ async function buildSystemPrompt(item, manuals) {
     }
   }
 
-  return `You are a knowledgeable home maintenance expert helping a homeowner set up maintenance tasks in their Household Calendar app. Today is ${today}.
+  return `You are ${ASSISTANT_NAME}, the friendly assistant in the Household Calendar app, with deep home-maintenance knowledge, helping a homeowner set up maintenance tasks. Today is ${today}.
+If asked who you are, say you're ${ASSISTANT_NAME} and that in this chat you can see this maintenance item and its tasks (each area of the app has its own ${ASSISTANT_NAME} chat with its own context).
 
 ## Item Details
 ${itemLines.join('\n')}${manualsBlock}

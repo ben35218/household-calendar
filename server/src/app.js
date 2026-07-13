@@ -15,6 +15,7 @@ const taskTemplateRoutes = require('./routes/taskTemplates');
 const choreRoutes = require('./routes/chores');
 const choreTemplateRoutes = require('./routes/choreTemplates');
 const calendarRoutes = require('./routes/calendar');
+const customCalendarRoutes = require('./routes/calendars');
 const invitationRoutes = require('./routes/invitations');
 const calendarChatRoutes = require('./routes/calendarChat');
 const maintenanceChatRoutes = require('./routes/maintenanceChat');
@@ -38,6 +39,7 @@ const billingRoutes = require('./routes/billing');
 const monetizationConfigRoutes = require('./routes/monetizationConfig');
 const adminRoutes = require('./routes/admin');
 const adminAnalyticsRoutes = require('./routes/adminAnalytics');
+const adminEmailRoutes = require('./routes/adminEmail');
 
 // Patch the Anthropic SDK once so one-shot AI calls auto-record token usage
 // against the weekly budget (see services/aiUsage.js). Streaming chat records
@@ -45,6 +47,10 @@ const adminAnalyticsRoutes = require('./routes/adminAnalytics');
 require('./services/aiUsage').patchAnthropic();
 
 const app = express();
+
+// Behind Render's proxy the client address arrives in X-Forwarded-For; without
+// this every request shares the LB's IP and per-IP rate limits punish everyone.
+app.set('trust proxy', 1);
 
 app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } }));
 
@@ -70,6 +76,9 @@ app.use(cors({
     return cb(new Error(`Origin ${origin} not allowed by CORS`));
   },
   credentials: true,
+  // Sliding session refresh: browser clients (admin app) can only read this
+  // response header if it's exposed explicitly.
+  exposedHeaders: ['X-Refreshed-Token'],
 }));
 app.use(express.json());
 app.use('/uploads', express.static(path.resolve(process.env.UPLOAD_DIR || './uploads')));
@@ -87,6 +96,7 @@ app.use('/api/maintenance/chat', maintenanceChatRoutes);
 app.use('/api/vacation/chat', vacationChatRoutes);
 app.use('/api/form-assist', formAssistRoutes);
 app.use('/api/calendar', calendarRoutes);
+app.use('/api/calendars', customCalendarRoutes);
 app.use('/api/invitations', invitationRoutes);
 app.use('/api/places', placesRoutes);
 app.use('/api/history', historyRoutes);
@@ -110,6 +120,8 @@ app.use('/api/monetization-config', monetizationConfigRoutes);
 // Mounted before the broader /api/admin so its paths match without falling
 // through that router's auth stack first.
 app.use('/api/admin/analytics', adminAnalyticsRoutes);
+// Admin email surfaces (outbound send log + support@ inbox). requireAdmin-gated.
+app.use('/api/admin/email', adminEmailRoutes);
 // Admin-only ops surfaces (users, E2EE readiness, audit log). requireAdmin-gated.
 app.use('/api/admin', adminRoutes);
 

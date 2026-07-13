@@ -23,14 +23,17 @@ function tier(label, price, quotas, weeklyTokenLimit) {
   return { label, price, quotas, weeklyTokenLimit };
 }
 
-// Defaults reflect the agreed plan: Free / Premium ($5.99) / Unlimited ($12.99).
-// Weekly token limits are seeded from today's per-action quotas × typical tokens
-// per action; tune against real usage once token metering has run for a week.
+// Prices are USD. The App Store base prices are CAD 5.99/12.99, which Apple
+// maps to 3.99/9.99 on the US storefront; this field is only a fallback
+// display (the paywall shows StoreKit's localized price whenever packages
+// load). Weekly token limits are seeded from today's per-action quotas ×
+// typical tokens per action; tune against real usage once token metering has
+// run for a week.
 const DEFAULTS = {
   tiers: {
     free:      tier('Free',       0,     { chat: 15,  scan: 15,  generation: 5,    manualParse: 1,  aiHelper: null }, 150000),
-    premium:   tier('Premium',    5.99,  { chat: 200, scan: 200, generation: 60,   manualParse: 10, aiHelper: null }, 2000000),
-    unlimited: tier('Unlimited',  12.99, { chat: 600, scan: 600, generation: null, manualParse: 30, aiHelper: null }, null),
+    premium:   tier('Premium',    3.99,  { chat: 200, scan: 200, generation: 60,   manualParse: 10, aiHelper: null }, 2000000),
+    unlimited: tier('Unlimited',  9.99,  { chat: 600, scan: 600, generation: null, manualParse: 30, aiHelper: null }, null),
   },
   // $ per call — projection inputs only; not used for billing.
   costs: {

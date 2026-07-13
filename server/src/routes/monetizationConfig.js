@@ -49,7 +49,7 @@ router.put('/', async (req, res) => {
 router.get('/households', async (_req, res) => {
   try {
     const period = currentPeriodKey();
-    const households = await Household.find({}, 'name joinCode plan usage e2eeActive createdAt revenueCatId').lean();
+    const households = await Household.find({}, 'name plan usage e2eeActive createdAt revenueCatId').lean();
 
     // Member counts for all households in one aggregate.
     const counts = await User.aggregate([
@@ -62,7 +62,6 @@ router.get('/households', async (_req, res) => {
       households.map((h) => ({
         _id: h._id,
         name: h.name,
-        joinCode: h.joinCode,
         plan: h.plan || 'free',
         e2eeActive: !!h.e2eeActive,
         memberCount: countById[String(h._id)] || 0,
@@ -80,15 +79,16 @@ router.get('/households', async (_req, res) => {
   }
 });
 
-// Override a household's plan from the admin page. Match by joinCode or _id.
+// Override a household's plan from the admin page. Match by _id.
 // Audited (plan_changed) so manual overrides leave a trail.
 router.post('/plan', async (req, res) => {
   try {
-    const { joinCode, householdId, plan } = req.body;
+    const { householdId, plan } = req.body;
     if (!MonetizationConfig.TIERS.includes(plan)) {
       return res.status(400).json({ error: 'Invalid plan' });
     }
-    const query = householdId ? { _id: householdId } : { joinCode };
+    if (!householdId) return res.status(400).json({ error: 'householdId is required' });
+    const query = { _id: householdId };
     const before = await Household.findOne(query).select('plan').lean();
     const hh = await Household.findOneAndUpdate(query, { $set: { plan } }, { new: true });
     if (!hh) return res.status(404).json({ error: 'Household not found' });
@@ -100,7 +100,7 @@ router.post('/plan', async (req, res) => {
         meta: { from: before.plan || 'free', to: plan, source: 'admin_override' },
       });
     }
-    res.json({ _id: hh._id, name: hh.name, joinCode: hh.joinCode, plan: hh.plan });
+    res.json({ _id: hh._id, name: hh.name, plan: hh.plan });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

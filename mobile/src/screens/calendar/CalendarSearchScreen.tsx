@@ -5,8 +5,8 @@ import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { loadCalendarData } from '../../lib/calendarData';
-import { getCanadianHolidays } from '../../lib/holidays';
-import { useHolidayPrefs, useCalendarColors } from '../../lib/calendarPrefs';
+import { getHolidays } from '../../lib/holidays';
+import { useHolidayCalendars, holidayEnabledIds, useCalendarColors } from '../../lib/calendarPrefs';
 import { eventColor, ymd } from '../../lib/calendar';
 import { mdiName } from '../../lib/recurrence';
 import { CalendarStackParamList } from '../../navigation/CalendarNavigator';
@@ -26,7 +26,7 @@ const dateLabel = (s: string) => new Date(s + (s.length === 10 ? 'T12:00:00' : '
 // birthdays, holidays) and jumps to its detail.
 export default function CalendarSearchScreen() {
   const nav = useNavigation<Nav>();
-  const { enabledIds } = useHolidayPrefs();
+  const { calendars: holidayCals } = useHolidayCalendars();
   const { colors: calColors } = useCalendarColors();
   const [query, setQuery] = useState('');
 
@@ -67,11 +67,14 @@ export default function CalendarSearchScreen() {
     for (const b of data.birthdays ?? []) {
       out.push({ key: `b-${b.id}`, title: `${b.name}'s Birthday`, subtitle: 'Birthday', color: calColors.birthdays, icon: 'cake-variant', date: ld(b.date), nav: () => nav.navigate('CalendarDay', { date: ld(b.date) }) });
     }
-    for (const h of getCanadianHolidays(range.from, range.to, enabledIds)) {
-      out.push({ key: `hol-${h.id}-${h.date}`, title: h.name, subtitle: 'Holiday', color: calColors['canadian-holidays'], icon: 'flag-variant', date: h.date, nav: () => nav.navigate('CalendarDay', { date: h.date }) });
+    for (const cal of holidayCals) {
+      const color = calColors[cal.id] ?? cal.color;
+      for (const h of getHolidays(cal.country, range.from, range.to, holidayEnabledIds(cal))) {
+        out.push({ key: `hol-${cal.id}-${h.id}-${h.date}`, title: h.name, subtitle: 'Holiday', color, icon: 'flag-variant', date: h.date, nav: () => nav.navigate('CalendarDay', { date: h.date }) });
+      }
     }
     return out;
-  }, [data, enabledIds, range, nav, calColors]);
+  }, [data, holidayCals, range, nav, calColors]);
 
   const results = useMemo(() => {
     const q = query.trim().toLowerCase();

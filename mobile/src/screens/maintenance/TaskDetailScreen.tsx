@@ -100,8 +100,16 @@ export default function TaskDetailScreen() {
 
   const isPaused = task?.active === false;
   useLayoutEffect(() => {
-    if (task) navigation.setOptions({ title: task.title });
-  }, [navigation, task?.title]);
+    // Header shows the view name, not the task name (which is in the body).
+    navigation.setOptions({
+      title: 'Task',
+      headerRight: () => (
+        <TouchableOpacity onPress={() => navigation.navigate('TaskForm', { id })} accessibilityLabel="Edit task">
+          <Ionicons name="pencil" size={22} color="#fff" />
+        </TouchableOpacity>
+      ),
+    });
+  }, [navigation, id]);
 
   if (taskQ.isLoading || !task) {
     return (
@@ -119,6 +127,11 @@ export default function TaskDetailScreen() {
 
   return (
     <Screen>
+      <Card style={styles.headerCard}>
+        <Text style={styles.screenTitle}>{task.title}</Text>
+        {task.description ? <Text style={styles.body}>{task.description}</Text> : null}
+      </Card>
+
       <View style={styles.actionBar}>
         <TouchableOpacity
           onPress={() => togglePause.mutate()}
@@ -213,30 +226,11 @@ export default function TaskDetailScreen() {
         {task.intervalKm ? (
           <ListRow icon="speedometer-outline" title="Service interval" subtitle={`Every ${task.intervalKm.toLocaleString()} km`} />
         ) : null}
-        {task.estimatedDurationMins ? (
-          <ListRow icon="time-outline" title="Est. duration" subtitle={`${task.estimatedDurationMins} min`} />
-        ) : null}
-        {task.estimatedCost ? (
-          <ListRow icon="cash-outline" title="Est. cost" subtitle={`$${task.estimatedCost}`} />
-        ) : null}
         <ListRow icon="notifications-outline" title="Alerts" subtitle={alerts} />
       </Card>
 
-      {task.description ? (
-        <Card style={styles.textCard}>
-          <Text style={styles.overline}>Description</Text>
-          <Text style={styles.body}>{task.description}</Text>
-        </Card>
-      ) : null}
-      {task.instructions ? (
-        <Card style={styles.textCard}>
-          <Text style={styles.overline}>Instructions</Text>
-          <Text style={styles.body}>{task.instructions}</Text>
-        </Card>
-      ) : null}
-
       <Card style={styles.infoCard}>
-        <Text style={styles.cardTitle}>Completion history</Text>
+        <Text style={[styles.cardTitle, styles.historyTitle]}>History</Text>
         <Divider />
         {historyQ.data?.length ? (
           historyQ.data.map((h) => (
@@ -261,6 +255,8 @@ export default function TaskDetailScreen() {
 
 const styles = StyleSheet.create({
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.background },
+  headerCard: { marginBottom: spacing.md, gap: spacing.sm },
+  screenTitle: { fontSize: 24, fontWeight: '700', color: colors.text },
   actionBar: { flexDirection: 'row', gap: spacing.sm, marginBottom: spacing.md },
   actionBtn: { flex: 1, height: 48, borderRadius: radius.md, alignItems: 'center', justifyContent: 'center' },
   actionBtnPrimary: { backgroundColor: colors.primary },
@@ -274,8 +270,9 @@ const styles = StyleSheet.create({
   kmTitle: { fontSize: 18, fontWeight: '700' },
   kmSub: { fontSize: 13, color: colors.textMuted, marginTop: 2 },
   infoCard: { padding: 0, paddingVertical: spacing.xs, marginBottom: spacing.md },
-  textCard: { marginBottom: spacing.md },
-  overline: { fontSize: 12, fontWeight: '700', color: colors.textMuted, textTransform: 'uppercase', marginBottom: 4 },
+  // infoCard has no horizontal padding (its ListRows pad themselves), so a title
+  // inside it needs explicit padding to align with the rows and not look cramped.
+  historyTitle: { paddingHorizontal: spacing.md, paddingTop: spacing.sm },
   body: { fontSize: 15, color: colors.text, lineHeight: 21 },
   muted: { color: colors.textMuted, padding: spacing.md },
   deleteWrap: { marginTop: spacing.sm, marginBottom: spacing.xl },

@@ -29,7 +29,7 @@ async function setupHouseholdOfTwo() {
   assert.equal(mint.status, 201);
 
   const hh = await request().get('/api/household').set('Authorization', owner.auth);
-  await joinHousehold({ joiner: member, approver: owner, joinCode: hh.body.joinCode, keyVersion: 1 });
+  await joinHousehold({ joiner: member, approver: owner, keyVersion: 1 });
   return { owner, member, householdId: hh.body._id };
 }
 

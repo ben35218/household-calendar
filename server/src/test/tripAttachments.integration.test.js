@@ -18,7 +18,7 @@ async function setupBooking({ shared = false } = {}) {
   const trip = await Trip.create({
     userId: owner.user._id, name: 'Trip', destination: 'X',
     start: new Date('2026-08-01'), end: new Date('2026-08-05'),
-    ...(shared ? { shareCode: 'SHARE123' } : {}),
+    ...(shared ? { sharedWithOutside: [{ email: 'guest@example.com' }] } : {}),
   });
   const item = await TripItem.create({
     userId: owner.user._id, householdId: owner.user.householdId, tripId: trip._id,

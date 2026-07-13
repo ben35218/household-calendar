@@ -58,6 +58,8 @@ function buildForecast(raw) {
       precipProbability: daily.precipitation_probability_max[i],
       windMax: daily.wind_speed_10m_max[i],
       goodWeather: isMowingDay(daily.precipitation_sum[i], daily.precipitation_probability_max[i], prevPrecip),
+      sunrise: daily.sunrise?.[i],
+      sunset: daily.sunset?.[i],
       hours: hourlyByDate[date] ?? [],
     };
   });
@@ -86,23 +88,53 @@ function buildForecast(raw) {
 // home address. Nominatim resolves the full address exactly like the old server
 // path (server/services/weather.js). RN fetch sends the User-Agent per Nominatim's
 // usage policy; browsers ignore it but send a Referer, which also satisfies it.
+const geocodeCache = new Map(); // query -> in-flight/settled promise (dedupes parallel lookups)
 async function geocode(address) {
-  const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(address)}&format=json&limit=1`;
-  const res = await fetch(url, {
-    headers: { 'User-Agent': 'HouseholdCalendar/1.0 (household management app)' },
-  });
-  if (!res.ok) throw new Error('Geocoding failed');
-  const data = await res.json();
-  const r = data && data[0];
-  if (!r) throw new Error('Could not find that location — check your address in Settings');
-  return { lat: parseFloat(r.lat), lon: parseFloat(r.lon) };
+  if (geocodeCache.has(address)) return geocodeCache.get(address);
+  const p = (async () => {
+    const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(address)}&format=json&limit=1`;
+    const res = await fetch(url, {
+      headers: { 'User-Agent': 'HouseholdCalendar/1.0 (household management app)' },
+    });
+    if (!res.ok) throw new Error('Geocoding failed');
+    const data = await res.json();
+    const r = data && data[0];
+    if (!r) throw new Error('Could not find that location — check your address in Settings');
+    return { lat: parseFloat(r.lat), lon: parseFloat(r.lon) };
+  })();
+  geocodeCache.set(address, p);
+  p.catch(() => geocodeCache.delete(address)); // don't cache failures
+  return p;
+}
+
+// Candidate queries for a *place* string (not a street address): the full
+// string, then "first, last" comma parts, then just the first part. Google
+// Places' verbose admin segments ("Florence, Metropolitan City of Florence,
+// Italy") often find nothing in Nominatim; "Florence, Italy" does.
+function placeCandidates(place) {
+  const parts = place.split(',').map((s) => s.trim()).filter(Boolean);
+  const out = [place];
+  if (parts.length >= 3) out.push(`${parts[0]}, ${parts[parts.length - 1]}`);
+  if (parts.length >= 2) out.push(parts[0]);
+  return out;
+}
+
+// Geocode a trip-destination-style place, falling back through simplified
+// variants. Kept separate from `geocode` so street addresses stay strict (a
+// loose match on a home address could silently pick the wrong city).
+async function geocodePlace(place) {
+  let lastErr;
+  for (const c of placeCandidates(place)) {
+    try { return await geocode(c); } catch (e) { lastErr = e; }
+  }
+  throw lastErr;
 }
 
 async function fetchWeather(lat, lon) {
   const params = new URLSearchParams({
     latitude: String(lat),
     longitude: String(lon),
-    daily: 'weather_code,temperature_2m_max,temperature_2m_min,precipitation_sum,precipitation_probability_max,wind_speed_10m_max',
+    daily: 'weather_code,temperature_2m_max,temperature_2m_min,precipitation_sum,precipitation_probability_max,wind_speed_10m_max,sunrise,sunset',
     hourly: 'temperature_2m,precipitation_probability,precipitation,weather_code',
     current: 'temperature_2m,weather_code,precipitation,relative_humidity_2m,wind_speed_10m',
     timezone: 'auto',
@@ -113,9 +145,10 @@ async function fetchWeather(lat, lon) {
   return res.json();
 }
 
-// One call: address -> geocode -> forecast -> built shape.
-async function loadWeatherForAddress(address) {
-  const { lat, lon } = await geocode(address);
+// One call: address -> geocode -> forecast -> built shape. Pass
+// `geocoder: geocodePlace` for city-style destinations (trips).
+async function loadWeatherForAddress(address, { geocoder = geocode } = {}) {
+  const { lat, lon } = await geocoder(address);
   const raw = await fetchWeather(lat, lon);
   return buildForecast(raw);
 }
@@ -243,6 +276,56 @@ function buildOutlook(archiveResults, { today = new Date(), days = 90 } = {}) {
   return { weeks };
 }
 
+// Pure: per-day historical averages for a date list, from archive responses
+// covering the same span in past years (index-aligned, like buildOutlook).
+// Powers the trip "typical weather" view.
+function buildDailyClimate(archiveResults, { dates }) {
+  return dates.map((date, i) => {
+    const maxs = [], mins = [], precips = [];
+    for (const ar of archiveResults) {
+      if (!ar || !ar.daily || i >= ar.daily.time.length) continue;
+      if (ar.daily.temperature_2m_max[i] != null) maxs.push(ar.daily.temperature_2m_max[i]);
+      if (ar.daily.temperature_2m_min[i] != null) mins.push(ar.daily.temperature_2m_min[i]);
+      if (ar.daily.precipitation_sum[i] != null) precips.push(ar.daily.precipitation_sum[i]);
+    }
+    const avg = (arr) => (arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : null);
+    return {
+      date,
+      avgTempMax: maxs.length ? Math.round(avg(maxs)) : null,
+      avgTempMin: mins.length ? Math.round(avg(mins)) : null,
+      avgPrecip: precips.length ? Math.round(avg(precips) * 10) / 10 : null,
+      rainYears: precips.filter((p) => p >= 1).length,
+      yearsInSample: precips.length,
+    };
+  });
+}
+
+// Orchestration: address + date range -> per-day averages across the same
+// dates in the past `years` years (e.g. a trip's typical weather).
+async function loadDailyClimate(address, from, to, { years = 3, geocoder = geocode } = {}) {
+  const { lat, lon } = await geocoder(address);
+  const shift = (iso, y) => {
+    const d = new Date(iso + 'T12:00:00');
+    d.setFullYear(d.getFullYear() - y);
+    return d.toISOString().slice(0, 10);
+  };
+  const archiveResults = (
+    await Promise.all(
+      Array.from({ length: years }, (_, k) => k + 1).map((y) =>
+        fetchWeatherArchive(lat, lon, shift(from, y), shift(to, y)).catch(() => null),
+      ),
+    )
+  ).filter(Boolean);
+  const dates = [];
+  const d = new Date(from + 'T12:00:00');
+  const end = new Date(to + 'T12:00:00');
+  while (d <= end) {
+    dates.push(d.toISOString().slice(0, 10));
+    d.setDate(d.getDate() + 1);
+  }
+  return { days: buildDailyClimate(archiveResults, { dates }) };
+}
+
 // Orchestration: address -> 90-day seasonal outlook (averages the same window
 // across the past 3 years).
 async function loadOutlook(address, { today = new Date(), days = 90 } = {}) {
@@ -260,6 +343,7 @@ async function loadOutlook(address, { today = new Date(), days = 90 } = {}) {
 }
 
 module.exports = {
-  WMO_DESCRIPTIONS, isMowingDay, buildForecast, geocode, fetchWeather, loadWeatherForAddress,
+  WMO_DESCRIPTIONS, isMowingDay, buildForecast, geocode, geocodePlace, placeCandidates, fetchWeather, loadWeatherForAddress,
   fetchWeatherArchive, buildRangeRecords, loadWeatherRange, buildOutlook, loadOutlook,
+  buildDailyClimate, loadDailyClimate,
 };

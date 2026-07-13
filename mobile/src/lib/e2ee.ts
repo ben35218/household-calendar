@@ -342,18 +342,19 @@ export async function unlockWithRecoveryCode(code: string): Promise<boolean> {
 
 // ── Passkey factor (Face ID / Touch ID unlock) ──────────────────────────────
 
-// Add a passkey as an unlock factor: register a credential, evaluate its PRF,
+// Add a passkey as an unlock factor: register a credential (server-verified,
+// so the same passkey also becomes a SIGN-IN credential), evaluate its PRF,
 // wrap the private key under the PRF output, and store the envelope. Requires
 // an unlocked session (we need the private key to wrap). Throws with a
 // user-facing message when the platform can't evaluate a PRF.
-export async function addPasskeyFactor(userId: string, userName: string): Promise<boolean> {
+export async function addPasskeyFactor(): Promise<boolean> {
   if (!keyPair) return false;
   const { createPasskeyWithPrf, getPrfForCredentials } = await import('./passkeys');
   const crypto = await loadHouseholdCrypto();
   const enroll = await getEnrollment();
 
   const prfSalt = crypto.b64(crypto.randomBytes(32));
-  const created = await createPasskeyWithPrf({ userId, userName, prfSalt });
+  const created = await createPasskeyWithPrf({ prfSalt });
   if (!created) return false; // user canceled the sheet
 
   // Some authenticators only evaluate the PRF on assertion, not registration —
@@ -398,6 +399,23 @@ export async function unlockWithPasskey(): Promise<boolean> {
     keyPair = enroll.unlockWithPasskeyPrf(material, got.credentialId, crypto.unb64(got.prfOutput));
     return true;
   } catch {
+    return false;
+  }
+}
+
+// Unlock with a PRF output already in hand — the passkey SIGN-IN assertion
+// evaluates the PRF in the same gesture, so no second Face ID sheet is needed.
+export async function unlockWithPasskeyPrfOutput(credentialId: string, prfOutputB64: string): Promise<boolean> {
+  if (keyPair) return true;
+  const crypto = await loadHouseholdCrypto();
+  const enroll = await getEnrollment();
+  const { data } = await keysApi.me();
+  if (!data.enrolled) return false;
+  try {
+    keyPair = enroll.unlockWithPasskeyPrf(data as unknown as StoredKeyMaterial, credentialId, crypto.unb64(prfOutputB64));
+    return true;
+  } catch {
+    keyPair = null;
     return false;
   }
 }

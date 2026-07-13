@@ -113,6 +113,56 @@ function adoption(counterMaps, actions) {
   }));
 }
 
+// ── Per-user token usage + abuse signals ────────────────────────────────────
+
+// Abuse-flag thresholds. Deliberately coarse: this view surfaces users worth a
+// human look, it doesn't take action.
+const HAMMER_MIN_BLOCKED = 10;   // ≥ this many 402s in the period → 'hammering'
+const SPIKE_FACTOR = 3;          // current ≥ 3× the user's prior-week average…
+const SPIKE_MIN_TOKENS = 50_000; // …and at least this many tokens → 'spike'
+
+// The last `weeks` weekly period keys (oldest→newest) ending at `currentKey`
+// (a 'YYYY-MM-DD' Wednesday anchor from usageMeter.currentPeriodKey). Pure date
+// math on the UTC anchor, so it never re-derives the reset timezone.
+function periodKeysBack(currentKey, weeks) {
+  const [y, m, d] = currentKey.split('-').map(Number);
+  const keys = [];
+  for (let i = weeks - 1; i >= 0; i--) {
+    keys.push(new Date(Date.UTC(y, m - 1, d - 7 * i)).toISOString().slice(0, 10));
+  }
+  return keys;
+}
+
+// Per-period token counts (oldest→newest) from a { period: { tokens } } map.
+function tokenSeries(usageTokens, periods) {
+  return periods.map((p) => usageTokens?.[p]?.tokens || 0);
+}
+
+// Total 402-blocked attempts in one period from { period: { action: count } }.
+function blockedCount(usageBlocked, period) {
+  return Object.values(usageBlocked?.[period] || {})
+    .reduce((n, c) => n + (typeof c === 'number' ? c : 0), 0);
+}
+
+// Abuse flags for one user. `series` is their token series oldest→newest (the
+// last entry is the current period); `used`/`limit` are what enforcement sees
+// (per-user on free, pooled household on paid); `blocked` is this period's 402s.
+//   overLimit — hit the weekly budget (enforcement is refusing them)
+//   hammering — kept calling well past the refusal (the real abuse tell)
+//   spike     — current week is a large multiple of their own recent baseline
+function abuseFlags({ series = [], used = 0, limit = null, blocked = 0 } = {}) {
+  const flags = [];
+  if (limit != null && used >= limit) flags.push('overLimit');
+  if (blocked >= HAMMER_MIN_BLOCKED) flags.push('hammering');
+  const current = series.at(-1) || 0;
+  const prior = series.slice(0, -1);
+  const priorAvg = prior.length ? prior.reduce((a, b) => a + b, 0) / prior.length : 0;
+  if (priorAvg > 0 && current >= SPIKE_FACTOR * priorAvg && current >= SPIKE_MIN_TOKENS) {
+    flags.push('spike');
+  }
+  return flags;
+}
+
 // Count distinct occurrences of a categorical field (e.g. platform, version).
 function distribution(values, { unknownLabel = 'unknown' } = {}) {
   const counts = {};
@@ -162,4 +212,7 @@ module.exports = {
   AI_ACTIONS, ACTIVITY_ACTIONS,
   activeCounts, weeklyGrowth, rollupByPeriod, toSeries,
   chatSurfaceTotals, adoption, distribution, cohortRetention,
+  // Per-user token usage + abuse signals
+  HAMMER_MIN_BLOCKED, SPIKE_FACTOR, SPIKE_MIN_TOKENS,
+  periodKeysBack, tokenSeries, blockedCount, abuseFlags,
 };

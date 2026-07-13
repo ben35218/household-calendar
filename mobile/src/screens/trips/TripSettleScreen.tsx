@@ -1,11 +1,13 @@
 import React, { useEffect, useLayoutEffect, useState } from 'react';
-import { View, Text, StyleSheet, ActivityIndicator, ScrollView, TouchableOpacity, Alert } from 'react-native';
+import { View, Text, StyleSheet, ActivityIndicator, TouchableOpacity, Alert } from 'react-native';
+import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { tripsApi, SettlementBalance, SettlementLine } from '../../api';
 import { Button, Card, Input, Select } from '../../components/ui';
+import { form as fs, GroupCard, CardDivider } from '../../components/formStyles';
 import { tripTypeMeta } from '../../lib/tripTypes';
 import { useCalendarColors } from '../../lib/calendarPrefs';
 import { TripsStackParamList } from '../../navigation/TripsNavigator';
@@ -126,7 +128,7 @@ export default function TripSettleScreen() {
   }
 
   return (
-    <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
+    <KeyboardAwareScrollView bottomOffset={24} keyboardShouldPersistTaps="handled" style={styles.screen} contentContainerStyle={styles.content}>
       {/* Balances */}
       <Card style={styles.card}>
         <Text style={[styles.sectionLabel, { color: accent }]}>Balances</Text>
@@ -175,29 +177,67 @@ export default function TripSettleScreen() {
       </Card>
 
       {/* Record a payment */}
-      <Card style={styles.card}>
-        <Text style={[styles.sectionLabel, { color: '#2E7D32' }]}>Record a payment</Text>
-        <View style={styles.fromToRow}>
-          <View style={styles.flex1}>
-            <Select label="From" value={form.from} options={householdOptions} onChange={(v) => setForm((f) => ({ ...f, from: (v as string) || '' }))} />
-          </View>
-          <Ionicons name="arrow-forward" size={18} color={colors.textMuted} style={{ marginTop: 28 }} />
-          <View style={styles.flex1}>
-            <Select label="To" value={form.to} options={householdOptions} onChange={(v) => setForm((f) => ({ ...f, to: (v as string) || '' }))} />
-          </View>
+      <Text style={[styles.sectionLabel, { color: '#2E7D32' }]}>Record a payment</Text>
+      <GroupCard>
+        <Select
+          inlineLabel="From"
+          placeholder="Who paid?"
+          value={form.from}
+          options={householdOptions}
+          onChange={(v) => setForm((f) => ({ ...f, from: (v as string) || '' }))}
+          containerStyle={fs.dtFieldWrap}
+          fieldStyle={fs.rowField}
+          valueStyle={fs.dtValue}
+          chevronIcon="chevron-expand"
+        />
+        <CardDivider />
+        <Select
+          inlineLabel="To"
+          placeholder="Who did they pay?"
+          value={form.to}
+          options={householdOptions}
+          onChange={(v) => setForm((f) => ({ ...f, to: (v as string) || '' }))}
+          containerStyle={fs.dtFieldWrap}
+          fieldStyle={fs.rowField}
+          valueStyle={fs.dtValue}
+          chevronIcon="chevron-expand"
+        />
+        <CardDivider />
+        <View style={fs.dtRow}>
+          <Text style={fs.dtLabel}>Amount</Text>
+          <Input
+            value={form.amount}
+            onChangeText={(v) => setForm((f) => ({ ...f, amount: v }))}
+            keyboardType="decimal-pad"
+            placeholder="0"
+            containerStyle={[fs.headField, fs.rowInputWrap]}
+            style={[fs.headInput, fs.rowInput]}
+          />
         </View>
-        <View style={styles.amountRow}>
-          <View style={styles.flex1}>
-            <Input label="Amount" value={form.amount} onChangeText={(v) => setForm((f) => ({ ...f, amount: v }))} keyboardType="decimal-pad" />
-          </View>
-          <View style={styles.currencyBox}>
-            <Select label="Currency" value={form.currency} options={CURRENCIES.map((c) => ({ label: c, value: c }))} onChange={(v) => setForm((f) => ({ ...f, currency: (v as string) || 'CAD' }))} />
-          </View>
-        </View>
-        <Input label="Note (optional)" value={form.note} onChangeText={(v) => setForm((f) => ({ ...f, note: v }))} />
-        {error ? <Text style={styles.error}>{error}</Text> : null}
+        <CardDivider />
+        <Select
+          inlineLabel="Currency"
+          value={form.currency}
+          options={CURRENCIES.map((c) => ({ label: c, value: c }))}
+          onChange={(v) => setForm((f) => ({ ...f, currency: (v as string) || 'CAD' }))}
+          containerStyle={fs.dtFieldWrap}
+          fieldStyle={fs.rowField}
+          valueStyle={fs.dtValue}
+          chevronIcon="chevron-expand"
+        />
+        <CardDivider />
+        <Input
+          value={form.note}
+          onChangeText={(v) => setForm((f) => ({ ...f, note: v }))}
+          placeholder="Note (optional)"
+          containerStyle={fs.headField}
+          style={fs.headInput}
+        />
+      </GroupCard>
+      {error ? <Text style={styles.error}>{error}</Text> : null}
+      <View style={styles.recordBtn}>
         <Button title="Record payment" onPress={savePayment} loading={saving} />
-      </Card>
+      </View>
 
       {/* History */}
       {payments && payments.length > 0 ? (
@@ -219,7 +259,7 @@ export default function TripSettleScreen() {
           ))}
         </Card>
       ) : null}
-    </ScrollView>
+    </KeyboardAwareScrollView>
   );
 }
 
@@ -244,10 +284,8 @@ const styles = StyleSheet.create({
   breakdownAmt: { fontSize: 12, color: colors.textMuted },
   creditAmt: { color: colors.success },
   warn: { fontSize: 12, color: colors.warning, marginTop: spacing.sm },
-  fromToRow: { flexDirection: 'row', alignItems: 'flex-start', gap: spacing.sm },
   flex1: { flex: 1 },
-  amountRow: { flexDirection: 'row', gap: spacing.sm },
-  currencyBox: { width: 120 },
+  recordBtn: { marginBottom: spacing.md },
   error: { color: colors.warning, fontSize: 13, marginBottom: spacing.sm },
   payRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, paddingVertical: 8, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border },
   payNote: { fontSize: 12, color: colors.textMuted, marginTop: 2 },

@@ -2,6 +2,12 @@ const jwt = require('jsonwebtoken');
 const User = require('../models/User');
 const Household = require('../models/Household');
 
+// Single place session JWTs are minted (login, register, reset, passkey login,
+// sliding refresh) so the expiry policy can't drift between routes.
+function signToken(userId) {
+  return jwt.sign({ userId }, process.env.JWT_SECRET, { expiresIn: process.env.JWT_EXPIRES_IN || '7d' });
+}
+
 async function requireAuth(req, res, next) {
   const header = req.headers.authorization;
   // Also accept token as a query param for browser-native requests (iframes, download links)
@@ -14,6 +20,15 @@ async function requireAuth(req, res, next) {
     const user = await User.findById(payload.userId).select('-passwordHash');
     if (!user) return res.status(401).json({ error: 'Unauthorized' });
     req.user = user;
+    // Sliding session: past the token's half-life, hand back a fresh token so an
+    // active user never hits the hard 7-day expiry. Clients watch for this
+    // header (exposed via CORS) and replace their stored token.
+    if (payload.iat && payload.exp) {
+      const nowSec = Math.floor(Date.now() / 1000);
+      if (payload.exp - nowSec < (payload.exp - payload.iat) / 2) {
+        res.set('X-Refreshed-Token', signToken(String(user._id)));
+      }
+    }
     // Throttled engagement stamp (≤ once/hour/user) for the analytics DAU/WAU/MAU
     // + retention views. Content-blind and fire-and-forget so it never adds
     // latency or fails a request.
@@ -51,4 +66,4 @@ function requireAdmin(req, res, next) {
   next();
 }
 
-module.exports = { requireAuth, requireAdmin };
+module.exports = { requireAuth, requireAdmin, signToken };

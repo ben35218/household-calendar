@@ -1,22 +1,21 @@
-import React, { useLayoutEffect, useMemo, useState } from 'react';
+import React, { useLayoutEffect, useMemo } from 'react';
 import {
   View,
   Text,
   StyleSheet,
   ActivityIndicator,
-  ScrollView,
   TouchableOpacity,
   RefreshControl,
-  Alert,
 } from 'react-native';
-import { useQuery, useMutation } from '@tanstack/react-query';
+import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
+import { useQuery } from '@tanstack/react-query';
 import { Ionicons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { tripsApi, Trip } from '../../api';
 import { openRecord } from '../../lib/e2ee';
 import * as replica from '../../lib/replica';
-import { Card, Badge, Input, Button, RoundIconButton } from '../../components/ui';
+import { Card, Badge, RoundIconButton } from '../../components/ui';
 import { tripStatusLabel, tripStatusColor } from '../../lib/tripTypes';
 import { formatCalendarDate } from '../../lib/recurrence';
 import { useCalendarColors } from '../../lib/calendarPrefs';
@@ -49,8 +48,6 @@ function dateSummary(t: Trip) {
 export default function VacationsScreen() {
   const navigation = useNavigation<Nav>();
   const accent = useCalendarColors().colors.vacations;
-  const [joinOpen, setJoinOpen] = useState(false);
-  const [joinCode, setJoinCode] = useState('');
 
   const tripsQ = useQuery({
     queryKey: ['trips'],
@@ -60,16 +57,6 @@ export default function VacationsScreen() {
       const rows = await replica.syncedList<Trip>('Trip', async () => (await tripsApi.list()).data);
       return Promise.all(rows.map((t) => openRecord('Trip', t)));
     },
-  });
-
-  const join = useMutation({
-    mutationFn: () => tripsApi.joinShare(joinCode.trim().toUpperCase()),
-    onSuccess: (res) => {
-      setJoinOpen(false);
-      setJoinCode('');
-      navigation.navigate('TripDetail', { id: res.data.tripId });
-    },
-    onError: (e: any) => Alert.alert('Could not join', e.response?.data?.error || 'Invalid code'),
   });
 
   useLayoutEffect(() => {
@@ -104,14 +91,10 @@ export default function VacationsScreen() {
 
   return (
     <View style={styles.screen}>
-      <ScrollView
+      <KeyboardAwareScrollView bottomOffset={24} keyboardShouldPersistTaps="handled"
         contentContainerStyle={styles.content}
         refreshControl={<RefreshControl refreshing={tripsQ.isRefetching} onRefresh={tripsQ.refetch} />}
       >
-        <TouchableOpacity style={styles.joinLink} onPress={() => setJoinOpen(true)}>
-          <Ionicons name="enter-outline" size={18} color={accent} />
-          <Text style={[styles.joinLinkText, { color: accent }]}>Join a shared trip</Text>
-        </TouchableOpacity>
         {groups.length === 0 ? (
           <View style={styles.empty}>
             <Ionicons name="briefcase-outline" size={48} color={colors.textMuted} />
@@ -139,22 +122,8 @@ export default function VacationsScreen() {
             </View>
           ))
         )}
-      </ScrollView>
+      </KeyboardAwareScrollView>
 
-      {joinOpen ? (
-        <View style={styles.joinOverlay}>
-          <Card style={styles.joinCard}>
-            <Text style={styles.joinTitle}>Join a shared trip</Text>
-            <Input label="Invite code" value={joinCode} onChangeText={setJoinCode} autoCapitalize="characters" />
-            <View style={styles.joinBtns}>
-              <Button title="Cancel" variant="ghost" onPress={() => setJoinOpen(false)} />
-              <View style={{ flex: 1 }}>
-                <Button title="Join" loading={join.isPending} disabled={!joinCode.trim()} onPress={() => join.mutate()} />
-              </View>
-            </View>
-          </Card>
-        </View>
-      ) : null}
     </View>
   );
 }
@@ -165,8 +134,6 @@ const styles = StyleSheet.create({
   content: { padding: spacing.md },
   headerActions: { flexDirection: 'row' },
   headerBtn: { paddingHorizontal: 6 },
-  joinLink: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingTop: 0, paddingBottom: spacing.md },
-  joinLinkText: { fontSize: 15, fontWeight: '600' },
   group: { marginBottom: spacing.lg },
   groupTitle: { fontSize: 13, fontWeight: '700', color: colors.textMuted, textTransform: 'uppercase', marginBottom: spacing.sm },
   tripCard: { flexDirection: 'row', padding: 0, paddingVertical: spacing.md, paddingRight: spacing.md, overflow: 'hidden', marginBottom: spacing.sm },
@@ -176,8 +143,4 @@ const styles = StyleSheet.create({
   sub: { fontSize: 13, color: colors.textMuted, marginTop: 2 },
   empty: { alignItems: 'center', marginTop: spacing.xl, gap: spacing.sm },
   emptyText: { color: colors.textMuted, fontSize: 15 },
-  joinOverlay: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'center', padding: spacing.lg },
-  joinCard: { gap: spacing.sm },
-  joinTitle: { fontSize: 17, fontWeight: '700', color: colors.text, marginBottom: spacing.sm },
-  joinBtns: { flexDirection: 'row', gap: spacing.sm, alignItems: 'center' },
 });

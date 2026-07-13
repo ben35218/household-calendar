@@ -4,9 +4,9 @@ import {
   Text,
   StyleSheet,
   ActivityIndicator,
-  ScrollView,
   TouchableOpacity,
 } from 'react-native';
+import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
@@ -75,7 +75,7 @@ export default function ChoreTemplatesScreen() {
   }
 
   return (
-    <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
+    <KeyboardAwareScrollView bottomOffset={24} keyboardShouldPersistTaps="handled" style={styles.screen} contentContainerStyle={styles.content}>
       <View style={styles.toolbar}>
         <SegmentedControl<Filter>
           value={filter}
@@ -126,7 +126,7 @@ export default function ChoreTemplatesScreen() {
           })}
         </View>
       ))}
-    </ScrollView>
+    </KeyboardAwareScrollView>
   );
 }
 

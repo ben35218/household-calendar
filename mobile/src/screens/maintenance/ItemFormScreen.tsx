@@ -12,7 +12,8 @@ const ITEM_ENC = (p: Record<string, unknown>) => ({
   name: p.name, manufacturer: p.manufacturer, modelNumber: p.modelNumber,
   serialNumber: p.serialNumber, location: p.location, notes: p.notes, customFields: p.customFields,
 });
-import { Input, Select, Screen, SectionTitle, SwitchRow, Card, DateField, useHeaderCheckButton } from '../../components/ui';
+import { Input, Select, Screen, SectionTitle, SwitchRow, DateField, useHeaderCheckButton } from '../../components/ui';
+import { form as fs, GroupCard, CardDivider } from '../../components/formStyles';
 import { useCalendarColors } from '../../lib/calendarPrefs';
 import FormAssist from '../../components/FormAssist';
 import { useFormAssist } from '../../hooks/useFormAssist';
@@ -247,19 +248,22 @@ export default function ItemFormScreen() {
     return (
       <Screen>
         <Text style={styles.intro}>Choose a type to add an item:</Text>
-        {ITEM_TYPES.map((t) => (
-          <TouchableOpacity key={t.value} activeOpacity={0.7} onPress={() => selectType(t.value)}>
-            <Card style={[styles.typeRow, { borderLeftColor: t.color, borderLeftWidth: 4 }]}>
-              <View style={[styles.typeAvatar, { backgroundColor: t.color }]}>
-                <MaterialCommunityIcons name={mdiName(t.icon) as any} size={24} color="#fff" />
-              </View>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.typeLabel}>{t.label}</Text>
-                <Text style={styles.typeDesc}>{t.description}</Text>
-              </View>
-            </Card>
-          </TouchableOpacity>
-        ))}
+        <GroupCard>
+          {ITEM_TYPES.map((t, i) => (
+            <React.Fragment key={t.value}>
+              {i > 0 ? <CardDivider /> : null}
+              <TouchableOpacity style={styles.typeRow} activeOpacity={0.7} onPress={() => selectType(t.value)}>
+                <View style={[styles.typeAvatar, { backgroundColor: t.color }]}>
+                  <MaterialCommunityIcons name={mdiName(t.icon) as any} size={24} color="#fff" />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.typeLabel}>{t.label}</Text>
+                  <Text style={styles.typeDesc}>{t.description}</Text>
+                </View>
+              </TouchableOpacity>
+            </React.Fragment>
+          ))}
+        </GroupCard>
       </Screen>
     );
   }
@@ -281,7 +285,6 @@ export default function ItemFormScreen() {
 
       <FormAssist
         formType={`${cfg.label.toLowerCase()} (home item)`}
-        title="AI Assistant"
         placeholder={'Describe the item, e.g. "Samsung fridge, model RF28R, bought last March, 2-year warranty"'}
         fields={assistFields}
         current={{ ...form }}
@@ -289,66 +292,114 @@ export default function ItemFormScreen() {
       />
 
       <SectionTitle>Basic Info</SectionTitle>
-      <Input label={`${cfg.label} Name *`} value={form.name} onChangeText={(v) => set({ name: v })} placeholder={cfg.namePlaceholder} highlight={assist.changed.has('name')} />
-      <Input label="Location" value={form.location} onChangeText={(v) => set({ location: v })} placeholder="e.g. Home, Garage" highlight={assist.changed.has('location')} />
-      <Select
-        label="Category"
-        clearable
-        value={form.categoryId ?? undefined}
-        options={(categoriesQ.data ?? []).map((c) => ({ label: c.name, value: c._id }))}
-        onChange={(v) => set({ categoryId: (v as string) ?? null })}
-        highlight={assist.changed.has('categoryId')}
-      />
+      <GroupCard>
+        <Input
+          value={form.name}
+          onChangeText={(v) => set({ name: v })}
+          placeholder={cfg.namePlaceholder || `${cfg.label} Name`}
+          containerStyle={fs.headField}
+          style={[fs.headInput, assist.changed.has('name') && fs.headInputHighlight]}
+        />
+        <CardDivider />
+        <View style={fs.dtRow}>
+          <Text style={fs.dtLabel}>Location</Text>
+          <Input
+            value={form.location}
+            onChangeText={(v) => set({ location: v })}
+            placeholder="e.g. Home, Garage"
+            containerStyle={[fs.headField, fs.rowInputWrap]}
+            style={[fs.headInput, fs.rowInput, assist.changed.has('location') && fs.headInputHighlight]}
+          />
+        </View>
+        <CardDivider />
+        <Select
+          inlineLabel="Category"
+          clearable
+          placeholder="None"
+          value={form.categoryId ?? undefined}
+          options={(categoriesQ.data ?? []).map((c) => ({ label: c.name, value: c._id }))}
+          onChange={(v) => set({ categoryId: (v as string) ?? null })}
+          highlight={assist.changed.has('categoryId')}
+          containerStyle={fs.dtFieldWrap}
+          fieldStyle={fs.rowField}
+          valueStyle={fs.dtValue}
+          chevronIcon="chevron-expand"
+        />
+      </GroupCard>
 
       {cfg.fieldGroups.map((group) => (
         <View key={group.title}>
           <SectionTitle>{group.title}</SectionTitle>
-          {group.fields.map((field) => (
-            <FieldRenderer
-              key={field.model || field.customKey}
-              field={field}
-              coreValue={field.model ? (form as any)[field.model] : undefined}
-              customValue={field.customKey ? customMap[field.customKey] : undefined}
-              highlight={!!field.model && assist.changed.has(field.model)}
-              onChangeCore={(v) => field.model && set({ [field.model]: v } as any)}
-              onChangeCustom={(v) => field.customKey && setCustomMap((m) => ({ ...m, [field.customKey!]: v }))}
-            />
-          ))}
+          <GroupCard>
+            {group.fields.map((field, i) => (
+              <React.Fragment key={field.model || field.customKey}>
+                {i > 0 ? <CardDivider /> : null}
+                <FieldRenderer
+                  field={field}
+                  coreValue={field.model ? (form as any)[field.model] : undefined}
+                  customValue={field.customKey ? customMap[field.customKey] : undefined}
+                  highlight={!!field.model && assist.changed.has(field.model)}
+                  onChangeCore={(v) => field.model && set({ [field.model]: v } as any)}
+                  onChangeCustom={(v) => field.customKey && setCustomMap((m) => ({ ...m, [field.customKey!]: v }))}
+                />
+              </React.Fragment>
+            ))}
+          </GroupCard>
         </View>
       ))}
 
       <SectionTitle>Notes & Additional Fields</SectionTitle>
-      <Input label="Notes" value={form.notes} onChangeText={(v) => set({ notes: v })} multiline highlight={assist.changed.has('notes')} />
-      {userFields.map((f, i) => (
-        <View key={i} style={styles.customRow}>
-          <View style={{ flex: 1 }}>
-            <Input
-              placeholder="Field Name"
-              value={f.key}
-              onChangeText={(v) => setUserFields((arr) => arr.map((x, j) => (j === i ? { ...x, key: v } : x)))}
-            />
-          </View>
-          <View style={{ flex: 1 }}>
-            <Input
-              placeholder="Value"
-              value={f.value}
-              onChangeText={(v) => setUserFields((arr) => arr.map((x, j) => (j === i ? { ...x, value: v } : x)))}
-            />
-          </View>
-          <TouchableOpacity onPress={() => setUserFields((arr) => arr.filter((_, j) => j !== i))} style={styles.removeBtn}>
-            <MaterialCommunityIcons name="close" size={20} color={colors.textMuted} />
-          </TouchableOpacity>
-        </View>
-      ))}
+      <Input
+        value={form.notes}
+        onChangeText={(v) => set({ notes: v })}
+        multiline
+        placeholder="Add any notes…"
+        style={fs.notes}
+        highlight={assist.changed.has('notes')}
+      />
+      {userFields.length > 0 ? (
+        <GroupCard>
+          {userFields.map((f, i) => (
+            <React.Fragment key={i}>
+              {i > 0 ? <CardDivider /> : null}
+              <View style={styles.customRow}>
+                <Input
+                  placeholder="Field Name"
+                  value={f.key}
+                  onChangeText={(v) => setUserFields((arr) => arr.map((x, j) => (j === i ? { ...x, key: v } : x)))}
+                  containerStyle={[fs.headField, styles.customCol]}
+                  style={fs.headInput}
+                />
+                <Input
+                  placeholder="Value"
+                  value={f.value}
+                  onChangeText={(v) => setUserFields((arr) => arr.map((x, j) => (j === i ? { ...x, value: v } : x)))}
+                  containerStyle={[fs.headField, styles.customCol]}
+                  style={fs.headInput}
+                />
+                <TouchableOpacity
+                  onPress={() => setUserFields((arr) => arr.filter((_, j) => j !== i))}
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                  style={styles.removeBtn}
+                >
+                  <MaterialCommunityIcons name="close-circle" size={20} color={colors.textMuted} />
+                </TouchableOpacity>
+              </View>
+            </React.Fragment>
+          ))}
+        </GroupCard>
+      ) : null}
 
       {!isEdit ? (
-        <View style={{ marginTop: spacing.md }}>
-          <SwitchRow
-            label="Search for the product manual after saving"
-            value={form.autoLookupManual}
-            onValueChange={(v) => set({ autoLookupManual: v })}
-          />
-        </View>
+        <GroupCard>
+          <View style={fs.groupPad}>
+            <SwitchRow
+              label="Search for the product manual after saving"
+              value={form.autoLookupManual}
+              onValueChange={(v) => set({ autoLookupManual: v })}
+            />
+          </View>
+        </GroupCard>
       ) : null}
 
       {error ? <Text style={styles.error}>{error}</Text> : null}
@@ -376,38 +427,68 @@ function FieldRenderer({
 
   if (field.type === 'date') {
     return (
-      <DateField label={field.label} clearable value={value ?? ''} onChange={onChange} highlight={highlight} />
+      <DateField
+        inlineLabel={field.label}
+        clearable
+        placeholder="None"
+        value={value ?? ''}
+        onChange={onChange}
+        highlight={highlight}
+        containerStyle={fs.dtFieldWrap}
+        fieldStyle={fs.rowField}
+        valueStyle={fs.dtValue}
+        hideIcon
+      />
     );
   }
   if ((field.type === 'select' || field.type === 'autocomplete') && field.options) {
     return (
       <Select
-        label={field.label}
+        inlineLabel={field.label}
         clearable
+        placeholder="None"
         value={value || undefined}
         options={field.options.map((o) => ({ label: o, value: o }))}
         onChange={(v) => onChange((v as string) ?? '')}
         highlight={highlight}
+        containerStyle={fs.dtFieldWrap}
+        fieldStyle={fs.rowField}
+        valueStyle={fs.dtValue}
+        chevronIcon="chevron-expand"
+      />
+    );
+  }
+  if (field.type === 'textarea') {
+    return (
+      <Input
+        value={value ?? ''}
+        onChangeText={onChange}
+        placeholder={field.placeholder || field.label}
+        multiline
+        containerStyle={fs.headField}
+        style={[fs.headInput, highlight && fs.headInputHighlight]}
       />
     );
   }
   return (
-    <Input
-      label={field.label}
-      value={value ?? ''}
-      onChangeText={onChange}
-      placeholder={field.placeholder}
-      keyboardType={field.type === 'number' ? 'numeric' : 'default'}
-      multiline={field.type === 'textarea'}
-      highlight={highlight}
-    />
+    <View style={fs.dtRow}>
+      <Text style={fs.dtLabel}>{field.label}</Text>
+      <Input
+        value={value ?? ''}
+        onChangeText={onChange}
+        placeholder={field.placeholder}
+        keyboardType={field.type === 'number' ? 'numeric' : 'default'}
+        containerStyle={[fs.headField, fs.rowInputWrap]}
+        style={[fs.headInput, fs.rowInput, highlight && fs.headInputHighlight]}
+      />
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.background },
   intro: { fontSize: 15, color: colors.textMuted, marginBottom: spacing.md },
-  typeRow: { flexDirection: 'row', alignItems: 'center', marginBottom: spacing.sm, gap: spacing.md },
+  typeRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.md, paddingHorizontal: 14, paddingVertical: 10 },
   typeAvatar: { width: 44, height: 44, borderRadius: 22, alignItems: 'center', justifyContent: 'center' },
   typeLabel: { fontSize: 16, fontWeight: '700', color: colors.text },
   typeDesc: { fontSize: 13, color: colors.textMuted, marginTop: 2 },
@@ -415,7 +496,8 @@ const styles = StyleSheet.create({
   typeChip: { flexDirection: 'row', alignItems: 'center', gap: 6, borderRadius: 999, paddingHorizontal: 12, paddingVertical: 6 },
   typeChipText: { color: '#fff', fontWeight: '600' },
   changeType: { color: colors.primary, fontWeight: '600' },
-  customRow: { flexDirection: 'row', alignItems: 'flex-start', gap: spacing.sm },
-  removeBtn: { paddingTop: 12 },
+  customRow: { flexDirection: 'row', alignItems: 'center', paddingRight: 14 },
+  customCol: { flex: 1 },
+  removeBtn: { marginLeft: spacing.sm },
   error: { color: colors.error, marginVertical: spacing.sm },
 });

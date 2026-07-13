@@ -9,6 +9,9 @@ const routes = [
   { path: '/households', name: 'Households', component: () => import('../views/HouseholdsView.vue') },
   { path: '/billing', name: 'Billing', component: () => import('../views/BillingView.vue') },
   { path: '/users', name: 'Users', component: () => import('../views/UsersView.vue') },
+  { path: '/ai-usage', name: 'AiUsage', component: () => import('../views/AiUsageView.vue') },
+  { path: '/support-inbox', name: 'SupportInbox', component: () => import('../views/SupportInboxView.vue') },
+  { path: '/email-log', name: 'EmailLog', component: () => import('../views/EmailLogView.vue') },
   { path: '/e2ee', name: 'E2EE', component: () => import('../views/E2eeOpsView.vue') },
   { path: '/audit', name: 'Audit', component: () => import('../views/AuditLogView.vue') },
 ];

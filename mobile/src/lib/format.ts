@@ -6,3 +6,15 @@ export function formatCompact(n: number): string {
   if (abs < 1_000_000) return (n / 1000).toFixed(1).replace(/\.0$/, '') + 'k';
   return (n / 1_000_000).toFixed(1).replace(/\.0$/, '') + 'm';
 }
+
+// "90" -> "1 hr 30 min", "60" -> "1 hr", "45" -> "45 min", "2880" -> "2 days".
+export function formatDuration(minutes: number): string {
+  const d = Math.floor(minutes / 1440);
+  const h = Math.floor((minutes % 1440) / 60);
+  const m = minutes % 60;
+  const parts: string[] = [];
+  if (d) parts.push(`${d} ${d === 1 ? 'day' : 'days'}`);
+  if (h) parts.push(`${h} hr`);
+  if (m) parts.push(`${m} min`);
+  return parts.join(' ');
+}

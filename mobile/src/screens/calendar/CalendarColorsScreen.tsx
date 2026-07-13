@@ -1,20 +1,43 @@
 import React, { useState } from 'react';
 import { View, Text, ScrollView, StyleSheet, TouchableOpacity } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { CALENDARS, useCalendarColors } from '../../lib/calendarPrefs';
+import {
+  CALENDARS,
+  COLOR_PRESETS,
+  useCalendarColors,
+  useCalendarOrder,
+  useHolidayCalendars,
+  sortByCalendarOrder,
+} from '../../lib/calendarPrefs';
 import { colors, spacing, radius } from '../../theme';
 
-// Palette offered for each calendar.
-const PRESETS = [
-  '#1976D2', '#0288D1', '#00ACC1', '#00897B', '#43A047', '#388E3C',
-  '#F9A825', '#F57C00', '#D32F2F', '#C2185B', '#E91E63', '#8E24AA',
-  '#7B1FA2', '#5E35B1', '#3949AB', '#546E7A', '#6D4C41', '#455A64',
-];
-
-// Lets the user recolour each calendar; changes persist and flow through the
-// calendar grid, day view, events list and search via lib/calendar colorOf.
+// Lets the user recolour and reorder each calendar; both persist and flow
+// through the calendar grid, day view, events list and search via lib/calendar.
 export default function CalendarColorsScreen() {
   const { colors: calColors, setColor, resetColor } = useCalendarColors();
+  const { calendars: holidayCals } = useHolidayCalendars();
+  const { order, setOrder } = useCalendarOrder();
+  // Built-in + per-country holiday calendars share the same recolour flow; each
+  // holiday calendar's base colour is its reset fallback. The user's saved order
+  // wins; unordered calendars (e.g. a freshly added one) trail in natural order.
+  const items = sortByCalendarOrder(
+    [
+      ...CALENDARS.map((c) => ({ id: c.id, name: c.name, color: c.color })),
+      ...holidayCals.map((c) => ({ id: c.id, name: c.name, color: c.color })),
+    ],
+    order
+  );
+
+  // Swap a calendar with its neighbour, then persist the whole id sequence so
+  // the new order sticks and re-sorts every calendar list live.
+  const move = (index: number, dir: -1 | 1) => {
+    const target = index + dir;
+    if (target < 0 || target >= items.length) return;
+    const ids = items.map((c) => c.id);
+    [ids[index], ids[target]] = [ids[target], ids[index]];
+    setOrder(ids);
+  };
+
   const [openId, setOpenId] = useState<string | null>(null);
   // Local, instant selection. We only persist + apply app-wide when the panel
   // for a calendar is minimized, so picking a colour feels immediate.
@@ -42,9 +65,11 @@ export default function CalendarColorsScreen() {
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
-      <Text style={styles.intro}>Tap a calendar, pick a colour, then collapse it to apply.</Text>
+      <Text style={styles.intro}>
+        Tap a calendar to recolour it; use the arrows to reorder. Changes apply everywhere.
+      </Text>
 
-      {CALENDARS.map((cal) => {
+      {items.map((cal, index) => {
         const current = draft[cal.id] ?? calColors[cal.id] ?? cal.color;
         const open = openId === cal.id;
         return (
@@ -52,12 +77,38 @@ export default function CalendarColorsScreen() {
             <TouchableOpacity style={styles.row} activeOpacity={0.7} onPress={() => togglePanel(cal.id)}>
               <View style={[styles.swatch, { backgroundColor: current }]} />
               <Text style={styles.name}>{cal.name}</Text>
-              <Ionicons name={open ? 'chevron-up' : 'chevron-down'} size={18} color={colors.textMuted} />
+              <View style={styles.reorder}>
+                <TouchableOpacity
+                  style={styles.reorderBtn}
+                  onPress={() => move(index, -1)}
+                  disabled={index === 0}
+                  hitSlop={{ top: 8, bottom: 8, left: 4, right: 4 }}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Move ${cal.name} up`}
+                >
+                  <Ionicons name="chevron-up" size={20} color={index === 0 ? colors.border : colors.textMuted} />
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.reorderBtn}
+                  onPress={() => move(index, 1)}
+                  disabled={index === items.length - 1}
+                  hitSlop={{ top: 8, bottom: 8, left: 4, right: 4 }}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Move ${cal.name} down`}
+                >
+                  <Ionicons
+                    name="chevron-down"
+                    size={20}
+                    color={index === items.length - 1 ? colors.border : colors.textMuted}
+                  />
+                </TouchableOpacity>
+              </View>
+              <Ionicons name={open ? 'remove' : 'color-palette-outline'} size={18} color={colors.textMuted} />
             </TouchableOpacity>
 
             {open ? (
               <View style={styles.palette}>
-                {PRESETS.map((c) => {
+                {COLOR_PRESETS.map((c) => {
                   const selected = c.toLowerCase() === current.toLowerCase();
                   return (
                     <TouchableOpacity
@@ -100,6 +151,8 @@ const styles = StyleSheet.create({
   row: { flexDirection: 'row', alignItems: 'center', gap: spacing.md, padding: spacing.md },
   swatch: { width: 28, height: 28, borderRadius: 6 },
   name: { flex: 1, fontSize: 16, color: colors.text },
+  reorder: { flexDirection: 'row', alignItems: 'center' },
+  reorderBtn: { paddingHorizontal: 2 },
   palette: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm, paddingHorizontal: spacing.md, paddingBottom: spacing.md },
   paletteSwatch: { width: 36, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center' },
   paletteSelected: { borderWidth: 3, borderColor: '#fff' },

@@ -13,7 +13,13 @@ api.interceptors.request.use((config) => {
 });
 
 api.interceptors.response.use(
-  (res) => res,
+  (res) => {
+    // Sliding session: the server reissues the JWT past its half-life via this
+    // header (exposed through CORS); persist it so active admins stay signed in.
+    const refreshed = res.headers['x-refreshed-token'];
+    if (refreshed) localStorage.setItem('hc_admin_token', refreshed);
+    return res;
+  },
   (err) => {
     if (err.response?.status === 401) {
       localStorage.removeItem('hc_admin_token');
@@ -49,6 +55,19 @@ export const adminApi = {
   audit: (params) => api.get('/admin/audit', { params }),
 };
 
+// Email surfaces: the outbound no-reply@ send log and the live support@
+// mailbox (requireAdmin-gated). Support calls hit IMAP on the server, so they
+// are noticeably slower than the Mongo-backed endpoints.
+export const emailApi = {
+  log: (params) => api.get('/admin/email/log', { params }),
+  supportStatus: () => api.get('/admin/email/support/status'),
+  supportMessages: (params) => api.get('/admin/email/support/messages', { params }),
+  supportMessage: (uid, mailbox) => api.get(`/admin/email/support/messages/${uid}`, { params: { mailbox } }),
+  supportReply: (uid, payload) => api.post(`/admin/email/support/messages/${uid}/reply`, payload),
+  supportMove: (uid, payload) => api.post(`/admin/email/support/messages/${uid}/move`, payload),
+  supportSeen: (uid, payload) => api.post(`/admin/email/support/messages/${uid}/seen`, payload),
+};
+
 // Content-blind product-usage analytics (requireAdmin-gated).
 export const analyticsApi = {
   overview: () => api.get('/admin/analytics/overview'),
@@ -57,4 +76,5 @@ export const analyticsApi = {
   usage: (weeks) => api.get('/admin/analytics/usage', { params: { weeks } }),
   activity: (weeks) => api.get('/admin/analytics/activity', { params: { weeks } }),
   retention: (weeks) => api.get('/admin/analytics/retention', { params: { weeks } }),
+  tokens: (weeks) => api.get('/admin/analytics/tokens', { params: { weeks } }),
 };

@@ -5,6 +5,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useChat } from '../../hooks/useChat';
 import ChatScreen from '../chat/ChatScreen';
 import AiUsageBanner from '../../components/AiUsageBanner';
+import { ASSISTANT_NAME } from '../../config';
 import { itemsApi, tasksApi, householdApi } from '../../api';
 import { getHDK, openRecord, sealNew } from '../../lib/e2ee';
 import { MaintenanceStackParamList } from '../../navigation/MaintenanceNavigator';
@@ -120,8 +121,8 @@ export default function MaintenanceChatScreen() {
     <ChatScreen
       chat={chat}
       banner={banner}
-      emptyIcon="wrench"
-      emptyText={`Chat with your maintenance assistant to set up tasks${itemName ? ` for ${itemName}` : ''}.`}
+      accessory="wrench"
+      emptyText={`Hi, I'm ${ASSISTANT_NAME}. In this chat I help set up maintenance tasks${itemName ? ` for ${itemName}` : ''}.`}
       emptyHint='e.g. "What maintenance does my HVAC system need?"'
       placeholder="Ask about maintenance tasks…"
     />

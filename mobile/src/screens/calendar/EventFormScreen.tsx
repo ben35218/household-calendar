@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { View, Text, StyleSheet, ActivityIndicator, Alert, TouchableOpacity } from 'react-native';
+import { View, Text, StyleSheet, ActivityIndicator, Alert, TouchableOpacity, Modal, Pressable } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
@@ -7,12 +7,23 @@ import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { calendarApi, invitationsApi, placesApi, settingsApi, FormAssistField } from '../../api';
 import { Button, Input, Select, Screen, SwitchRow, SectionTitle, DateField, TimeField, useHeaderCheckButton } from '../../components/ui';
 import FormAssist from '../../components/FormAssist';
+import { form as formStyles } from '../../components/formStyles';
 import { useFormAssist } from '../../hooks/useFormAssist';
 import PlacesAutocomplete from '../../components/PlacesAutocomplete';
 import { EVENT_CALENDAR_TYPES, ymd } from '../../lib/calendar';
-import { useCalendarColors } from '../../lib/calendarPrefs';
+import { useCalendarColors, useCustomCalendars, useDeletedDefaultCalendars } from '../../lib/calendarPrefs';
 import { sealNew, sealUpdate, openRecord } from '../../lib/e2ee';
-import { getQueuedInvitees, clearQueuedInvitees, useQueuedInvitees } from '../../lib/inviteeDraft';
+import { getFeedEventById, FEED_EVENT_ID_PREFIX } from '../../lib/calendarFeeds';
+import { formatDuration } from '../../lib/format';
+import WheelPicker, { WHEEL_ITEM_H, WHEEL_VISIBLE } from '../../components/WheelPicker';
+import {
+  getQueuedInvitees, clearQueuedInvitees, useQueuedInvitees,
+  getDraftGuestListVisible, setDraftGuestListVisible,
+} from '../../lib/inviteeDraft';
+import { inviteeKey, sendInvitations } from '../../lib/invitees';
+import { useTravelDraft, clearTravelDraft } from '../../lib/travelDraft';
+import { RepeatRule, WeekdayKind, isCustomRule, repeatSummary } from '../../lib/eventRepeat';
+import { useRepeatDraft, clearRepeatDraft } from '../../lib/repeatDraft';
 import { CalendarStackParamList } from '../../navigation/CalendarNavigator';
 import { colors, spacing, radius } from '../../theme';
 
@@ -20,7 +31,7 @@ type Nav = NativeStackNavigationProp<CalendarStackParamList, 'EventForm'>;
 type Rt = RouteProp<CalendarStackParamList, 'EventForm'>;
 
 const ALERT_OPTIONS = [
-  { label: 'No alert', value: -1 },
+  { label: 'None', value: -1 },
   { label: 'At time of event', value: 0 },
   { label: '15 min before', value: 15 },
   { label: '30 min before', value: 30 },
@@ -28,28 +39,98 @@ const ALERT_OPTIONS = [
   { label: '1 day before', value: 1440 },
 ];
 
+// Sentinel picker value: opens the custom dual-wheel sheet instead of setting a time.
+const CUSTOM_ALERT = -2;
+
 function addMinutesToTime(time: string, minutes: number): string {
   const [h, m] = time.split(':').map(Number);
   const total = h * 60 + m + minutes;
   return `${String(Math.floor(total / 60) % 24).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`;
 }
 
-function timeDiffMinutes(start: string, end: string): number | null {
-  if (!start || !end) return null;
-  const [sh, sm] = start.split(':').map(Number);
-  const [eh, em] = end.split(':').map(Number);
-  const diff = (eh * 60 + em) - (sh * 60 + sm);
-  return diff > 0 ? diff : null;
+const CUSTOM_UNITS = [
+  { label: 'minutes', value: 1 },
+  { label: 'hours', value: 60 },
+  { label: 'days', value: 1440 },
+];
+
+// Amount wheel range per unit (iOS timer-style: finer units, shorter ranges).
+const AMOUNT_MAX: Record<number, number> = { 1: 59, 60: 23, 1440: 31 };
+
+// Decompose stored "minutes before the event" into the largest clean unit, to
+// seed the wheels from the field's current value. No usable value → 30 minutes.
+function decomposeAlert(minutes: number | null): { amount: number; unit: number } {
+  if (!minutes || minutes <= 0) return { amount: 30, unit: 1 };
+  const unit = minutes % 1440 === 0 ? 1440 : minutes % 60 === 0 ? 60 : 1;
+  return { amount: Math.min(minutes / unit, AMOUNT_MAX[unit]), unit };
 }
 
-// "90" -> "1 hr 30 min", "60" -> "1 hr", "45" -> "45 min".
-function formatDuration(minutes: number): string {
-  const h = Math.floor(minutes / 60);
-  const m = minutes % 60;
-  const parts: string[] = [];
-  if (h) parts.push(`${h} hr`);
-  if (m) parts.push(`${m} min`);
-  return parts.join(' ');
+// The alert picker's "Custom…" choice: a dual amount + unit wheel in a bottom
+// sheet (the Repeat screen's "Every" sheet with a second wheel for the unit).
+// Done emits plain "minutes before the event".
+function CustomAlertSheet({
+  visible,
+  initialMinutes,
+  onSave,
+  onClose,
+}: {
+  visible: boolean;
+  initialMinutes: number | null;
+  onSave: (minutes: number) => void;
+  onClose: () => void;
+}) {
+  const [amount, setAmount] = useState(30);
+  const [unit, setUnit] = useState(1);
+
+  // Reseed from the field's current value each time the sheet opens.
+  useEffect(() => {
+    if (!visible) return;
+    const d = decomposeAlert(initialMinutes);
+    setAmount(d.amount);
+    setUnit(d.unit);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visible]);
+
+  // Switching to a coarser unit can leave the amount past its wheel's range.
+  const pickUnit = (u: number) => {
+    setUnit(u);
+    setAmount((a) => Math.min(a, AMOUNT_MAX[u]));
+  };
+
+  return (
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
+      <Pressable style={styles.sheetBackdrop} onPress={onClose}>
+        <Pressable style={styles.sheet} onPress={(e) => e.stopPropagation()}>
+          <View style={styles.wheelRow}>
+            {/* Selection band spans both wheels, like the native spinner's. */}
+            <View pointerEvents="none" style={styles.wheelBand} />
+            <WheelPicker
+              // Remount per open (fresh position) and per unit (clamped range).
+              key={`amount-${String(visible)}-${unit}`}
+              width={72}
+              items={Array.from({ length: AMOUNT_MAX[unit] }, (_, i) => ({ label: String(i + 1), value: i + 1 }))}
+              value={amount}
+              onChange={setAmount}
+            />
+            <WheelPicker
+              key={`unit-${String(visible)}`}
+              width={120}
+              items={CUSTOM_UNITS}
+              value={unit}
+              onChange={pickUnit}
+            />
+          </View>
+          <Button
+            title="Done"
+            onPress={() => {
+              onSave(amount * unit);
+              onClose();
+            }}
+          />
+        </Pressable>
+      </Pressable>
+    </Modal>
+  );
 }
 
 // "a@x.com, b@y.com +2 more" — the Invitees card's one-line preview.
@@ -60,12 +141,18 @@ function inviteePreview(emails: string[]): string {
 }
 
 const REPEAT_OPTIONS = [
-  { label: 'Does not repeat', value: '' },
+  { label: 'Never', value: '' },
   { label: 'Daily', value: 'daily' },
   { label: 'Weekly', value: 'weekly' },
   { label: 'Monthly', value: 'monthly' },
   { label: 'Yearly', value: 'yearly' },
 ];
+
+// Sentinel picker value for the Repeat select's "Custom…" row. While a custom
+// rule is active the select's value IS this sentinel, so the row shows the
+// rule's summary ("Every 2 weeks on Monday") and tapping it reopens the Repeat
+// screen to edit.
+const CUSTOM_REPEAT = 'custom';
 
 // Schema the AI form assistant fills. Names match the form-state keys.
 const ASSIST_FIELDS: FormAssistField[] = [
@@ -88,7 +175,23 @@ const ASSIST_FIELDS: FormAssistField[] = [
       'Set true when the user wants the alert timed to when they should leave (based on drive time to the location), instead of a fixed number of minutes before the event. When true, do not also set reminderMinutes.',
   },
   { name: 'recurrFreq', type: 'select', label: 'Repeat', options: REPEAT_OPTIONS },
+  {
+    name: 'recurrInterval',
+    type: 'number',
+    label: 'Repeat every N',
+    description:
+      'Only for custom repeats like "every 2 weeks" or "every 3 months": set recurrFreq to the unit (weekly/monthly/…) and this to N. Omit for simple repeats.',
+  },
+  { name: 'recurrUntil', type: 'date', label: 'End repeat', description: 'Last date the event repeats. Only when the event repeats.' },
 ];
+
+// RSVP labels for the Guests card on the guest (read-only invitee) view.
+const GUEST_STATUS_LABEL: Record<string, string> = {
+  pending: 'Invited',
+  accepted: 'Going',
+  declined: 'Declined',
+  left: 'Left',
+};
 
 export default function EventFormScreen() {
   const navigation = useNavigation<Nav>();
@@ -98,6 +201,9 @@ export default function EventFormScreen() {
   // The save check is tinted with the selected calendar's colour (respects
   // user overrides).
   const cal = useCalendarColors().colors;
+  // Built-in event calendars plus the user's own (Calendars → Add Calendar).
+  const { calendars: customCalendars } = useCustomCalendars();
+  const { deletedIds: deletedDefaults } = useDeletedDefaultCalendars();
 
   const [form, setForm] = useState({
     title: '',
@@ -111,11 +217,22 @@ export default function EventFormScreen() {
     location: '',
     phone: '',
     fromAddress: '',
+    // Travel time is off until enabled on the Travel Time screen. travelManual
+    // = the user picked a fixed duration there (no auto recompute).
+    travelEnabled: false,
+    travelManual: false,
     travelMinutes: null as number | null,
     travelDistanceKm: null as string | null,
     reminderMinutes: null as number | null,
     alert2Minutes: null as number | null,
     recurrFreq: '',
+    recurrInterval: 1,
+    recurrDaysOfWeek: [] as number[],
+    recurrDaysOfMonth: [] as number[],
+    recurrMonths: [] as number[],
+    recurrWeekOfMonth: null as number | null,
+    recurrWeekdayKind: null as WeekdayKind | null,
+    recurrUntil: '',
   });
   const [error, setError] = useState('');
   const [travelLoading, setTravelLoading] = useState(false);
@@ -125,11 +242,43 @@ export default function EventFormScreen() {
   const [pendingLeaveAlert, setPendingLeaveAlert] = useState(false);
   const assist = useFormAssist();
 
+  // The Calendar picker: built-ins minus any the user deleted from the
+  // Calendars view (the event's current calendar always stays offered, so old
+  // events keep rendering theirs), plus custom calendars where this user can
+  // actually put events (View Only calendars are excluded).
+  const calendarOptions = useMemo(() => {
+    const builtIns = EVENT_CALENDAR_TYPES.filter(
+      (o) => !deletedDefaults.includes(o.value) || o.value === form.calendarType
+    );
+    const customs = customCalendars
+      // Subscribed (feed) and holiday calendars are read-only — never an event
+      // destination.
+      .filter((c) => !c.feedUrl && !c.holiday && (c.access === 'full' || c.id === form.calendarType))
+      .map((c) => ({ label: c.name, value: c.id }));
+    const opts = [...builtIns, ...customs];
+    return opts.length ? opts : EVENT_CALENDAR_TYPES;
+  }, [customCalendars, deletedDefaults, form.calendarType]);
+  // The assistant's Calendar select must offer the same set.
+  const assistFields = useMemo<FormAssistField[]>(
+    () => ASSIST_FIELDS.map((f) => (f.name === 'calendarType' ? { ...f, options: calendarOptions } : f)),
+    [calendarOptions]
+  );
+
   // Manual edits clear the "AI changed this" highlight for the touched fields.
   const set = (patch: Partial<typeof form>) => {
     setForm((f) => ({ ...f, ...patch }));
     assist.clear(Object.keys(patch));
   };
+
+  // A new event defaults to Activities; if the user deleted that calendar,
+  // snap to the first calendar the picker actually offers.
+  useEffect(() => {
+    if (isEdit) return;
+    if (!calendarOptions.some((o) => o.value === form.calendarType)) {
+      setForm((f) => ({ ...f, calendarType: (calendarOptions[0]?.value as string) ?? 'activities' }));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isEdit, calendarOptions, form.calendarType]);
 
   // Merge an AI patch into the form and mark the fields that actually changed.
   const applyPatch = (patch: Record<string, unknown>) => {
@@ -160,6 +309,8 @@ export default function EventFormScreen() {
         if (!changedKeys.includes('reminderMinutes')) changedKeys.push('reminderMinutes');
         setPendingLeaveAlert(false);
       } else {
+        // Travel time must be on for the drive time to compute at all.
+        next.travelEnabled = true;
         setPendingLeaveAlert(true);
       }
     }
@@ -207,12 +358,49 @@ export default function EventFormScreen() {
     }
   };
 
-  // Recompute (debounced) whenever the location or starting point changes.
+  // Recompute (debounced) whenever the location or starting point changes —
+  // only while travel time is enabled and not set to a manual duration.
   useEffect(() => {
+    if (!form.travelEnabled || form.travelManual) return;
     if (!form.location.trim()) return;
     const t = setTimeout(fetchTravelTime, 700);
     return () => clearTimeout(t);
-  }, [form.location, form.fromAddress]);
+  }, [form.location, form.fromAddress, form.travelEnabled, form.travelManual]);
+
+  // Apply edits made on the pushed Travel Time screen as they happen.
+  const travelDraft = useTravelDraft();
+  useEffect(() => {
+    if (!travelDraft) return;
+    setForm((f) => ({
+      ...f,
+      travelEnabled: travelDraft.enabled,
+      fromAddress: travelDraft.fromAddress,
+      travelManual: travelDraft.manualMinutes != null,
+      travelMinutes: !travelDraft.enabled ? null : travelDraft.manualMinutes ?? f.travelMinutes,
+      travelDistanceKm: travelDraft.enabled && travelDraft.manualMinutes == null ? f.travelDistanceKm : null,
+    }));
+  }, [travelDraft]);
+  useEffect(() => () => clearTravelDraft(), []);
+
+  // Apply edits made on the pushed Repeat screen as they happen.
+  const repeatDraft = useRepeatDraft();
+  useEffect(() => {
+    if (!repeatDraft) return;
+    setForm((f) => ({
+      ...f,
+      recurrFreq: repeatDraft.freq,
+      recurrInterval: repeatDraft.interval,
+      recurrDaysOfWeek: repeatDraft.daysOfWeek,
+      recurrDaysOfMonth: repeatDraft.daysOfMonth,
+      recurrMonths: repeatDraft.months,
+      recurrWeekOfMonth: repeatDraft.weekOfMonth,
+      recurrWeekdayKind: repeatDraft.weekdayKind,
+    }));
+  }, [repeatDraft]);
+  useEffect(() => () => clearRepeatDraft(), []);
+
+  // Which alert field the custom dual-wheel sheet is editing (null = closed).
+  const [customFor, setCustomFor] = useState<'reminderMinutes' | 'alert2Minutes' | null>(null);
 
   // The assistant may ask for a "time to leave" alert before the drive time is
   // known; apply it as soon as travel time computes (on a timed event).
@@ -245,24 +433,74 @@ export default function EventFormScreen() {
     if (form.travelMinutes && !form.allDay) {
       const buffers = [0, 5, 10, 15, 30]; // minutes before departure
       for (const buf of buffers) {
-        const label =
-          buf === 0
-            ? leaveByTime
-              ? `When it's time to leave (${leaveByTime})`
-              : "When it's time to leave"
-            : `${buf} min before leaving`;
+        // No computable departure time (e.g. no start time yet) — omit "Time to leave".
+        if (buf === 0 && !leaveByTime) continue;
+        const label = buf === 0 ? `Time to leave (${leaveByTime})` : `${buf} min before leaving`;
         leaveItems.push({ value: form.travelMinutes + buf, label });
       }
     }
     // Dedupe by value (a leave option may collide with a base "X min before").
     const used = new Set(leaveItems.map((i) => i.value));
     const base = ALERT_OPTIONS.filter((o) => !used.has(o.value));
-    return [...base, ...leaveItems];
-  }, [form.travelMinutes, form.allDay, leaveByTime]);
+    // "None" stays first; departure-relative options follow it so they're
+    // visible without scrolling (the option modal caps at 70% screen height).
+    const items = [base[0], ...leaveItems, ...base.slice(1)];
+    // A saved custom value has no canned option — synthesize a label for it so
+    // the field doesn't show the placeholder. When a drive time is known and
+    // the value reaches past it, describe it relative to departure instead.
+    for (const v of [form.reminderMinutes, form.alert2Minutes]) {
+      if (v == null || v <= 0 || items.some((i) => i.value === v)) continue;
+      const label =
+        form.travelMinutes && !form.allDay && v >= form.travelMinutes
+          ? `${formatDuration(v - form.travelMinutes)} before leaving`
+          : `${formatDuration(v)} before`;
+      items.push({ value: v, label });
+    }
+    items.push({ label: 'Custom…', value: CUSTOM_ALERT });
+    return items;
+  }, [form.travelMinutes, form.allDay, leaveByTime, form.reminderMinutes, form.alert2Minutes]);
 
+  // Repeat options + the select's value. A custom rule ("every 2 weeks on
+  // Monday") selects the Custom row and labels it with the rule's summary.
+  const repeatRule: RepeatRule = useMemo(
+    () => ({
+      freq: form.recurrFreq as RepeatRule['freq'],
+      interval: form.recurrInterval,
+      daysOfWeek: form.recurrDaysOfWeek,
+      daysOfMonth: form.recurrDaysOfMonth,
+      months: form.recurrMonths,
+      weekOfMonth: form.recurrWeekOfMonth,
+      weekdayKind: form.recurrWeekdayKind,
+    }),
+    [
+      form.recurrFreq, form.recurrInterval, form.recurrDaysOfWeek,
+      form.recurrDaysOfMonth, form.recurrMonths, form.recurrWeekOfMonth, form.recurrWeekdayKind,
+    ],
+  );
+  const customRepeatActive = isCustomRule(repeatRule);
+  const repeatItems = useMemo(
+    () => [
+      ...REPEAT_OPTIONS,
+      { label: customRepeatActive ? repeatSummary(repeatRule) : 'Custom…', value: CUSTOM_REPEAT },
+    ],
+    [customRepeatActive, repeatRule],
+  );
+  const repeatValue = customRepeatActive ? CUSTOM_REPEAT : form.recurrFreq;
+
+  // Feed occurrences are synthetic (feed:<cal>:<start>:<uid>): no server row
+  // exists, so resolve them from the last local expansion. They carry
+  // readOnly: true, so the read-only view renders without any further queries.
+  const isFeedEvent = !!eventId?.startsWith(FEED_EVENT_ID_PREFIX);
   const eventQ = useQuery({
     queryKey: ['calendar', 'event', eventId],
-    queryFn: async () => (await calendarApi.getEvent(eventId!)).data,
+    queryFn: async () => {
+      if (isFeedEvent) {
+        const e = getFeedEventById(eventId!);
+        if (!e) throw new Error('Feed event not found');
+        return e;
+      }
+      return (await calendarApi.getEvent(eventId!)).data;
+    },
     enabled: isEdit,
   });
   useEffect(() => {
@@ -285,12 +523,26 @@ export default function EventFormScreen() {
         description: e.description ?? '',
         location: e.location ?? '',
         phone: e.phone ?? '',
+        travelEnabled: e.travelMinutes != null,
+        // Auto-computed times always store a distance; a bare minutes value
+        // means a manually picked duration.
+        travelManual: e.travelMinutes != null && e.travelDistanceKm == null,
         travelMinutes: e.travelMinutes ?? null,
         travelDistanceKm: e.travelDistanceKm ?? null,
         reminderMinutes: e.reminderMinutes ?? null,
         alert2Minutes: e.alert2Minutes ?? null,
         recurrFreq: e.recurrence?.freq ?? '',
+        recurrInterval: e.recurrence?.interval ?? 1,
+        recurrDaysOfWeek: e.recurrence?.daysOfWeek ?? [],
+        recurrDaysOfMonth: e.recurrence?.daysOfMonth ?? [],
+        recurrMonths: e.recurrence?.months ?? [],
+        recurrWeekOfMonth: e.recurrence?.weekOfMonth ?? null,
+        recurrWeekdayKind: e.recurrence?.weekdayKind ?? null,
+        recurrUntil: e.recurrence?.until ? String(e.recurrence.until).slice(0, 10) : '',
       });
+      // Seed the Invitees screen's guest-list switch (missing on events that
+      // predate the setting — treated as visible).
+      setDraftGuestListVisible(e.guestListVisible !== false);
     })();
     return () => { cancelled = true; };
   }, [eventQ.data]);
@@ -341,28 +593,58 @@ export default function EventFormScreen() {
         description: form.description || undefined,
         location: form.location || undefined,
         phone: form.phone || undefined,
-        travelMinutes: form.travelMinutes ?? undefined,
-        travelDistanceKm: form.travelDistanceKm ?? undefined,
+        // null (not undefined) so turning travel time off clears the stored
+        // values on update — the route skips undefined fields.
+        travelMinutes: form.travelEnabled ? form.travelMinutes ?? null : null,
+        travelDistanceKm: form.travelEnabled ? form.travelDistanceKm ?? null : null,
         reminderMinutes: form.reminderMinutes ?? undefined,
         alert2Minutes:
           form.reminderMinutes !== null && form.alert2Minutes !== null ? form.alert2Minutes : undefined,
-        recurrence: form.recurrFreq ? { freq: form.recurrFreq } : undefined,
+        recurrence: form.recurrFreq
+          ? {
+              freq: form.recurrFreq,
+              interval: form.recurrInterval > 1 ? form.recurrInterval : undefined,
+              daysOfWeek:
+                form.recurrFreq === 'weekly' && form.recurrDaysOfWeek.length ? form.recurrDaysOfWeek : undefined,
+              daysOfMonth:
+                form.recurrFreq === 'monthly' && form.recurrDaysOfMonth.length ? form.recurrDaysOfMonth : undefined,
+              months: form.recurrFreq === 'yearly' && form.recurrMonths.length ? form.recurrMonths : undefined,
+              // The ordinal rule rides with monthly "on the…" or yearly months.
+              weekOfMonth:
+                (form.recurrFreq === 'monthly' && !form.recurrDaysOfMonth.length) ||
+                (form.recurrFreq === 'yearly' && form.recurrMonths.length)
+                  ? form.recurrWeekOfMonth ?? undefined
+                  : undefined,
+              weekdayKind:
+                (form.recurrFreq === 'monthly' && !form.recurrDaysOfMonth.length) ||
+                (form.recurrFreq === 'yearly' && form.recurrMonths.length)
+                  ? form.recurrWeekdayKind ?? undefined
+                  : undefined,
+              // End of the chosen local day, so the last occurrence is included.
+              until: form.recurrUntil ? new Date(`${form.recurrUntil}T23:59:59`).toISOString() : undefined,
+            }
+          : undefined,
       };
       // E2EE dual-write: send ciphertext alongside plaintext (no-op without an HDK).
-      return isEdit
-        ? calendarApi.updateEvent(eventId!, await sealUpdate('CalendarEvent', eventId!, payload))
-        : calendarApi.createEvent(await sealNew('CalendarEvent', payload));
+      if (isEdit) {
+        return calendarApi.updateEvent(eventId!, await sealUpdate('CalendarEvent', eventId!, payload));
+      }
+      // guestListVisible is a plaintext scope field the server enforces. It is
+      // set on the Invitees screen: sent here on create only (edits PUT it from
+      // that screen directly) and kept OUT of the sealed content subset, so a
+      // later plaintext-only toggle can't be undone by a stale enc merge.
+      const create = { ...payload, guestListVisible: getDraftGuestListVisible() };
+      return calendarApi.createEvent(await sealNew('CalendarEvent', create, payload));
     },
     onSuccess: async (res) => {
       // A new event sends the invitees queued on its Invitees screen — a draft
       // has no event id, so this is the first moment invitations CAN go out.
+      // Emails post in parallel; each phone entry opens the Messages composer
+      // in turn (send failures are dropped — the form is already closing).
       if (!isEdit) {
         const queued = getQueuedInvitees();
         if (queued.length) {
-          const snapshot = buildSnapshot();
-          await Promise.allSettled(
-            queued.map((email) => invitationsApi.send({ eventId: res.data._id, email, event: snapshot })),
-          );
+          await sendInvitations(res.data._id, queued, buildSnapshot());
           clearQueuedInvitees();
         }
       }
@@ -385,9 +667,14 @@ export default function EventFormScreen() {
   // server rejects edits with 403) and "Leave event" is their only action.
   // Household-owned events are unaffected — every member edits those as usual.
   const guestInvitationId = eventQ.data?.invitationId;
+  // An event read as an outside collaborator on its shared calendar (§9.5):
+  // the same read-only view, but there is nothing to leave — access is managed
+  // via the calendar invitation, not per event.
+  const collabReadOnly = !!eventQ.data?.readOnly;
+  const readOnlyView = !!guestInvitationId || collabReadOnly;
   useEffect(() => {
-    if (guestInvitationId) navigation.setOptions({ title: 'Event' });
-  }, [navigation, guestInvitationId]);
+    if (readOnlyView) navigation.setOptions({ title: 'Event' });
+  }, [navigation, readOnlyView]);
 
   // The guest's own invitation, to show who invited them.
   const myInvitesQ = useQuery({
@@ -397,12 +684,20 @@ export default function EventFormScreen() {
   });
   const inviter = myInvitesQ.data?.find((i) => i._id === guestInvitationId);
 
+  // Who else is invited — only returned if the organizer's event allows it
+  // (guestListVisible); the server answers visible:false otherwise.
+  const guestListQ = useQuery({
+    queryKey: ['invitations', 'guests', guestInvitationId],
+    queryFn: async () => (await invitationsApi.guests(guestInvitationId!)).data,
+    enabled: !!guestInvitationId,
+  });
+
   // The organizer's invitee list, previewed on the Invitees card (managed on
   // the EventInvitees screen; never fetched for a guest copy).
   const inviteesQ = useQuery({
     queryKey: ['invitations', 'sent', eventId],
     queryFn: async () => (await invitationsApi.sentForEvent(eventId!)).data,
-    enabled: isEdit && !!eventQ.data && !guestInvitationId,
+    enabled: isEdit && !!eventQ.data && !readOnlyView,
   });
 
   // A NEW event's invitees queue in the draft store until save can send them.
@@ -412,7 +707,9 @@ export default function EventFormScreen() {
     if (!isEdit) clearQueuedInvitees();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-  const inviteeEmails = isEdit ? (inviteesQ.data ?? []).map((i) => i.toEmail) : queuedInvitees;
+  const inviteeEmails = isEdit
+    ? (inviteesQ.data ?? []).map((i) => i.toEmail ?? i.toPhone ?? '')
+    : queuedInvitees.map(inviteeKey);
 
   // Guest leaves the event: their copy is deleted and the invitation retired.
   const leave = useMutation({
@@ -437,25 +734,27 @@ export default function EventFormScreen() {
   useHeaderCheckButton(navigation, {
     onPress: onSave,
     loading: save.isPending,
-    color: cal[form.calendarType] || colors.primary,
-    // Guests have nothing to save — read-only view below.
-    enabled: !guestInvitationId,
+    color: cal[form.calendarType] || customCalendars.find((c) => c.id === form.calendarType)?.color || colors.primary,
+    // Guests and calendar collaborators have nothing to save — read-only view below.
+    enabled: !readOnlyView,
   });
 
   if (isEdit && eventQ.isLoading) {
     return (
-      <View style={styles.center}>
+      <View style={formStyles.center}>
         <ActivityIndicator size="large" color={colors.primary} />
       </View>
     );
   }
 
-  // ── Guest (invitee) view: event details, no form, Leave as the only action ──
-  if (guestInvitationId) {
+  // ── Read-only view (guest invitee or calendar collaborator): event details,
+  // no form. Guests get Leave as their only action; collaborators get none —
+  // their access is managed on the calendar invitation. ──
+  if (readOnlyView) {
     const fmtDay = (d: string) =>
       new Date(d + 'T00:00:00').toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
     const fmtTime = (t: string) =>
-      new Date(`2000-01-01T${t}:00`).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+      new Date(`2000-01-01T${t}:00`).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit', hour12: true });
     const when = form.allDay
       ? form.endDate && form.endDate !== form.date
         ? `${fmtDay(form.date)} – ${fmtDay(form.endDate)}`
@@ -487,6 +786,30 @@ export default function EventFormScreen() {
           ) : null}
         </View>
 
+        {guestListQ.data?.visible && guestListQ.data.guests.length ? (
+          <>
+            <SectionTitle>Guests</SectionTitle>
+            <View style={styles.guestCard}>
+              <View style={styles.guestRow}>
+                <Ionicons name="person-circle-outline" size={18} color={colors.textMuted} />
+                <Text style={styles.guestListName} numberOfLines={1}>
+                  {guestListQ.data.organizer?.name || guestListQ.data.organizer?.email}
+                </Text>
+                <Text style={styles.guestListStatus}>Organizer</Text>
+              </View>
+              {guestListQ.data.guests.map((g) => (
+                <View key={g._id} style={styles.guestRow}>
+                  <Ionicons name="person-outline" size={18} color={colors.textMuted} />
+                  <Text style={styles.guestListName} numberOfLines={1}>
+                    {g._id === guestInvitationId ? 'You' : g.toEmail || g.toPhone}
+                  </Text>
+                  <Text style={styles.guestListStatus}>{GUEST_STATUS_LABEL[g.status]}</Text>
+                </View>
+              ))}
+            </View>
+          </>
+        ) : null}
+
         {form.description ? (
           <>
             <SectionTitle>Notes</SectionTitle>
@@ -495,24 +818,30 @@ export default function EventFormScreen() {
         ) : null}
 
         <Text style={styles.guestHint}>
-          You’re a guest on this event, so it can’t be edited. Only the organizer can change it.
+          {collabReadOnly
+            ? `You have view-only access to “${
+                customCalendars.find((c) => c.id === form.calendarType)?.name ?? 'this calendar'
+              }”, so its events can’t be edited.`
+            : 'You’re a guest on this event, so it can’t be edited. Only the organizer can change it.'}
         </Text>
 
-        {error ? <Text style={styles.error}>{error}</Text> : null}
+        {error ? <Text style={formStyles.error}>{error}</Text> : null}
 
-        <View style={styles.footer}>
-          <Button
-            title="Leave event"
-            variant="danger"
-            loading={leave.isPending}
-            onPress={() =>
-              Alert.alert('Leave event?', 'This removes the event from your calendar.', [
-                { text: 'Cancel', style: 'cancel' },
-                { text: 'Leave', style: 'destructive', onPress: () => leave.mutate() },
-              ])
-            }
-          />
-        </View>
+        {guestInvitationId ? (
+          <View style={formStyles.footer}>
+            <Button
+              title="Leave event"
+              variant="danger"
+              loading={leave.isPending}
+              onPress={() =>
+                Alert.alert('Leave event?', 'This removes the event from your calendar.', [
+                  { text: 'Cancel', style: 'cancel' },
+                  { text: 'Leave', style: 'destructive', onPress: () => leave.mutate() },
+                ])
+              }
+            />
+          </View>
+        ) : null}
       </Screen>
     );
   }
@@ -521,23 +850,185 @@ export default function EventFormScreen() {
     <Screen>
       <FormAssist
         formType="calendar event"
-        title="Calendar Assistant"
         placeholder={'Describe the event, e.g. "dentist next Tuesday at 2pm, remind me when it\'s time to leave"'}
-        fields={ASSIST_FIELDS}
+        fields={assistFields}
         current={form}
         onApply={applyPatch}
         includeContacts
       />
 
-      <Input label="Title *" value={form.title} onChangeText={(v) => set({ title: v })} highlight={assist.changed.has('title')} />
-      <Select label="Calendar" value={form.calendarType} options={EVENT_CALENDAR_TYPES} onChange={(v) => set({ calendarType: (v as string) ?? 'activities' })} highlight={assist.changed.has('calendarType')} />
+      {/* Title + Location grouped in one card (Apple Calendar-style): no labels,
+          placeholder text only, rows separated by a hairline. */}
+      <View style={formStyles.groupCard}>
+        <Input
+          value={form.title}
+          onChangeText={(v) => set({ title: v })}
+          placeholder="Title"
+          containerStyle={formStyles.headField}
+          style={[formStyles.headInput, assist.changed.has('title') && formStyles.headInputHighlight]}
+        />
+        <View style={formStyles.cardDivider} />
+        <PlacesAutocomplete
+          value={form.location}
+          onChangeText={(v) => set({ location: v })}
+          placeholder="Location or Video Call"
+          containerStyle={formStyles.headField}
+          inputStyle={[formStyles.headInput, assist.changed.has('location') && formStyles.headInputHighlight]}
+        />
+      </View>
 
-      {/* Invitees — a field-styled row (matches the selects) opening the
-          EventInvitees screen; previews who is currently invited. */}
-      <View style={styles.inviteesWrap}>
-        <Text style={styles.inviteesLabel}>Invitees</Text>
+      {/* All day / Starts / Ends / Travel Time grouped card */}
+      <View style={formStyles.groupCard}>
+        <View style={formStyles.groupPad}>
+          <SwitchRow label="All day" value={form.allDay} onValueChange={(v) => set({ allDay: v })} highlight={assist.changed.has('allDay')} />
+        </View>
+        <View style={formStyles.cardDivider} />
+        <View style={formStyles.dtRow}>
+          <Text style={formStyles.dtLabel}>Starts</Text>
+          <View style={formStyles.dtFields}>
+            <DateField
+              value={form.date}
+              onChange={(v) => set(form.endDate && form.endDate < v ? { date: v, endDate: v } : { date: v })}
+              highlight={assist.changed.has('date')}
+              containerStyle={formStyles.dtFieldWrap}
+              fieldStyle={formStyles.dtField}
+              valueStyle={formStyles.dtValue}
+              hideIcon
+            />
+            {!form.allDay ? (
+              <TimeField
+                value={form.startTime}
+                onChange={(v) => set({ startTime: v })}
+                highlight={assist.changed.has('startTime')}
+                containerStyle={formStyles.dtFieldWrap}
+                fieldStyle={formStyles.dtField}
+                valueStyle={formStyles.dtValue}
+                hideIcon
+              />
+            ) : null}
+          </View>
+        </View>
+        <View style={formStyles.cardDivider} />
+        <View style={formStyles.dtRow}>
+          <Text style={formStyles.dtLabel}>Ends</Text>
+          <View style={formStyles.dtFields}>
+            {/* Defaults to the start date; form.endDate stays unset (= same day)
+                until a different date is picked. */}
+            <DateField
+              value={form.endDate || form.date}
+              onChange={(v) => set({ endDate: v === form.date ? '' : v })}
+              highlight={assist.changed.has('endDate')}
+              containerStyle={formStyles.dtFieldWrap}
+              fieldStyle={formStyles.dtField}
+              valueStyle={formStyles.dtValue}
+              hideIcon
+            />
+            {!form.allDay ? (
+              <TimeField
+                value={form.endTime}
+                onChange={(v) => set({ endTime: v })}
+                defaultValue={addMinutesToTime(form.startTime || '09:00', 60)}
+                highlight={assist.changed.has('endTime')}
+                containerStyle={formStyles.dtFieldWrap}
+                fieldStyle={formStyles.dtField}
+                valueStyle={formStyles.dtValue}
+                hideIcon
+              />
+            ) : null}
+          </View>
+        </View>
+        <View style={formStyles.cardDivider} />
         <TouchableOpacity
-          style={styles.inviteesField}
+          style={formStyles.dtRow}
+          activeOpacity={0.7}
+          onPress={() =>
+            navigation.navigate('EventTravelTime', {
+              enabled: form.travelEnabled,
+              fromAddress: form.fromAddress,
+              manualMinutes: form.travelManual ? form.travelMinutes : null,
+            })
+          }
+        >
+          <Text style={formStyles.dtLabel}>Travel Time</Text>
+          {travelLoading ? (
+            <ActivityIndicator size="small" color={colors.textMuted} />
+          ) : (
+            <Text style={[formStyles.groupValue, !form.travelMinutes && formStyles.groupValueMuted]} numberOfLines={1}>
+              {form.travelEnabled && form.travelMinutes
+                ? `${formatDuration(form.travelMinutes)}${leaveByTime ? ` · Leave by ${leaveByTime}` : ''}`
+                : 'None'}
+            </Text>
+          )}
+          <Ionicons name="chevron-forward" size={18} color={colors.textMuted} style={formStyles.rowChevron} />
+        </TouchableOpacity>
+      </View>
+      {form.travelEnabled && travelError ? <Text style={formStyles.error}>{travelError}</Text> : null}
+
+      {/* Repeat / End Repeat grouped card */}
+      <View style={formStyles.groupCard}>
+        <Select
+          inlineLabel="Repeat"
+          value={repeatValue}
+          options={repeatItems}
+          onChange={(v) => {
+            if (v === CUSTOM_REPEAT) {
+              navigation.navigate('EventRepeat', { rule: repeatRule, date: form.date });
+            } else {
+              set({
+                recurrFreq: (v as string) ?? '',
+                recurrInterval: 1,
+                recurrDaysOfWeek: [],
+                recurrDaysOfMonth: [],
+                recurrMonths: [],
+                recurrWeekOfMonth: null,
+                recurrWeekdayKind: null,
+                ...(v ? {} : { recurrUntil: '' }),
+              });
+            }
+          }}
+          highlight={assist.changed.has('recurrFreq')}
+          containerStyle={formStyles.dtFieldWrap}
+          fieldStyle={formStyles.rowField}
+          valueStyle={formStyles.dtValue}
+          chevronIcon="chevron-expand"
+        />
+        {form.recurrFreq ? (
+          <>
+            <View style={formStyles.cardDivider} />
+            <DateField
+              inlineLabel="End Repeat"
+              clearable
+              placeholder="Never"
+              value={form.recurrUntil}
+              onChange={(v) => set({ recurrUntil: v })}
+              defaultValue={form.date}
+              highlight={assist.changed.has('recurrUntil')}
+              containerStyle={formStyles.dtFieldWrap}
+              fieldStyle={formStyles.rowField}
+              valueStyle={formStyles.dtValue}
+              hideIcon
+            />
+          </>
+        ) : null}
+      </View>
+
+      {/* Calendar / Invitees grouped card. The Invitees row opens the
+          EventInvitees screen; previews who is currently invited. */}
+      <View style={formStyles.groupCard}>
+        <Select
+          inlineLabel="Calendar"
+          value={form.calendarType}
+          options={calendarOptions}
+          onChange={(v) => set({ calendarType: (v as string) ?? 'activities' })}
+          highlight={assist.changed.has('calendarType')}
+          containerStyle={formStyles.dtFieldWrap}
+          fieldStyle={formStyles.rowField}
+          valueStyle={formStyles.dtValue}
+          chevronIcon="chevron-expand"
+        />
+        <View style={formStyles.cardDivider} />
+        <TouchableOpacity
+          style={formStyles.dtRow}
           activeOpacity={0.7}
           onPress={() =>
             navigation.navigate('EventInvitees', {
@@ -546,104 +1037,71 @@ export default function EventFormScreen() {
             })
           }
         >
-          <Ionicons name="people-outline" size={18} color={colors.textMuted} />
-          <Text style={styles.inviteesValue} numberOfLines={1}>
+          <Text style={formStyles.dtLabel}>Invitees</Text>
+          <Text style={[formStyles.groupValue, !inviteeEmails.length && formStyles.groupValueMuted]} numberOfLines={1}>
             {inviteeEmails.length ? `${inviteeEmails.length} invited · ${inviteePreview(inviteeEmails)}` : 'None'}
           </Text>
-          <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
+          <Ionicons name="chevron-forward" size={18} color={colors.textMuted} style={formStyles.rowChevron} />
         </TouchableOpacity>
       </View>
 
-      <SwitchRow label="All day" value={form.allDay} onValueChange={(v) => set({ allDay: v })} highlight={assist.changed.has('allDay')} boxed />
+      {/* Phone has no visible field: it stays in the form state / assist schema /
+          save payload so the AI assistant can still set and use it. */}
 
-      <View style={styles.cols}>
-        <View style={styles.col}>
-          <DateField label="Start" value={form.date} onChange={(v) => set({ date: v })} highlight={assist.changed.has('date')} />
-        </View>
-        <View style={styles.col}>
-          <DateField label="End" clearable value={form.endDate} onChange={(v) => set({ endDate: v })} defaultValue={form.date} highlight={assist.changed.has('endDate')} />
+      {/* Alert / Second Alert grouped card */}
+      <View style={formStyles.groupCard}>
+        <Select
+          inlineLabel="Alert"
+          value={form.reminderMinutes ?? undefined}
+          options={alertItems}
+          placeholder="None"
+          onChange={(v) => {
+            if (v === CUSTOM_ALERT) setCustomFor('reminderMinutes');
+            else set({ reminderMinutes: v === -1 ? null : (v as number) });
+          }}
+          highlight={assist.changed.has('reminderMinutes')}
+          containerStyle={formStyles.dtFieldWrap}
+          fieldStyle={formStyles.rowField}
+          valueStyle={formStyles.dtValue}
+          chevronIcon="chevron-expand"
+        />
+        {form.reminderMinutes !== null ? (
+          <>
+            <View style={formStyles.cardDivider} />
+            <Select
+              inlineLabel="Second Alert"
+              value={form.alert2Minutes ?? undefined}
+              options={alertItems}
+              placeholder="None"
+              onChange={(v) => {
+                if (v === CUSTOM_ALERT) setCustomFor('alert2Minutes');
+                else set({ alert2Minutes: v === -1 ? null : (v as number) });
+              }}
+              containerStyle={formStyles.dtFieldWrap}
+              fieldStyle={formStyles.rowField}
+              valueStyle={formStyles.dtValue}
+              chevronIcon="chevron-expand"
+            />
+          </>
+        ) : null}
+      </View>
+
+      {/* Attachment card — placeholder row only: calendar events have no
+          attachment storage on the backend yet (trips/maintenance items do). */}
+      <View style={formStyles.groupCard}>
+        <View style={formStyles.dtRow}>
+          <Text style={[formStyles.groupValue, formStyles.groupValueMuted]}>Add attachment...</Text>
         </View>
       </View>
 
-      {!form.allDay ? (
-        <View>
-          <View style={styles.cols}>
-            <View style={styles.col}>
-              <TimeField value={form.startTime} onChange={(v) => set({ startTime: v })} highlight={assist.changed.has('startTime')} />
-            </View>
-            <View style={styles.col}>
-              <TimeField
-                clearable
-                value={form.endTime}
-                onChange={(v) => set({ endTime: v })}
-                defaultValue={addMinutesToTime(form.startTime || '09:00', 60)}
-                highlight={assist.changed.has('endTime')}
-              />
-            </View>
-          </View>
-          {timeDiffMinutes(form.startTime, form.endTime) ? (
-            <Text style={styles.durationHint}>{formatDuration(timeDiffMinutes(form.startTime, form.endTime)!)}</Text>
-          ) : null}
-        </View>
-      ) : null}
-
-      <PlacesAutocomplete label="Location" value={form.location} onChangeText={(v) => set({ location: v })} highlight={assist.changed.has('location')} />
-
-      {form.location.trim() ? (
-        <>
-          <PlacesAutocomplete
-            label="From (starting location)"
-            value={form.fromAddress}
-            onChangeText={(v) => set({ fromAddress: v })}
-            type="address"
-          />
-          {travelLoading ? (
-            <View style={styles.travelRow}>
-              <ActivityIndicator size="small" color={colors.textMuted} />
-              <Text style={styles.travelText}>Calculating drive time…</Text>
-            </View>
-          ) : form.travelMinutes ? (
-            <View style={styles.travelRow}>
-              <Ionicons name="car-outline" size={14} color={colors.textMuted} />
-              <Text style={styles.travelText}>
-                ~{form.travelMinutes} min drive
-                {form.travelDistanceKm ? ` · ${form.travelDistanceKm} km` : ''}
-                {leaveByTime ? ` · Leave by ${leaveByTime}` : ''}
-              </Text>
-            </View>
-          ) : travelError ? (
-            <Text style={styles.error}>{travelError}</Text>
-          ) : (
-            <Text style={styles.travelHint}>Enter a starting location to calculate drive time</Text>
-          )}
-        </>
-      ) : null}
-
-      <Input
-        label="Phone"
-        value={form.phone}
-        onChangeText={(v) => set({ phone: v })}
-        keyboardType="phone-pad"
-        highlight={assist.changed.has('phone')}
+      <CustomAlertSheet
+        visible={customFor !== null}
+        initialMinutes={customFor ? form[customFor] : null}
+        onSave={(minutes) => {
+          if (customFor) set({ [customFor]: minutes } as Partial<typeof form>);
+        }}
+        onClose={() => setCustomFor(null)}
       />
-
-      <SectionTitle>Reminders</SectionTitle>
-      <Select
-        label="Alert"
-        value={form.reminderMinutes ?? undefined}
-        options={alertItems}
-        onChange={(v) => set({ reminderMinutes: v === -1 ? null : (v as number) })}
-        highlight={assist.changed.has('reminderMinutes')}
-      />
-      {form.reminderMinutes !== null ? (
-        <Select
-          label="Second alert"
-          value={form.alert2Minutes ?? undefined}
-          options={alertItems}
-          onChange={(v) => set({ alert2Minutes: v === -1 ? null : (v as number) })}
-        />
-      ) : null}
-      <Select label="Repeat" value={form.recurrFreq} options={REPEAT_OPTIONS} onChange={(v) => set({ recurrFreq: (v as string) ?? '' })} highlight={assist.changed.has('recurrFreq')} />
 
       <SectionTitle>Notes</SectionTitle>
       <Input
@@ -651,14 +1109,14 @@ export default function EventFormScreen() {
         onChangeText={(v) => set({ description: v })}
         multiline
         placeholder="Add any notes…"
-        style={styles.notes}
+        style={formStyles.notes}
         highlight={assist.changed.has('description')}
       />
 
-      {error ? <Text style={styles.error}>{error}</Text> : null}
+      {error ? <Text style={formStyles.error}>{error}</Text> : null}
 
       {isEdit ? (
-        <View style={styles.footer}>
+        <View style={formStyles.footer}>
           <Button
             title="Delete"
             variant="danger"
@@ -675,25 +1133,9 @@ export default function EventFormScreen() {
   );
 }
 
+// Grouped-card form styles live in components/formStyles (shared by all
+// add/edit forms); only screen-specific styles remain here.
 const styles = StyleSheet.create({
-  center: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.background },
-  cols: { flexDirection: 'row', gap: spacing.sm },
-  col: { flex: 1 },
-  error: { color: colors.error, marginVertical: spacing.sm },
-  travelRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: -spacing.sm, marginBottom: spacing.md },
-  travelText: { fontSize: 13, color: colors.textMuted },
-  travelHint: { fontSize: 13, color: colors.textMuted, marginTop: -spacing.sm, marginBottom: spacing.md },
-  notes: { height: 90, textAlignVertical: 'top' },
-  footer: { marginTop: spacing.md, marginBottom: spacing.xl },
-  // Invitees field-row (mirrors ui.tsx's input/select box styling)
-  inviteesWrap: { marginBottom: spacing.md },
-  inviteesLabel: { fontSize: 13, color: colors.textMuted, marginBottom: 6, fontWeight: '500' },
-  inviteesField: {
-    backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border,
-    borderRadius: radius.md, paddingHorizontal: 14, paddingVertical: 12,
-    flexDirection: 'row', alignItems: 'center', gap: spacing.sm,
-  },
-  inviteesValue: { flex: 1, fontSize: 16, color: colors.text },
   // Guest (read-only invitee) view
   guestTitle: { fontSize: 24, fontWeight: '700', color: colors.text },
   guestInviter: { fontSize: 13, color: colors.textMuted, marginTop: 4 },
@@ -703,7 +1145,27 @@ const styles = StyleSheet.create({
   },
   guestRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
   guestMeta: { fontSize: 15, color: colors.text, flexShrink: 1 },
+  guestListName: { fontSize: 15, color: colors.text, flex: 1 },
+  guestListStatus: { fontSize: 13, color: colors.textMuted },
   guestNotes: { fontSize: 14, color: colors.text, lineHeight: 20 },
   guestHint: { fontSize: 13, color: colors.textMuted, marginTop: spacing.lg },
-  durationHint: { fontSize: 13, color: colors.textMuted, marginTop: -spacing.xs, marginBottom: spacing.md },
+  // Custom alert dual wheel — bottom sheet matching the Repeat screen's "Every"
+  sheetBackdrop: {
+    flex: 1, backgroundColor: 'rgba(0,0,0,0.4)',
+    justifyContent: 'flex-end',
+  },
+  sheet: {
+    backgroundColor: colors.surface,
+    borderTopLeftRadius: radius.lg, borderTopRightRadius: radius.lg,
+    padding: spacing.md, gap: spacing.sm,
+  },
+  wheelRow: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+    gap: spacing.md, height: WHEEL_ITEM_H * WHEEL_VISIBLE,
+  },
+  wheelBand: {
+    position: 'absolute', left: 0, right: 0,
+    top: ((WHEEL_VISIBLE - 1) / 2) * WHEEL_ITEM_H, height: WHEEL_ITEM_H,
+    borderRadius: radius.sm, backgroundColor: colors.border + '55',
+  },
 });

@@ -1,16 +1,19 @@
 import React, { useState } from 'react';
-import { View, Text, StyleSheet } from 'react-native';
+import { View, Text, StyleSheet, Pressable } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { Button, Input } from './ui';
 import AiUsageBanner from './AiUsageBanner';
+import AssistantIcon from './AssistantIcon';
 import { formAssistApi, FormAssistField } from '../api';
 import { usePrivacyPrefs } from '../lib/privacyPrefs';
+import { ASSISTANT_NAME } from '../config';
 import { colors, spacing, radius } from '../theme';
 
 // A drop-in "describe it and let AI fill the form" panel for the top of an
 // add/edit screen. The screen supplies its field schema + current values; on
 // success we hand back the patch so the screen can apply it and highlight the
-// changed fields.
+// changed fields. Starts as a compact one-row card; tapping it expands and
+// focuses the prompt.
 export default function FormAssist({
   formType,
   fields,
@@ -18,7 +21,7 @@ export default function FormAssist({
   onApply,
   disabled,
   includeContacts,
-  title = 'Fill with AI',
+  title = `Ask ${ASSISTANT_NAME}`,
   placeholder = 'Describe what you want to add…',
 }: {
   formType: string;
@@ -31,6 +34,7 @@ export default function FormAssist({
   placeholder?: string;
 }) {
   const { prefs } = usePrivacyPrefs();
+  const [expanded, setExpanded] = useState(false);
   const [prompt, setPrompt] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -69,28 +73,40 @@ export default function FormAssist({
   return (
     <>
       <AiUsageBanner />
-      <View style={styles.card}>
-      <View style={styles.header}>
-        <Ionicons name="sparkles" size={16} color={colors.primary} />
+      <Pressable
+        style={styles.card}
+        onPress={!expanded ? () => setExpanded(true) : undefined}
+      >
+      <Pressable
+        style={[styles.header, expanded && styles.headerOpen]}
+        onPress={() => setExpanded((v) => !v)}
+      >
+        <AssistantIcon size={18} color={colors.primary} />
         <Text style={styles.title}>{title}</Text>
-      </View>
-      <Input
-        value={prompt}
-        onChangeText={setPrompt}
-        placeholder={placeholder}
-        multiline
-        editable={!disabled && !loading}
-        style={styles.input}
-      />
-      {error ? <Text style={styles.error}>{error}</Text> : null}
-      {note ? <Text style={styles.note}>{note}</Text> : null}
-      <Button
-        title="Fill in the form"
-        onPress={run}
-        loading={loading}
-        disabled={disabled || !prompt.trim()}
-      />
-      </View>
+        <Ionicons name={expanded ? 'chevron-up' : 'chevron-down'} size={16} color={colors.textMuted} style={styles.chevron} />
+      </Pressable>
+      {expanded ? (
+        <>
+          <Input
+            value={prompt}
+            onChangeText={setPrompt}
+            placeholder={placeholder}
+            multiline
+            editable={!disabled && !loading}
+            style={styles.input}
+            autoFocus
+          />
+          {error ? <Text style={styles.error}>{error}</Text> : null}
+          {note ? <Text style={styles.note}>{note}</Text> : null}
+          <Button
+            title="Fill in the form"
+            onPress={run}
+            loading={loading}
+            disabled={disabled || !prompt.trim()}
+          />
+        </>
+      ) : null}
+      </Pressable>
     </>
   );
 }
@@ -104,7 +120,9 @@ const styles = StyleSheet.create({
     padding: spacing.md,
     marginBottom: spacing.md,
   },
-  header: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: spacing.sm },
+  header: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  headerOpen: { marginBottom: spacing.sm },
+  chevron: { marginLeft: 'auto' },
   title: { fontSize: 15, fontWeight: '700', color: colors.text },
   input: { minHeight: 68, textAlignVertical: 'top' },
   error: { color: colors.error, marginBottom: spacing.sm, fontSize: 13 },

@@ -6,6 +6,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useChat } from '../../hooks/useChat';
 import ChatScreen from '../chat/ChatScreen';
 import AiUsageBanner from '../../components/AiUsageBanner';
+import { ASSISTANT_NAME } from '../../config';
 import { peopleApi, householdApi, calendarApi } from '../../api';
 import { getHDK, openRecord, sealNew } from '../../lib/e2ee';
 import type { RootStackParamList } from '../../navigation/types';
@@ -38,7 +39,12 @@ function buildEventPayload(ev: Record<string, any>): Record<string, unknown> {
     description: ev.description || undefined,
     phone: ev.phone || undefined,
     reminderMinutes: typeof ev.reminderMinutes === 'number' ? ev.reminderMinutes : undefined,
-    recurrence: ev.recurrFreq ? { freq: ev.recurrFreq } : undefined,
+    recurrence: ev.recurrFreq
+      ? {
+          freq: ev.recurrFreq,
+          interval: typeof ev.recurrInterval === 'number' && ev.recurrInterval > 1 ? ev.recurrInterval : undefined,
+        }
+      : undefined,
   };
 }
 
@@ -164,8 +170,8 @@ export default function CalendarAssistantScreen() {
     <ChatScreen
       chat={chat}
       banner={<AiUsageBanner />}
-      emptyIcon="calendar-edit"
-      emptyText="Ask me to add appointments, activities, or changes to your calendar."
+      accessory="calendar-month"
+      emptyText={`Hi, I'm ${ASSISTANT_NAME}. In here I can see your household calendar — ask me to add appointments, activities, or changes.`}
       emptyHint='e.g. "Add a dentist appointment on June 20"'
       placeholder="Message…"
       onFollowupPress={handleFollowup}

@@ -11,21 +11,22 @@
 //     treat its (legitimately) missing `enc` as an unsealed straggler;
 //   - the straggler/re-encrypt pass must not try to seal shared trips.
 //
-// "Shared" = sharing is enabled (a shareCode exists) OR at least one external
-// collaborator has joined. Disabling sharing clears both (routes/trips.js), after
-// which the trip is a normal private record again (lazy re-encrypt: it re-seals
-// on its next edit).
+// "Shared" = an outside email is on the trip (an invitation is pending) OR at
+// least one external collaborator has joined. Removing every outside email
+// revokes both (routes/trips.js), after which the trip is a normal private
+// record again (lazy re-encrypt: it re-seals on its next edit).
 
 // Mongo predicate for a shared trip.
 const SHARED_TRIP_MATCH = {
   $or: [
-    { shareCode: { $exists: true, $ne: null } },
+    { sharedWithOutside: { $exists: true, $not: { $size: 0 } } },
     { collaborators: { $exists: true, $not: { $size: 0 } } },
   ],
 };
 
 function isTripShared(trip) {
-  return !!(trip && (trip.shareCode || (Array.isArray(trip.collaborators) && trip.collaborators.length > 0)));
+  const has = (a) => Array.isArray(a) && a.length > 0;
+  return !!(trip && (has(trip.sharedWithOutside) || has(trip.collaborators)));
 }
 
 // The _ids of every shared trip owned by this scope (household member ids).

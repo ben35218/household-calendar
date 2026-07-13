@@ -44,6 +44,118 @@ test('weekly event expands to the right occurrences and preserves duration', () 
   assert.equal(new Date(out[0].endDate) - new Date(out[0].startDate), 30 * 60000);
 });
 
+test('custom interval event skips the in-between periods', () => {
+  const event = {
+    startDate: new Date('2026-01-05T09:00:00Z'),
+    recurrence: { freq: 'weekly', interval: 2 },
+  };
+  const out = expandRecurringEvent(event, new Date('2026-01-01'), new Date('2026-02-15'));
+  assert.deepEqual(out.map(o => ymd(o.startDate)), ['2026-01-05', '2026-01-19', '2026-02-02']);
+});
+
+test('weekly event on chosen weekdays emits each selected day', () => {
+  // 2026-01-05 is a Monday. Mon/Wed/Fri, every week.
+  const event = {
+    startDate: new Date('2026-01-05T09:00:00Z'),
+    recurrence: { freq: 'weekly', interval: 1, daysOfWeek: [1, 3, 5] },
+  };
+  const out = expandRecurringEvent(event, new Date('2026-01-01'), new Date('2026-01-17'));
+  assert.deepEqual(out.map(o => ymd(o.startDate)), [
+    '2026-01-05', '2026-01-07', '2026-01-09',
+    '2026-01-12', '2026-01-14', '2026-01-16',
+  ]);
+});
+
+test('biweekly event on chosen weekdays skips the off week', () => {
+  const event = {
+    startDate: new Date('2026-01-05T09:00:00Z'),
+    recurrence: { freq: 'weekly', interval: 2, daysOfWeek: [1, 5] },
+  };
+  const out = expandRecurringEvent(event, new Date('2026-01-01'), new Date('2026-01-31'));
+  assert.deepEqual(out.map(o => ymd(o.startDate)), ['2026-01-05', '2026-01-09', '2026-01-19', '2026-01-23']);
+});
+
+test('monthly event on numbered dates emits each date and skips short months', () => {
+  const event = {
+    startDate: new Date('2026-01-05T09:00:00Z'),
+    recurrence: { freq: 'monthly', interval: 1, daysOfMonth: [5, 31] },
+  };
+  const out = expandRecurringEvent(event, new Date('2026-01-01'), new Date('2026-04-01'));
+  // February has no 31st.
+  assert.deepEqual(out.map(o => ymd(o.startDate)), ['2026-01-05', '2026-01-31', '2026-02-05', '2026-03-05', '2026-03-31']);
+});
+
+test('monthly ordinal rules: second Tuesday, last weekday, next-to-last day', () => {
+  const range = [new Date('2026-01-01'), new Date('2026-02-28')];
+  const base = { startDate: new Date('2026-01-01T09:00:00Z') };
+
+  const secondTue = expandRecurringEvent(
+    { ...base, recurrence: { freq: 'monthly', interval: 1, weekOfMonth: 2, weekdayKind: 'tue' } }, ...range);
+  assert.deepEqual(secondTue.map(o => ymd(o.startDate)), ['2026-01-13', '2026-02-10']);
+
+  const lastWeekday = expandRecurringEvent(
+    { ...base, recurrence: { freq: 'monthly', interval: 1, weekOfMonth: -1, weekdayKind: 'weekday' } }, ...range);
+  // Jan 31 2026 is a Saturday → last weekday is Fri Jan 30; Feb 27 is a Friday.
+  assert.deepEqual(lastWeekday.map(o => ymd(o.startDate)), ['2026-01-30', '2026-02-27']);
+
+  const nextToLastDay = expandRecurringEvent(
+    { ...base, recurrence: { freq: 'monthly', interval: 1, weekOfMonth: -2, weekdayKind: 'day' } }, ...range);
+  assert.deepEqual(nextToLastDay.map(o => ymd(o.startDate)), ['2026-01-30', '2026-02-27']);
+});
+
+test('monthly ordinal rule skips months without a match (no 5th Friday)', () => {
+  const event = {
+    startDate: new Date('2026-01-01T09:00:00Z'),
+    recurrence: { freq: 'monthly', interval: 1, weekOfMonth: 5, weekdayKind: 'fri' },
+  };
+  const out = expandRecurringEvent(event, new Date('2026-01-01'), new Date('2026-06-30'));
+  // Only Jan (Jan 30) and May (May 29) 2026 have five Fridays.
+  assert.deepEqual(out.map(o => ymd(o.startDate)), ['2026-01-30', '2026-05-29']);
+});
+
+test('pattern days before the event start are not emitted', () => {
+  // Starts Wed 2026-01-07 with Mon+Wed selected: Mon Jan 5 precedes the start.
+  const event = {
+    startDate: new Date('2026-01-07T09:00:00Z'),
+    recurrence: { freq: 'weekly', interval: 1, daysOfWeek: [1, 3] },
+  };
+  const out = expandRecurringEvent(event, new Date('2026-01-01'), new Date('2026-01-15'));
+  assert.deepEqual(out.map(o => ymd(o.startDate)), ['2026-01-07', '2026-01-12', '2026-01-14']);
+});
+
+test('yearly event in chosen months repeats on the start day of each month', () => {
+  const event = {
+    startDate: new Date('2026-03-15T09:00:00Z'),
+    recurrence: { freq: 'yearly', interval: 1, months: [3, 6, 11] },
+  };
+  const out = expandRecurringEvent(event, new Date('2026-01-01'), new Date('2027-12-31'));
+  assert.deepEqual(out.map(o => ymd(o.startDate)), [
+    '2026-03-15', '2026-06-15', '2026-11-15',
+    '2027-03-15', '2027-06-15', '2027-11-15',
+  ]);
+});
+
+test('yearly event with an ordinal rule applies it within each chosen month', () => {
+  // First Monday of March and September.
+  const event = {
+    startDate: new Date('2026-01-01T09:00:00Z'),
+    recurrence: { freq: 'yearly', interval: 1, months: [3, 9], weekOfMonth: 1, weekdayKind: 'mon' },
+  };
+  const out = expandRecurringEvent(event, new Date('2026-01-01'), new Date('2027-12-31'));
+  assert.deepEqual(out.map(o => ymd(o.startDate)), [
+    '2026-03-02', '2026-09-07', '2027-03-01', '2027-09-06',
+  ]);
+});
+
+test('biennial event in chosen months skips the off years', () => {
+  const event = {
+    startDate: new Date('2026-05-10T09:00:00Z'),
+    recurrence: { freq: 'yearly', interval: 2, months: [5] },
+  };
+  const out = expandRecurringEvent(event, new Date('2026-01-01'), new Date('2029-12-31'));
+  assert.deepEqual(out.map(o => ymd(o.startDate)), ['2026-05-10', '2028-05-10']);
+});
+
 test('recurring event respects the until bound', () => {
   const event = {
     startDate: new Date('2026-01-05T09:00:00Z'),
@@ -126,4 +238,22 @@ test('assemble filters, expands, and shapes the full CalendarData', () => {
   // Trip overlay present.
   assert.equal(data.trips.length, 1);
   assert.equal(data.trips[0].ranges.length, 1);
+});
+
+test('biweekly grocery days follow the anchor parity', () => {
+  const base = {
+    fromDate: new Date('2026-01-01'), toDate: new Date('2026-01-31'),
+    groceryShoppingDay: 6, groceryFrequency: 'biweekly',
+  };
+  // Anchored on Sat Jan 10: shopping Saturdays are Jan 10 and 24.
+  assert.deepEqual(
+    assembleCalendarData({ ...base, groceryAnchor: '2026-01-10' }).groceryShopping.map(g => g.date),
+    ['2026-01-10', '2026-01-24'],
+  );
+  // Anchor on the opposite week (Jan 3, also valid as any past/future shopping
+  // day, e.g. Jan 17): Saturdays Jan 3, 17, 31.
+  assert.deepEqual(
+    assembleCalendarData({ ...base, groceryAnchor: '2026-01-17' }).groceryShopping.map(g => g.date),
+    ['2026-01-03', '2026-01-17', '2026-01-31'],
+  );
 });

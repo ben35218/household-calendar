@@ -23,7 +23,6 @@
           <thead>
             <tr>
               <th>Household</th>
-              <th>Join code</th>
               <th class="text-center">HDK ver</th>
               <th class="text-center">Enrolled</th>
               <th class="text-center">Status</th>
@@ -33,7 +32,6 @@
           <tbody>
             <tr v-for="h in rows" :key="h._id">
               <td class="font-weight-medium">{{ h.name }}</td>
-              <td><code>{{ h.joinCode }}</code></td>
               <td class="text-center">{{ h.currentKeyVersion }}</td>
               <td class="text-center">{{ h.enrolled }} / {{ h.total }}</td>
               <td class="text-center">
@@ -46,7 +44,7 @@
               </td>
             </tr>
             <tr v-if="!rows.length">
-              <td colspan="6" class="text-medium-emphasis py-4">No households found.</td>
+              <td colspan="5" class="text-medium-emphasis py-4">No households found.</td>
             </tr>
           </tbody>
         </v-table>

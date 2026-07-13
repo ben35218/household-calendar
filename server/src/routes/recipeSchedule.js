@@ -38,7 +38,9 @@ router.get('/grocery-list', async (req, res) => {
     const start = new Date(weekStart);
     start.setHours(0, 0, 0, 0);
     const end = new Date(start);
-    end.setDate(end.getDate() + 6);
+    // A biweekly shopper's list covers the full two weeks until the next trip.
+    const biweekly = ((req.household || req.user).groceryFrequency ?? 'weekly') === 'biweekly';
+    end.setDate(end.getDate() + (biweekly ? 13 : 6));
     end.setHours(23, 59, 59, 999);
 
     const schedules = await RecipeSchedule.find({
@@ -211,13 +213,25 @@ router.put('/:id', async (req, res) => {
 
     const oldDate = new Date(schedule.scheduledDate);
     const newDate = new Date(scheduledDate);
-    const groceryShoppingDay = (req.household || req.user).groceryShoppingDay ?? 6;
+    const hh = req.household || req.user;
+    const groceryShoppingDay = hh.groceryShoppingDay ?? 6;
+    const biweekly = (hh.groceryFrequency ?? 'weekly') === 'biweekly';
 
+    // Start of the shopping period containing `date` — weekly this is the most
+    // recent shopping day; biweekly it also snaps to the anchor's parity so
+    // both weeks of a period share one session key.
     function weekStartFor(date) {
       const d = new Date(date);
       d.setHours(0, 0, 0, 0);
       const diff = (d.getDay() - groceryShoppingDay + 7) % 7;
       d.setDate(d.getDate() - diff);
+      if (biweekly && hh.groceryAnchor) {
+        const a = new Date(hh.groceryAnchor);
+        a.setHours(0, 0, 0, 0);
+        a.setDate(a.getDate() - ((a.getDay() - groceryShoppingDay + 7) % 7));
+        const weeks = Math.round((d - a) / 604800000);
+        if (((weeks % 2) + 2) % 2 === 1) d.setDate(d.getDate() - 7);
+      }
       return d.toISOString().slice(0, 10);
     }
 

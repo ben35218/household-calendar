@@ -8,15 +8,20 @@
 //   GET /api/admin/analytics/usage?weeks=8        → fleet AI-usage series + chat surfaces
 //   GET /api/admin/analytics/activity?weeks=8     → fleet feature-activity + adoption
 //   GET /api/admin/analytics/retention?weeks=8    → still-active by signup cohort
+//   GET /api/admin/analytics/tokens?weeks=8       → per-user token usage + abuse flags
 
 const express = require('express');
 const User = require('../models/User');
 const Household = require('../models/Household');
 const { requireAuth, requireAdmin } = require('../middleware/auth');
 const {
+  getConfig, currentPeriodKey, nextPeriodResetAt, enforcedTokens,
+} = require('../middleware/usageMeter');
+const {
   AI_ACTIONS, ACTIVITY_ACTIONS,
   activeCounts, weeklyGrowth, rollupByPeriod, toSeries,
   chatSurfaceTotals, adoption, distribution, cohortRetention,
+  periodKeysBack, tokenSeries, blockedCount, abuseFlags,
 } = require('./adminAnalyticsHelpers');
 
 const router = express.Router();
@@ -123,6 +128,66 @@ router.get('/activity', async (req, res) => {
       ...toSeries(perPeriod, ACTIVITY_ACTIONS, { weeks }),
       adoption: adoption(maps, ACTIVITY_ACTIONS),
       households: maps.length,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Per-user token consumption + abuse signals for the AI-usage page. Tokens are
+// counted per USER on every plan (recordTokens always bumps the user counter);
+// the enforced budget shown alongside is per-user on free, pooled on paid.
+// Content-blind like everything here: token counts, never prompt contents.
+router.get('/tokens', async (req, res) => {
+  try {
+    const weeks = clampWeeks(req.query.weeks, 8);
+    const period = currentPeriodKey();
+    const periods = periodKeysBack(period, weeks);
+
+    const [users, households, config] = await Promise.all([
+      User.find({}, 'email firstName lastName householdId lastActiveAt usageTokens usageBlocked').lean(),
+      Household.find({}, 'name plan usageTokens usageTokensBaseline').lean(),
+      getConfig(),
+    ]);
+    const hhById = Object.fromEntries(households.map((h) => [String(h._id), h]));
+
+    const items = users.map((u) => {
+      const hh = u.householdId ? hhById[String(u.householdId)] || null : null;
+      const plan = hh?.plan || 'free';
+      const series = tokenSeries(u.usageTokens, periods);
+      const limit = config.tiers?.[plan]?.weeklyTokenLimit ?? null;
+      // What enforcement compares against the limit: the user's own counter on
+      // free, the household's pooled effective tokens on paid.
+      const used = enforcedTokens({ user: u, household: hh }, period);
+      const blocked = blockedCount(u.usageBlocked, period);
+      return {
+        _id: u._id,
+        email: u.email,
+        name: [u.firstName, u.lastName].filter(Boolean).join(' '),
+        householdName: hh?.name || null,
+        plan,
+        scope: plan === 'free' ? 'user' : 'household',
+        lastActiveAt: u.lastActiveAt || null,
+        tokens: series.at(-1) || 0,      // this user's own tokens, this period
+        totalTokens: series.reduce((a, b) => a + b, 0),
+        series,
+        used, limit,
+        pctOfLimit: limit ? Math.min(999, Math.round((used / limit) * 100)) : null,
+        blocked,
+        flags: abuseFlags({ series, used, limit, blocked }),
+      };
+    }).sort((a, b) => b.tokens - a.tokens);
+
+    res.json({
+      period,
+      resetAt: nextPeriodResetAt(),
+      periods,
+      items,
+      fleet: {
+        tokensThisPeriod: items.reduce((n, r) => n + r.tokens, 0),
+        blockedThisPeriod: items.reduce((n, r) => n + r.blocked, 0),
+        flaggedUsers: items.filter((r) => r.flags.length).length,
+      },
     });
   } catch (err) {
     res.status(500).json({ error: err.message });

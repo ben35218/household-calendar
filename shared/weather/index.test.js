@@ -1,6 +1,6 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { buildForecast, isMowingDay, WMO_DESCRIPTIONS, buildRangeRecords, buildOutlook } = require('./index');
+const { buildForecast, isMowingDay, WMO_DESCRIPTIONS, buildRangeRecords, buildOutlook, buildDailyClimate, placeCandidates } = require('./index');
 
 test('isMowingDay: dry day is good, wet day is not', () => {
   assert.equal(isMowingDay(0, 10, 0), true);
@@ -98,4 +98,38 @@ test('buildOutlook averages years into weeks', () => {
   assert.equal(weeks[0].avgTempMin, 12);
   assert.equal(weeks[0].rainyDays, 7);           // avgPrecip 1 >= 1 on every day
   assert.equal(weeks[0].yearsInSample, 2);
+});
+
+test('buildDailyClimate averages per day across years, index-aligned', () => {
+  const mk = (max, min, precip, len = 3) => ({
+    daily: {
+      time: Array.from({ length: len }, (_, i) => `d${i}`),
+      temperature_2m_max: Array(len).fill(max),
+      temperature_2m_min: Array(len).fill(min),
+      precipitation_sum: Array(len).fill(precip),
+    },
+  });
+  const dates = ['2026-08-01', '2026-08-02', '2026-08-03'];
+  const days = buildDailyClimate([mk(20, 10, 0), mk(30, 14, 3)], { dates });
+  assert.equal(days.length, 3);
+  assert.equal(days[0].date, '2026-08-01');
+  assert.equal(days[0].avgTempMax, 25);
+  assert.equal(days[0].avgTempMin, 12);
+  assert.equal(days[0].avgPrecip, 1.5);
+  assert.equal(days[0].rainYears, 1);            // only the 3mm year counts as rainy
+  assert.equal(days[0].yearsInSample, 2);
+
+  // A year with a shorter archive is skipped past its length, not crashed on.
+  const short = buildDailyClimate([mk(20, 10, 0, 1), mk(30, 14, 3)], { dates });
+  assert.equal(short[2].avgTempMax, 30);
+  assert.equal(short[2].yearsInSample, 1);
+});
+
+test('placeCandidates simplifies Google Places strings for Nominatim', () => {
+  assert.deepEqual(
+    placeCandidates('Florence, Metropolitan City of Florence, Italy'),
+    ['Florence, Metropolitan City of Florence, Italy', 'Florence, Italy', 'Florence'],
+  );
+  assert.deepEqual(placeCandidates('Tokyo, Japan'), ['Tokyo, Japan', 'Tokyo']);
+  assert.deepEqual(placeCandidates('Paris'), ['Paris']);
 });

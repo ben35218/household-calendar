@@ -1,6 +1,6 @@
 import axios from 'axios';
 import { API_URL } from '../config';
-import { getCachedToken } from '../lib/secureToken';
+import { getCachedToken, saveToken } from '../lib/secureToken';
 
 // Mirrors client/src/services/api.js, adapted for React Native:
 //   - baseURL is the absolute API URL (no dev proxy on device)
@@ -24,7 +24,13 @@ export function setUnauthorizedHandler(fn: UnauthorizedHandler | null) {
 }
 
 api.interceptors.response.use(
-  (res) => res,
+  (res) => {
+    // Sliding session: past the token's half-life the server hands back a fresh
+    // one in this header; storing it keeps an active user signed in forever.
+    const refreshed = res.headers['x-refreshed-token'];
+    if (refreshed) void saveToken(refreshed);
+    return res;
+  },
   (err) => {
     if (err.response?.status === 401) onUnauthorized?.();
     return Promise.reject(err);

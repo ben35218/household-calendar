@@ -4,6 +4,7 @@ const Household = require('../models/Household');
 const Person = require('../models/Person');
 const { requireAuth } = require('../middleware/auth');
 const { pickRecordEnc } = require('../services/householdKey');
+const { normalizePhone } = require('../services/phone');
 
 const router = express.Router();
 router.use(requireAuth);
@@ -15,8 +16,8 @@ router.use(requireAuth);
 // timezone is personal: alerts fire at each member's own 7am local, so a
 // travelling or out-of-town member gets correct timing regardless of the
 // household's default zone.
-const SHARED   = ['homeAddress', 'groceryShoppingDay', 'grocerySections', 'reminderLeadDays'];
-const PERSONAL = ['firstName', 'lastName', 'birthday', 'timezone'];
+const SHARED   = ['homeAddress', 'groceryShoppingDay', 'groceryFrequency', 'groceryAnchor', 'grocerySections', 'reminderLeadDays'];
+const PERSONAL = ['firstName', 'lastName', 'birthday', 'timezone', 'phone'];
 
 router.get('/', async (req, res) => {
   const u = req.user;
@@ -28,10 +29,12 @@ router.get('/', async (req, res) => {
   res.json({
     email: u.email,
     firstName: u.firstName, lastName: u.lastName, birthday: u.birthday,
+    phone: u.phone || '',
     timezone: u.timezone,
     // shared (household)
     homeAddress: hh.homeAddress,
     groceryShoppingDay: hh.groceryShoppingDay, grocerySections: hh.grocerySections,
+    groceryFrequency: hh.groceryFrequency ?? 'weekly', groceryAnchor: hh.groceryAnchor ?? null,
     reminderLeadDays: hh.reminderLeadDays,
     householdMemberCount: memberCount,
     // Encrypted home-location blob (§9.1 P5) so the client can decrypt the address
@@ -46,6 +49,17 @@ router.put('/', async (req, res) => {
   try {
     const userUpdate = {};
     for (const key of PERSONAL) if (req.body[key] !== undefined) userUpdate[key] = req.body[key];
+    // Normalize the phone so it can be resolved by the sharing flows. An empty
+    // string clears it; a non-empty value must be a plausible number.
+    if (userUpdate.phone !== undefined) {
+      const raw = String(userUpdate.phone).trim();
+      if (!raw) userUpdate.phone = '';
+      else {
+        const norm = normalizePhone(raw);
+        if (!norm) return res.status(400).json({ error: 'Enter a valid phone number' });
+        userUpdate.phone = norm;
+      }
+    }
 
     const hhUpdate = {};
     for (const key of SHARED) if (req.body[key] !== undefined) hhUpdate[key] = req.body[key];

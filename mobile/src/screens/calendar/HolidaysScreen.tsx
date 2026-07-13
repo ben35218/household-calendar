@@ -1,61 +1,214 @@
-import React from 'react';
-import { View, Text, ScrollView, StyleSheet, TouchableOpacity } from 'react-native';
+import React, { useEffect, useMemo } from 'react';
+import { View, Text, ScrollView, StyleSheet, TouchableOpacity, Alert } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { HOLIDAY_DEFS } from '../../lib/holidays';
-import { useHolidayPrefs } from '../../lib/calendarPrefs';
-import { Card } from '../../components/ui';
+import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
+import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import { getHolidays, getHolidayDefs, regionalHolidaysLabel, HolidayDef } from '../../lib/holidays';
+import { useHolidayCalendars, useCustomCalendars } from '../../lib/calendarPrefs';
+import { Card, Button } from '../../components/ui';
 import { colors, spacing } from '../../theme';
+import type { CalendarStackParamList } from '../../navigation/CalendarNavigator';
 
-const GROUP_LABELS: Record<string, string> = {
-  statutory: 'Canadian Holidays',
-  cultural: 'Cultural Holidays',
-  multicultural: 'Multicultural & Religious Holidays',
-};
+type Nav = NativeStackNavigationProp<CalendarStackParamList>;
 
-// Mirrors client/src/views/HolidaysView.vue. Every group (incl. Canadian/federal
-// statutory holidays) is toggleable.
+// Per-calendar holiday editor (one country's holidays):
+//   • National — always shown (no toggle), with each date.
+//   • Provincial / State — pick one or more subdivisions; the selected ones'
+//     holidays then show (with dates), no per-holiday toggle.
+//   • Cultural / Religious — individually toggleable.
 export default function HolidaysScreen() {
-  const { isEnabled, toggle, setGroup } = useHolidayPrefs();
+  const nav = useNavigation<Nav>();
+  const { calendarId } = useRoute<RouteProp<CalendarStackParamList, 'Holidays'>>().params;
+  const { calendars, toggle, isEnabled, toggleRegion, isRegionSelected, removeCalendar } = useHolidayCalendars();
+  const { calendars: customCals } = useCustomCalendars();
+  const cal = calendars.find((c) => c.id === calendarId);
+  // Shared holiday calendars are the owner's to configure; a housemate reads.
+  const rec = customCals.find((c) => c.id === calendarId);
+  const readOnly = rec ? !rec.mine : false;
 
-  const groups = (['statutory', 'cultural', 'multicultural'] as const).map((key) => ({
-    key,
-    label: GROUP_LABELS[key],
-    defs: HOLIDAY_DEFS.filter((d) => d.group === key),
-  }));
+  useEffect(() => {
+    if (!cal) return;
+    nav.setOptions({
+      title: cal.name,
+      // Owner-only: the pencil opens the name/colour/sharing form.
+      headerRight: readOnly
+        ? undefined
+        : () => (
+            <TouchableOpacity
+              onPress={() => nav.navigate('AddCalendar', { calendarId })}
+              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+              accessibilityRole="button"
+              accessibilityLabel="Edit holiday calendar"
+            >
+              <Ionicons name="pencil" size={18} color="#fff" />
+            </TouchableOpacity>
+          ),
+    });
+  }, [cal, readOnly, calendarId, nav]);
+
+  const defs = useMemo(() => (cal ? getHolidayDefs(cal.country) : []), [cal]);
+
+  // This year's date for each holiday id (day + month; the year is irrelevant to
+  // the label but floating holidays need a concrete year to resolve).
+  const dateById = useMemo(() => {
+    if (!cal) return {} as Record<string, string>;
+    const year = new Date().getFullYear();
+    const map: Record<string, string> = {};
+    for (const h of getHolidays(cal.country, new Date(year, 0, 1), new Date(year, 11, 31))) {
+      if (!(h.id in map)) map[h.id] = h.date;
+    }
+    return map;
+  }, [cal]);
+
+  const fmtDate = (id: string): string => {
+    const iso = dateById[id];
+    if (!iso) return '';
+    const [y, m, d] = iso.split('-').map(Number);
+    return new Date(y, m - 1, d).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  };
+
+  // Provincial/state holidays grouped by subdivision, in first-seen order.
+  const regionalGroups = useMemo(() => {
+    const order: string[] = [];
+    const byRegion: Record<string, HolidayDef[]> = {};
+    for (const d of defs) {
+      if (d.group !== 'regional' || !d.region) continue;
+      if (!byRegion[d.region]) {
+        byRegion[d.region] = [];
+        order.push(d.region);
+      }
+      byRegion[d.region].push(d);
+    }
+    return order.map((region) => ({ region, defs: byRegion[region] }));
+  }, [defs]);
+
+  const national = defs.filter((d) => d.group === 'statutory');
+  const cultural = defs.filter((d) => d.group === 'cultural');
+  // Religious holidays roam the Gregorian year, so order them by this year's date.
+  const religious = defs
+    .filter((d) => d.group === 'multicultural')
+    .sort((a, b) => (dateById[a.id] ?? '').localeCompare(dateById[b.id] ?? ''));
+
+  if (!cal) {
+    return (
+      <View style={styles.missing}>
+        <Text style={styles.missingText}>This holiday calendar is no longer available.</Text>
+      </View>
+    );
+  }
+
+  const confirmRemove = () => {
+    Alert.alert(
+      `Remove ${cal.name}?`,
+      'Its holidays will stop showing on your calendar. You can add the country back any time.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Remove',
+          style: 'destructive',
+          onPress: () => {
+            removeCalendar(cal.id);
+            nav.goBack();
+          },
+        },
+      ]
+    );
+  };
+
+  // A read-only holiday row: name on the left, date on the right.
+  const infoRow = (def: HolidayDef) => (
+    <View key={def.id} style={styles.row}>
+      <Text style={styles.name}>{def.name}</Text>
+      <Text style={styles.date}>{fmtDate(def.id)}</Text>
+    </View>
+  );
+
+  // A toggleable holiday row (cultural / religious) — name on the left, date on
+  // the right (religious dates are approximate, so they're flagged as such).
+  const toggleRow = (def: HolidayDef, approx = false) => {
+    const on = isEnabled(cal.id, def.id);
+    return (
+      <TouchableOpacity
+        key={def.id}
+        style={styles.row}
+        activeOpacity={0.7}
+        disabled={readOnly}
+        onPress={() => toggle(cal.id, def.id)}
+      >
+        <Ionicons name={on ? 'checkbox' : 'square-outline'} size={22} color={on ? colors.primary : colors.textMuted} />
+        <Text style={styles.name}>{def.name}</Text>
+        {approx ? <Text style={styles.approx}>approx.</Text> : null}
+        <Text style={styles.date}>{fmtDate(def.id)}</Text>
+      </TouchableOpacity>
+    );
+  };
+
+  const groupHead = (label: string) => (
+    <View style={styles.cardHead}>
+      <Text style={styles.groupLabel}>{label}</Text>
+    </View>
+  );
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
-      <Text style={styles.intro}>Choose which holidays to display on your calendar.</Text>
+      <Text style={styles.intro}>Choose which of {cal.name} to display on your calendar.</Text>
 
-      {groups.map((group) => (
-        <Card key={group.key} style={styles.card}>
-          <View style={styles.cardHead}>
-            <Text style={styles.groupLabel}>{group.label}</Text>
-            <View style={styles.headActions}>
-              <TouchableOpacity onPress={() => setGroup(group.defs.map((d) => d.id), true)}>
-                <Text style={styles.action}>All</Text>
-              </TouchableOpacity>
-              <TouchableOpacity onPress={() => setGroup(group.defs.map((d) => d.id), false)}>
-                <Text style={styles.action}>None</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-          {group.defs.map((def) => {
-            const on = isEnabled(def.id);
+      {national.length > 0 ? (
+        <Card style={styles.card}>
+          {groupHead('National Holidays')}
+          {national.map(infoRow)}
+        </Card>
+      ) : null}
+
+      {regionalGroups.length > 0 ? (
+        <Card style={styles.card}>
+          {groupHead(regionalHolidaysLabel(cal.country))}
+          <Text style={styles.hint}>Select the regions whose holidays you want.</Text>
+          {regionalGroups.map((g) => {
+            const selected = isRegionSelected(cal.id, g.region);
             return (
-              <TouchableOpacity key={def.id} style={styles.row} activeOpacity={0.7} onPress={() => toggle(def.id)}>
-                <Ionicons
-                  name={on ? 'checkbox' : 'square-outline'}
-                  size={22}
-                  color={on ? colors.primary : colors.textMuted}
-                />
-                <Text style={styles.name}>{def.name}</Text>
-                {group.key === 'multicultural' ? <Text style={styles.approx}>approx.</Text> : null}
-              </TouchableOpacity>
+              <View key={g.region}>
+                <TouchableOpacity style={styles.row} activeOpacity={0.7} disabled={readOnly} onPress={() => toggleRegion(cal.id, g.region)}>
+                  <Ionicons
+                    name={selected ? 'checkbox' : 'square-outline'}
+                    size={22}
+                    color={selected ? colors.primary : colors.textMuted}
+                  />
+                  <Text style={styles.regionName}>{g.region}</Text>
+                </TouchableOpacity>
+                {selected
+                  ? g.defs.map((def) => (
+                      <View key={def.id} style={styles.regionalRow}>
+                        <Text style={styles.name}>{def.name}</Text>
+                        <Text style={styles.date}>{fmtDate(def.id)}</Text>
+                      </View>
+                    ))
+                  : null}
+              </View>
             );
           })}
         </Card>
-      ))}
+      ) : null}
+
+      {cultural.length > 0 ? (
+        <Card style={styles.card}>
+          {groupHead('Cultural Holidays')}
+          {cultural.map((def) => toggleRow(def))}
+        </Card>
+      ) : null}
+
+      {religious.length > 0 ? (
+        <Card style={styles.card}>
+          {groupHead('Religious Holidays')}
+          {religious.map((def) => toggleRow(def, true))}
+        </Card>
+      ) : null}
+
+      {!readOnly ? (
+        <View style={styles.removeBtn}>
+          <Button title={`Remove ${cal.name}`} variant="danger" onPress={confirmRemove} />
+        </View>
+      ) : null}
     </ScrollView>
   );
 }
@@ -67,9 +220,14 @@ const styles = StyleSheet.create({
   card: { marginBottom: spacing.md },
   cardHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: spacing.sm },
   groupLabel: { fontSize: 15, fontWeight: '700', color: colors.text, flex: 1 },
-  headActions: { flexDirection: 'row', gap: spacing.md },
-  action: { color: '#D32F2F', fontWeight: '600', fontSize: 13 },
+  hint: { fontSize: 12, color: colors.textMuted, marginBottom: spacing.xs },
   row: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, paddingVertical: 8 },
+  regionName: { flex: 1, fontSize: 14, fontWeight: '600', color: colors.text },
+  regionalRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 6, paddingLeft: spacing.lg },
   name: { flex: 1, fontSize: 14, color: colors.text },
+  date: { fontSize: 13, color: colors.textMuted },
   approx: { fontSize: 11, color: colors.textMuted },
+  removeBtn: { marginTop: spacing.sm, marginBottom: spacing.xl },
+  missing: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: spacing.xl, backgroundColor: colors.background },
+  missingText: { fontSize: 15, color: colors.textMuted, textAlign: 'center' },
 });

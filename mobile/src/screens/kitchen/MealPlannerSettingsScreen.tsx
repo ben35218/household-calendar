@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
-import { View, Text, ScrollView, StyleSheet, TouchableOpacity, ActivityIndicator } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator } from 'react-native';
+import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
 import { Ionicons } from '@expo/vector-icons';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { settingsApi } from '../../api';
@@ -63,7 +64,7 @@ export default function MealPlannerSettingsScreen() {
   }
 
   return (
-    <ScrollView style={styles.container} contentContainerStyle={styles.content}>
+    <KeyboardAwareScrollView bottomOffset={24} keyboardShouldPersistTaps="handled" style={styles.container} contentContainerStyle={styles.content}>
       <Card style={styles.card}>
         <Text style={styles.title}>Grocery Section Order</Text>
         <Text style={styles.subtitle}>
@@ -97,7 +98,7 @@ export default function MealPlannerSettingsScreen() {
           <Button title="Save Order" onPress={saveOrder} loading={sectionSaving} />
         </View>
       </Card>
-    </ScrollView>
+    </KeyboardAwareScrollView>
   );
 }
 

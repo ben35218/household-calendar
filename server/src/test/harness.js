@@ -59,11 +59,17 @@ function fakeEnc() {
 // Register through the real API: creates the User, their solo Household,
 // seeded categories, and self-Person — exactly like production onboarding.
 // Returns { token, user, auth } where auth is the Authorization header value.
+let ipSeq = 0;
 async function registerUser({ email, password = 'test-password-1', firstName = 'Test', lastName = 'User' } = {}) {
-  const res = await request().post('/api/auth/register').send({
-    email: email || `user-${b64u(8).toLowerCase()}@example.com`,
-    password, firstName, lastName,
-  });
+  // A distinct source IP per registration (the app trusts X-Forwarded-For), so
+  // suites that create many accounts don't trip the per-IP register limiter.
+  ipSeq += 1;
+  const res = await request().post('/api/auth/register')
+    .set('X-Forwarded-For', `10.0.${Math.floor(ipSeq / 250)}.${(ipSeq % 250) + 1}`)
+    .send({
+      email: email || `user-${b64u(8).toLowerCase()}@example.com`,
+      password, firstName, lastName,
+    });
   if (res.status !== 201) throw new Error(`register failed: ${res.status} ${JSON.stringify(res.body)}`);
   const auth = `Bearer ${res.body.token}`;
   // The register response omits householdId etc. — fetch the full user record.
@@ -89,12 +95,20 @@ async function enrollKeys(auth) {
   return res.body;
 }
 
-// Second user joins the first user's household via the real join-request →
-// approve flow (approver wraps the current HDK to them). Returns after approval.
-async function joinHousehold({ joiner, approver, joinCode, keyVersion }) {
-  const joinRes = await request().post('/api/household/join')
-    .set('Authorization', joiner.auth).send({ joinCode });
-  if (joinRes.status >= 300) throw new Error(`join failed: ${joinRes.status} ${JSON.stringify(joinRes.body)}`);
+// Second user joins the first user's household via the real invite → accept →
+// approve flow: the approver invites the joiner's email, the joiner accepts
+// (opening a JoinRequest), then the approver wraps the current HDK to them and
+// approves. Returns after approval.
+async function joinHousehold({ joiner, approver, keyVersion }) {
+  const inviteRes = await request().post('/api/household/invitations')
+    .set('Authorization', approver.auth).send({ email: joiner.user.email });
+  if (inviteRes.status >= 300) throw new Error(`invite failed: ${inviteRes.status} ${JSON.stringify(inviteRes.body)}`);
+  const inbox = await request().get('/api/household/invitations/mine').set('Authorization', joiner.auth);
+  const invite = inbox.body.find((i) => i.status === 'pending');
+  if (!invite) throw new Error('no pending household invitation found');
+  const acceptRes = await request().post(`/api/household/invitations/${invite._id}/accept`)
+    .set('Authorization', joiner.auth).send({});
+  if (acceptRes.status >= 300) throw new Error(`accept failed: ${acceptRes.status} ${JSON.stringify(acceptRes.body)}`);
   const pending = await request().get('/api/household/join-requests').set('Authorization', approver.auth);
   const reqRow = pending.body.find((r) => String(r.requesterUserId) === String(joiner.user._id));
   if (!reqRow) throw new Error('no pending join request found');

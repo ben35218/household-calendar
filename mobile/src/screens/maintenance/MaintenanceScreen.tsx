@@ -247,7 +247,7 @@ export default function MaintenanceScreen() {
                         style={styles.iconBtn}
                         onPress={() => navigation.navigate('MaintenanceChat', { itemId: item._id, itemName: item.name })}
                       >
-                        <Ionicons name="chatbubble-outline" size={20} color={colors.primary} />
+                        <Ionicons name="chatbubble-outline" size={20} color="#fff" />
                       </TouchableOpacity>
                     )}
                     <TouchableOpacity style={styles.iconBtn} onPress={() => toggle(item._id)}>
@@ -255,15 +255,22 @@ export default function MaintenanceScreen() {
                     </TouchableOpacity>
                   </TouchableOpacity>
 
-                  {isOpen ? (
+                  {isOpen ? (() => {
+                    const cats = itemTasksByCategory(item._id);
+                    // Only show the category header rows when tasks span more
+                    // than one category; a single category adds no information.
+                    const showCatHeaders = cats.length > 1;
+                    return (
                     <View style={styles.itemExpand}>
-                      {itemTasksByCategory(item._id).length ? (
-                        itemTasksByCategory(item._id).map((cat) => (
+                      {cats.length ? (
+                        cats.map((cat) => (
                           <View key={cat.name}>
-                            <View style={styles.catHeader}>
-                              <View style={[styles.statusDot, { backgroundColor: cat.color || colors.textMuted }]} />
-                              <Text style={styles.catName}>{cat.name.toUpperCase()}</Text>
-                            </View>
+                            {showCatHeaders ? (
+                              <View style={styles.catHeader}>
+                                <View style={[styles.statusDot, { backgroundColor: cat.color || colors.textMuted }]} />
+                                <Text style={styles.catName}>{cat.name.toUpperCase()}</Text>
+                              </View>
+                            ) : null}
                             {cat.tasks.map((task) => (
                               <TouchableOpacity
                                 key={task._id}
@@ -286,11 +293,11 @@ export default function MaintenanceScreen() {
                         <Text style={styles.noTasks}>No active tasks</Text>
                       )}
                       <TouchableOpacity style={styles.addTaskBtn} onPress={() => navigation.navigate('TaskForm', {})}>
-                        <Ionicons name="add" size={18} color={colors.primary} />
                         <Text style={styles.addTaskText}>Add task</Text>
                       </TouchableOpacity>
                     </View>
-                  ) : null}
+                    );
+                  })() : null}
                 </Card>
               );
             })}
@@ -379,11 +386,11 @@ const styles = StyleSheet.create({
   taskChipText: { fontSize: 12, fontWeight: '600' },
   noTasks: { paddingHorizontal: spacing.md, paddingVertical: spacing.sm, fontSize: 13, color: colors.textMuted },
   addTaskBtn: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 4,
+    alignItems: 'center', justifyContent: 'center',
     marginHorizontal: spacing.md, marginTop: spacing.sm, paddingVertical: 10,
-    borderWidth: 1, borderColor: colors.primary, borderRadius: radius.md,
+    backgroundColor: '#fff', borderRadius: radius.md,
   },
-  addTaskText: { color: colors.primary, fontWeight: '600' },
+  addTaskText: { color: colors.background, fontWeight: '600' },
 
   empty: { alignItems: 'center', marginTop: spacing.xl, gap: spacing.sm, paddingBottom: spacing.lg },
   emptyTitle: { fontSize: 17, fontWeight: '700', color: colors.text },

@@ -17,7 +17,8 @@ import { getCachedToken } from '../../lib/secureToken';
 const TRIP_ITEM_ENC = (p: Record<string, unknown>) => ({
   title: p.title, location: p.location, url: p.url, phone: p.phone, notes: p.notes, details: p.details,
 });
-import { Button, Input, Screen, SwitchRow, SectionTitle, DateField, TimeField, Select, Divider, useHeaderCheckButton } from '../../components/ui';
+import { Button, Input, Screen, SwitchRow, SectionTitle, DateField, TimeField, Select, useHeaderCheckButton } from '../../components/ui';
+import { form as fs, GroupCard, CardDivider } from '../../components/formStyles';
 import FormAssist from '../../components/FormAssist';
 import { useFormAssist } from '../../hooks/useFormAssist';
 import PlacesAutocomplete from '../../components/PlacesAutocomplete';
@@ -315,7 +316,7 @@ export default function TripItemFormScreen() {
   // flattens this, so reach into the raw payload for both.
   const rawTrip = (tripQ.data as any)?.trip;
   const rawItem = isEdit ? (tripQ.data as any)?.items?.find((x: any) => x._id === itemId) : undefined;
-  const tripShared = !!(rawTrip?.shareCode || (rawTrip?.collaborators?.length ?? 0) > 0);
+  const tripShared = !!((rawTrip?.sharedWithOutside?.length ?? 0) > 0 || (rawTrip?.collaborators?.length ?? 0) > 0);
   const attachments: TripItemAttachment[] = rawItem?.attachments ?? [];
   const attachmentsUrl = `/trips/${tripId}/items/${itemId}/attachments`;
 
@@ -396,7 +397,6 @@ export default function TripItemFormScreen() {
     <Screen>
       <FormAssist
         formType="trip booking"
-        title="Booking Assistant"
         placeholder={'Describe the booking, e.g. "flight AC123 to Paris June 5 at 6pm, seat 14C, $650 confirmed"'}
         fields={ASSIST_FIELDS}
         current={{ ...form }}
@@ -420,86 +420,248 @@ export default function TripItemFormScreen() {
         })}
       </View>
 
-      <Input label="Title *" value={form.title} onChangeText={(v) => set({ title: v })} placeholder={tripTypeMeta(form.type).label} highlight={assist.changed.has('title')} />
+      <GroupCard>
+        <Input
+          value={form.title}
+          onChangeText={(v) => set({ title: v })}
+          placeholder={tripTypeMeta(form.type).label}
+          containerStyle={fs.headField}
+          style={[fs.headInput, assist.changed.has('title') && fs.headInputHighlight]}
+        />
+        {!isJourney ? (
+          <>
+            <CardDivider />
+            <PlacesAutocomplete
+              value={form.location}
+              onChangeText={(v) => set({ location: v })}
+              placeholder="Location"
+              containerStyle={fs.headField}
+              inputStyle={[fs.headInput, assist.changed.has('location') && fs.headInputHighlight]}
+            />
+          </>
+        ) : null}
+      </GroupCard>
 
       {isJourney ? (
         <>
-          <View style={styles.legCard}>
-            <Text style={styles.legLabel}>DEPARTURE</Text>
+          <SectionTitle>Departure</SectionTitle>
+          <GroupCard>
             <PlacesAutocomplete
-              label={form.type === 'flight' ? 'Departure airport' : 'Departure station / port'}
               value={form.depName}
               onChangeText={(v) => set({ depName: v })}
+              placeholder={form.type === 'flight' ? 'Departure airport' : 'Departure station / port'}
               type={form.type === 'flight' ? 'airport' : 'transit'}
               onSelect={(p) => placesApi.getTimezone(p.place_id).then((r) => set({ departureTz: r.data.timeZoneId || form.departureTz })).catch(() => {})}
-              highlight={assist.changed.has('depName')}
+              containerStyle={fs.headField}
+              inputStyle={[fs.headInput, assist.changed.has('depName') && fs.headInputHighlight]}
             />
-            <View style={styles.cols}>
-              <View style={styles.col}><DateField label="Date" value={form.depDate} onChange={(v) => set({ depDate: v })} highlight={assist.changed.has('depDate')} /></View>
-              <View style={styles.col}><TimeField label="Time" value={form.depTime} onChange={(v) => set({ depTime: v })} highlight={assist.changed.has('depTime')} /></View>
+            <CardDivider />
+            <View style={fs.dtRow}>
+              <Text style={fs.dtLabel}>Departs</Text>
+              <View style={fs.dtFields}>
+                <DateField
+                  value={form.depDate}
+                  onChange={(v) => set({ depDate: v })}
+                  highlight={assist.changed.has('depDate')}
+                  containerStyle={fs.dtFieldWrap}
+                  fieldStyle={fs.dtField}
+                  valueStyle={fs.dtValue}
+                  hideIcon
+                />
+                <TimeField
+                  value={form.depTime}
+                  onChange={(v) => set({ depTime: v })}
+                  highlight={assist.changed.has('depTime')}
+                  containerStyle={fs.dtFieldWrap}
+                  fieldStyle={fs.dtField}
+                  valueStyle={fs.dtValue}
+                  hideIcon
+                />
+              </View>
             </View>
-            <Select label="Departure timezone" value={form.departureTz} options={TZ_OPTIONS.map((t) => ({ label: t || 'Use destination tz', value: t }))} onChange={(v) => set({ departureTz: (v as string) || '' })} />
-          </View>
-          <View style={styles.legCard}>
-            <Text style={styles.legLabel}>ARRIVAL</Text>
+            <CardDivider />
+            <Select
+              inlineLabel="Timezone"
+              value={form.departureTz}
+              options={TZ_OPTIONS.map((t) => ({ label: t || 'Use destination tz', value: t }))}
+              onChange={(v) => set({ departureTz: (v as string) || '' })}
+              containerStyle={fs.dtFieldWrap}
+              fieldStyle={fs.rowField}
+              valueStyle={fs.dtValue}
+              chevronIcon="chevron-expand"
+            />
+          </GroupCard>
+
+          <SectionTitle>Arrival</SectionTitle>
+          <GroupCard>
             <PlacesAutocomplete
-              label={form.type === 'flight' ? 'Arrival airport' : 'Arrival station / port'}
               value={form.arrName}
               onChangeText={(v) => set({ arrName: v })}
+              placeholder={form.type === 'flight' ? 'Arrival airport' : 'Arrival station / port'}
               type={form.type === 'flight' ? 'airport' : 'transit'}
               onSelect={(p) => placesApi.getTimezone(p.place_id).then((r) => set({ arrivalTz: r.data.timeZoneId || form.arrivalTz })).catch(() => {})}
-              highlight={assist.changed.has('arrName')}
+              containerStyle={fs.headField}
+              inputStyle={[fs.headInput, assist.changed.has('arrName') && fs.headInputHighlight]}
             />
-            <View style={styles.cols}>
-              <View style={styles.col}><DateField label="Date" value={form.arrDate} onChange={(v) => set({ arrDate: v })} highlight={assist.changed.has('arrDate')} /></View>
-              <View style={styles.col}><TimeField label="Time" value={form.arrTime} onChange={(v) => set({ arrTime: v })} highlight={assist.changed.has('arrTime')} /></View>
+            <CardDivider />
+            <View style={fs.dtRow}>
+              <Text style={fs.dtLabel}>Arrives</Text>
+              <View style={fs.dtFields}>
+                <DateField
+                  value={form.arrDate}
+                  onChange={(v) => set({ arrDate: v })}
+                  highlight={assist.changed.has('arrDate')}
+                  containerStyle={fs.dtFieldWrap}
+                  fieldStyle={fs.dtField}
+                  valueStyle={fs.dtValue}
+                  hideIcon
+                />
+                <TimeField
+                  value={form.arrTime}
+                  onChange={(v) => set({ arrTime: v })}
+                  highlight={assist.changed.has('arrTime')}
+                  containerStyle={fs.dtFieldWrap}
+                  fieldStyle={fs.dtField}
+                  valueStyle={fs.dtValue}
+                  hideIcon
+                />
+              </View>
             </View>
-            <Select label="Arrival timezone" value={form.arrivalTz} options={TZ_OPTIONS.map((t) => ({ label: t || 'Use destination tz', value: t }))} onChange={(v) => set({ arrivalTz: (v as string) || '' })} />
-          </View>
+            <CardDivider />
+            <Select
+              inlineLabel="Timezone"
+              value={form.arrivalTz}
+              options={TZ_OPTIONS.map((t) => ({ label: t || 'Use destination tz', value: t }))}
+              onChange={(v) => set({ arrivalTz: (v as string) || '' })}
+              containerStyle={fs.dtFieldWrap}
+              fieldStyle={fs.rowField}
+              valueStyle={fs.dtValue}
+              chevronIcon="chevron-expand"
+            />
+          </GroupCard>
+
           {form.type === 'flight' ? (
-            <View style={styles.cols}>
-              <View style={styles.col}><Input label="Airline" value={form.airline} onChangeText={(v) => set({ airline: v })} highlight={assist.changed.has('airline')} /></View>
-              <View style={styles.col}><Input label="Flight #" value={form.flightNumber} onChangeText={(v) => set({ flightNumber: v })} highlight={assist.changed.has('flightNumber')} /></View>
-              <View style={styles.col}><Input label="Seat" value={form.seat} onChangeText={(v) => set({ seat: v })} highlight={assist.changed.has('seat')} /></View>
-            </View>
+            <GroupCard>
+              <View style={fs.dtRow}>
+                <Text style={fs.dtLabel}>Airline</Text>
+                <Input
+                  value={form.airline}
+                  onChangeText={(v) => set({ airline: v })}
+                  containerStyle={[fs.headField, fs.rowInputWrap]}
+                  style={[fs.headInput, fs.rowInput, assist.changed.has('airline') && fs.headInputHighlight]}
+                />
+              </View>
+              <CardDivider />
+              <View style={fs.dtRow}>
+                <Text style={fs.dtLabel}>Flight #</Text>
+                <Input
+                  value={form.flightNumber}
+                  onChangeText={(v) => set({ flightNumber: v })}
+                  containerStyle={[fs.headField, fs.rowInputWrap]}
+                  style={[fs.headInput, fs.rowInput, assist.changed.has('flightNumber') && fs.headInputHighlight]}
+                />
+              </View>
+              <CardDivider />
+              <View style={fs.dtRow}>
+                <Text style={fs.dtLabel}>Seat</Text>
+                <Input
+                  value={form.seat}
+                  onChangeText={(v) => set({ seat: v })}
+                  containerStyle={[fs.headField, fs.rowInputWrap]}
+                  style={[fs.headInput, fs.rowInput, assist.changed.has('seat') && fs.headInputHighlight]}
+                />
+              </View>
+            </GroupCard>
           ) : (
-            <Input label="Mode (train / bus / ferry / ship)" value={form.mode} onChangeText={(v) => set({ mode: v })} highlight={assist.changed.has('mode')} />
+            <GroupCard>
+              <View style={fs.dtRow}>
+                <Text style={fs.dtLabel}>Mode</Text>
+                <Input
+                  value={form.mode}
+                  onChangeText={(v) => set({ mode: v })}
+                  placeholder="train / bus / ferry"
+                  containerStyle={[fs.headField, fs.rowInputWrap]}
+                  style={[fs.headInput, fs.rowInput, assist.changed.has('mode') && fs.headInputHighlight]}
+                />
+              </View>
+            </GroupCard>
           )}
         </>
       ) : (
         <>
-          <View style={styles.cols}>
-            <View style={styles.col}><DateField label="Start date" value={form.startDate} onChange={(v) => set({ startDate: v })} highlight={assist.changed.has('startDate')} /></View>
-            <View style={styles.col}><TimeField label="Start time" clearable value={form.startTime} onChange={(v) => set({ startTime: v })} highlight={assist.changed.has('startTime')} /></View>
-          </View>
-          {endMode === 'time' ? (
-            <View style={styles.cols}>
-              <View style={styles.col}>
-                <DateField label="End date" clearable value={form.endDate} onChange={(v) => set({ endDate: v })} defaultValue={form.startDate} highlight={assist.changed.has('endDate')} />
-              </View>
-              <View style={styles.col}>
+          <GroupCard>
+            <View style={fs.dtRow}>
+              <Text style={fs.dtLabel}>Starts</Text>
+              <View style={fs.dtFields}>
+                <DateField
+                  value={form.startDate}
+                  onChange={(v) => set({ startDate: v })}
+                  highlight={assist.changed.has('startDate')}
+                  containerStyle={fs.dtFieldWrap}
+                  fieldStyle={fs.dtField}
+                  valueStyle={fs.dtValue}
+                  hideIcon
+                />
                 <TimeField
-                  label="End time"
                   clearable
-                  value={form.endTime}
-                  onChange={(v) => set({ endTime: v })}
-                  defaultValue={addMinutesToTime(form.startTime || '09:00', 60)}
-                  highlight={assist.changed.has('endTime')}
+                  value={form.startTime}
+                  onChange={(v) => set({ startTime: v })}
+                  highlight={assist.changed.has('startTime')}
+                  containerStyle={fs.dtFieldWrap}
+                  fieldStyle={fs.dtField}
+                  valueStyle={fs.dtValue}
+                  hideIcon
                 />
               </View>
             </View>
-          ) : (
-            <Select<number>
-              label="Duration"
-              value={timeDiffMinutes(form.startTime, form.endTime) ?? undefined}
-              options={DURATION_OPTIONS}
-              clearable
-              onChange={(v) => {
-                if (v == null) { set({ endDate: '', endTime: '' }); return; }
-                set({ endDate: form.startDate, endTime: addMinutesToTime(form.startTime || '09:00', v) });
-              }}
-            />
-          )}
+            <CardDivider />
+            {endMode === 'time' ? (
+              <View style={fs.dtRow}>
+                <Text style={fs.dtLabel}>Ends</Text>
+                <View style={fs.dtFields}>
+                  <DateField
+                    clearable
+                    placeholder="None"
+                    value={form.endDate}
+                    onChange={(v) => set({ endDate: v })}
+                    defaultValue={form.startDate}
+                    highlight={assist.changed.has('endDate')}
+                    containerStyle={fs.dtFieldWrap}
+                    fieldStyle={fs.dtField}
+                    valueStyle={fs.dtValue}
+                    hideIcon
+                  />
+                  <TimeField
+                    clearable
+                    value={form.endTime}
+                    onChange={(v) => set({ endTime: v })}
+                    defaultValue={addMinutesToTime(form.startTime || '09:00', 60)}
+                    highlight={assist.changed.has('endTime')}
+                    containerStyle={fs.dtFieldWrap}
+                    fieldStyle={fs.dtField}
+                    valueStyle={fs.dtValue}
+                    hideIcon
+                  />
+                </View>
+              </View>
+            ) : (
+              <Select<number>
+                inlineLabel="Duration"
+                placeholder="None"
+                value={timeDiffMinutes(form.startTime, form.endTime) ?? undefined}
+                options={DURATION_OPTIONS}
+                clearable
+                onChange={(v) => {
+                  if (v == null) { set({ endDate: '', endTime: '' }); return; }
+                  set({ endDate: form.startDate, endTime: addMinutesToTime(form.startTime || '09:00', v) });
+                }}
+                containerStyle={fs.dtFieldWrap}
+                fieldStyle={fs.rowField}
+                valueStyle={fs.dtValue}
+                chevronIcon="chevron-expand"
+              />
+            )}
+          </GroupCard>
           <View style={styles.endModeToggle}>
             <TouchableOpacity
               style={[styles.endModeBtn, endMode === 'time' && styles.endModeBtnActive]}
@@ -514,70 +676,150 @@ export default function TripItemFormScreen() {
               <Text style={[styles.endModeBtnText, endMode === 'duration' && styles.endModeBtnTextActive]}>Duration</Text>
             </TouchableOpacity>
           </View>
-          <PlacesAutocomplete label="Location" value={form.location} onChangeText={(v) => set({ location: v })} highlight={assist.changed.has('location')} />
         </>
       )}
 
-      <Divider />
-
-      {multiFamily ? (
-        <Select label="Sharing" value={form.sharing} options={SHARING_OPTIONS.map((o) => ({ label: o.label, value: o.value }))} onChange={(v) => toggleSharing((v as string) || 'private')} />
-      ) : null}
-
-      <View style={styles.cols}>
-        <View style={styles.col}><Input label="Confirmation #" value={form.confirmation} onChangeText={(v) => set({ confirmation: v })} highlight={assist.changed.has('confirmation')} /></View>
-        <View style={styles.col}><Input label={costLabel} keyboardType="decimal-pad" value={form.cost} onChangeText={(v) => set({ cost: v })} highlight={assist.changed.has('cost')} /></View>
-        <View style={styles.col}>
-          <Select label="Currency" value={form.currency} options={CURRENCIES.map((c) => ({ label: c, value: c }))} onChange={(v) => set({ currency: (v as string) || '' })} clearable highlight={assist.changed.has('currency')} />
+      <GroupCard>
+        {multiFamily ? (
+          <>
+            <Select
+              inlineLabel="Sharing"
+              value={form.sharing}
+              options={SHARING_OPTIONS.map((o) => ({ label: o.label, value: o.value }))}
+              onChange={(v) => toggleSharing((v as string) || 'private')}
+              containerStyle={fs.dtFieldWrap}
+              fieldStyle={fs.rowField}
+              valueStyle={fs.dtValue}
+              chevronIcon="chevron-expand"
+            />
+            <CardDivider />
+          </>
+        ) : null}
+        <View style={fs.dtRow}>
+          <Text style={fs.dtLabel}>Confirmation #</Text>
+          <Input
+            value={form.confirmation}
+            onChangeText={(v) => set({ confirmation: v })}
+            containerStyle={[fs.headField, fs.rowInputWrap]}
+            style={[fs.headInput, fs.rowInput, assist.changed.has('confirmation') && fs.headInputHighlight]}
+          />
         </View>
-      </View>
+        <CardDivider />
+        <View style={fs.dtRow}>
+          <Text style={fs.dtLabel}>{costLabel}</Text>
+          <Input
+            keyboardType="decimal-pad"
+            value={form.cost}
+            onChangeText={(v) => set({ cost: v })}
+            containerStyle={[fs.headField, fs.rowInputWrap]}
+            style={[fs.headInput, fs.rowInput, assist.changed.has('cost') && fs.headInputHighlight]}
+          />
+        </View>
+        <CardDivider />
+        <Select
+          inlineLabel="Currency"
+          placeholder="None"
+          value={form.currency}
+          options={CURRENCIES.map((c) => ({ label: c, value: c }))}
+          onChange={(v) => set({ currency: (v as string) || '' })}
+          clearable
+          highlight={assist.changed.has('currency')}
+          containerStyle={fs.dtFieldWrap}
+          fieldStyle={fs.rowField}
+          valueStyle={fs.dtValue}
+          chevronIcon="chevron-expand"
+        />
+      </GroupCard>
 
       {multiFamily && form.sharing !== 'private' ? (
-        <View style={styles.shareBox}>
-          <View style={styles.shareHead}>
-            <Text style={styles.shareTitle}>
-              {form.sharing === 'shared_shared' ? "Families & each one's share" : 'Families sharing this booking'}
-            </Text>
-            {form.sharing === 'shared_shared' ? (
-              <TouchableOpacity onPress={splitEqually}><Text style={[styles.splitBtn, { color: accent }]}>Split equally</Text></TouchableOpacity>
-            ) : null}
-          </View>
-          {shareRows.map((row) => (
-            <View key={row.householdId} style={styles.shareRow}>
-              <TouchableOpacity onPress={() => setShareRows((rows) => rows.map((r) => (r.householdId === row.householdId ? { ...r, included: !r.included } : r)))}>
-                <Ionicons name={row.included ? 'checkbox' : 'square-outline'} size={22} color={row.included ? accent : colors.textMuted} />
-              </TouchableOpacity>
-              <Text style={styles.shareName}>{row.name}</Text>
+        <>
+          <GroupCard>
+            <View style={styles.shareHead}>
+              <Text style={styles.shareTitle}>
+                {form.sharing === 'shared_shared' ? "Families & each one's share" : 'Families sharing this booking'}
+              </Text>
               {form.sharing === 'shared_shared' ? (
-                <View style={styles.shareAmt}>
-                  <Input
-                    value={row.amount != null ? String(row.amount) : ''}
-                    onChangeText={(v) => setShareRows((rows) => rows.map((r) => (r.householdId === row.householdId ? { ...r, amount: v ? Number(v) : null } : r)))}
-                    keyboardType="decimal-pad"
-                    editable={row.included}
-                  />
-                </View>
+                <TouchableOpacity onPress={splitEqually}><Text style={[styles.splitBtn, { color: accent }]}>Split equally</Text></TouchableOpacity>
               ) : null}
             </View>
-          ))}
+            {shareRows.map((row) => (
+              <React.Fragment key={row.householdId}>
+                <CardDivider />
+                <View style={styles.shareRow}>
+                  <TouchableOpacity onPress={() => setShareRows((rows) => rows.map((r) => (r.householdId === row.householdId ? { ...r, included: !r.included } : r)))}>
+                    <Ionicons name={row.included ? 'checkbox' : 'square-outline'} size={22} color={row.included ? accent : colors.textMuted} />
+                  </TouchableOpacity>
+                  <Text style={styles.shareName}>{row.name}</Text>
+                  {form.sharing === 'shared_shared' ? (
+                    <Input
+                      value={row.amount != null ? String(row.amount) : ''}
+                      onChangeText={(v) => setShareRows((rows) => rows.map((r) => (r.householdId === row.householdId ? { ...r, amount: v ? Number(v) : null } : r)))}
+                      keyboardType="decimal-pad"
+                      editable={row.included}
+                      placeholder="0"
+                      containerStyle={[fs.headField, styles.shareAmt]}
+                      style={[fs.headInput, styles.shareAmtInput]}
+                    />
+                  ) : null}
+                </View>
+              </React.Fragment>
+            ))}
+            {form.sharing === 'shared_shared' ? (
+              <>
+                <CardDivider />
+                <Select
+                  inlineLabel="Paid by"
+                  placeholder="Who fronted the bill?"
+                  value={form.paidByHouseholdId}
+                  options={includedFamilies.map((r) => ({ label: r.name, value: r.householdId }))}
+                  onChange={(v) => set({ paidByHouseholdId: (v as string) || '' })}
+                  containerStyle={fs.dtFieldWrap}
+                  fieldStyle={fs.rowField}
+                  valueStyle={fs.dtValue}
+                  chevronIcon="chevron-expand"
+                />
+              </>
+            ) : null}
+          </GroupCard>
           {form.sharing === 'shared_shared' ? (
-            <>
-              <Text style={styles.shareSum}>Shares total {shareSum}{form.cost ? ` of ${form.cost}` : ''}</Text>
-              <Select
-                label="Paid by (fronted the bill)"
-                value={form.paidByHouseholdId}
-                options={includedFamilies.map((r) => ({ label: r.name, value: r.householdId }))}
-                onChange={(v) => set({ paidByHouseholdId: (v as string) || '' })}
-              />
-            </>
+            <Text style={styles.shareSum}>Shares total {shareSum}{form.cost ? ` of ${form.cost}` : ''}</Text>
           ) : null}
-        </View>
+        </>
       ) : null}
 
-      <SwitchRow label={form.confirmed ? 'Booked' : 'Not booked yet'} value={form.confirmed} onValueChange={(v) => set({ confirmed: v })} highlight={assist.changed.has('confirmed')} />
-      <Input label="URL (optional)" value={form.url} onChangeText={(v) => set({ url: v })} autoCapitalize="none" highlight={assist.changed.has('url')} />
-      <Input label="Phone (optional)" value={form.phone} onChangeText={(v) => set({ phone: v })} keyboardType="phone-pad" highlight={assist.changed.has('phone')} />
-      <Input label="Notes" value={form.notes} onChangeText={(v) => set({ notes: v })} multiline highlight={assist.changed.has('notes')} />
+      <GroupCard>
+        <View style={fs.groupPad}>
+          <SwitchRow label={form.confirmed ? 'Booked' : 'Not booked yet'} value={form.confirmed} onValueChange={(v) => set({ confirmed: v })} highlight={assist.changed.has('confirmed')} />
+        </View>
+        <CardDivider />
+        <Input
+          value={form.url}
+          onChangeText={(v) => set({ url: v })}
+          placeholder="URL (optional)"
+          autoCapitalize="none"
+          containerStyle={fs.headField}
+          style={[fs.headInput, assist.changed.has('url') && fs.headInputHighlight]}
+        />
+        <CardDivider />
+        <Input
+          value={form.phone}
+          onChangeText={(v) => set({ phone: v })}
+          placeholder="Phone (optional)"
+          keyboardType="phone-pad"
+          containerStyle={fs.headField}
+          style={[fs.headInput, assist.changed.has('phone') && fs.headInputHighlight]}
+        />
+      </GroupCard>
+
+      <SectionTitle>Notes</SectionTitle>
+      <Input
+        value={form.notes}
+        onChangeText={(v) => set({ notes: v })}
+        multiline
+        placeholder="Add any notes…"
+        style={fs.notes}
+        highlight={assist.changed.has('notes')}
+      />
 
       {tz ? <Text style={styles.tzNote}>Standard bookings are local to {tz}</Text> : null}
       {error ? <Text style={styles.error}>{error}</Text> : null}
@@ -585,45 +827,55 @@ export default function TripItemFormScreen() {
       {isEdit ? (
         <>
           <SectionTitle>Attachments</SectionTitle>
-          {attachments.map((att) => (
-            <View key={att._id} style={styles.attachRow}>
-              <TouchableOpacity
-                style={styles.attachMain}
-                onPress={() => openAttachment.mutate(att)}
-                disabled={openAttachment.isPending}
-              >
-                <Ionicons
-                  name={(att.fileType || '').startsWith('image/') ? 'image-outline' : 'document-outline'}
-                  size={18}
-                  color={accent}
-                />
-                <Text style={styles.attachName} numberOfLines={1}>{att.filename || 'Attachment'}</Text>
-                {att.encrypted ? <Ionicons name="lock-closed" size={13} color={colors.textMuted} /> : null}
-              </TouchableOpacity>
-              <TouchableOpacity
-                onPress={() =>
-                  Alert.alert('Remove attachment?', '', [
-                    { text: 'Cancel', style: 'cancel' },
-                    { text: 'Remove', style: 'destructive', onPress: () => deleteAttachment.mutate(att._id) },
-                  ])
-                }
-              >
-                <Ionicons name="trash-outline" size={18} color={colors.textMuted} />
-              </TouchableOpacity>
-            </View>
-          ))}
-          <Button
-            title={addAttachment.isPending ? 'Uploading…' : 'Attach confirmation (PDF or image)'}
-            variant="ghost"
-            color={accent}
-            onPress={() => addAttachment.mutate()}
-            disabled={addAttachment.isPending}
-          />
+          <GroupCard>
+            {attachments.map((att, i) => (
+              <React.Fragment key={att._id}>
+                {i > 0 ? <CardDivider /> : null}
+                <View style={styles.attachRow}>
+                  <TouchableOpacity
+                    style={styles.attachMain}
+                    onPress={() => openAttachment.mutate(att)}
+                    disabled={openAttachment.isPending}
+                  >
+                    <Ionicons
+                      name={(att.fileType || '').startsWith('image/') ? 'image-outline' : 'document-outline'}
+                      size={18}
+                      color={accent}
+                    />
+                    <Text style={styles.attachName} numberOfLines={1}>{att.filename || 'Attachment'}</Text>
+                    {att.encrypted ? <Ionicons name="lock-closed" size={13} color={colors.textMuted} /> : null}
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                    onPress={() =>
+                      Alert.alert('Remove attachment?', '', [
+                        { text: 'Cancel', style: 'cancel' },
+                        { text: 'Remove', style: 'destructive', onPress: () => deleteAttachment.mutate(att._id) },
+                      ])
+                    }
+                  >
+                    <Ionicons name="trash-outline" size={18} color={colors.textMuted} />
+                  </TouchableOpacity>
+                </View>
+              </React.Fragment>
+            ))}
+            {attachments.length > 0 ? <CardDivider /> : null}
+            <TouchableOpacity
+              style={fs.dtRow}
+              activeOpacity={0.7}
+              disabled={addAttachment.isPending}
+              onPress={() => addAttachment.mutate()}
+            >
+              <Text style={[styles.attachAdd, { color: accent }]}>
+                {addAttachment.isPending ? 'Uploading…' : 'Attach confirmation (PDF or image)'}
+              </Text>
+            </TouchableOpacity>
+          </GroupCard>
         </>
       ) : null}
 
       {isEdit ? (
-        <View style={styles.footer}>
+        <View style={fs.footer}>
           <Button
             title="Delete"
             variant="danger"
@@ -645,25 +897,21 @@ const styles = StyleSheet.create({
   typeGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm, marginBottom: spacing.md },
   typeChip: { flexDirection: 'row', alignItems: 'center', gap: 6, borderWidth: 1, borderColor: colors.border, borderRadius: 999, paddingHorizontal: 12, paddingVertical: 8 },
   typeLabel: { fontSize: 13, fontWeight: '600', color: colors.text },
-  cols: { flexDirection: 'row', gap: spacing.sm },
-  col: { flex: 1 },
-  legCard: { borderWidth: 1, borderColor: colors.border, borderRadius: 12, padding: spacing.sm, marginBottom: spacing.sm },
-  legLabel: { fontSize: 11, fontWeight: '700', letterSpacing: 0.5, color: colors.textMuted, marginBottom: spacing.sm },
-  shareBox: { borderWidth: 1, borderColor: colors.border, borderRadius: 12, padding: spacing.md, marginBottom: spacing.md },
-  shareHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: spacing.sm },
+  shareHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 14, paddingVertical: 12, gap: spacing.sm },
   shareTitle: { fontSize: 13, fontWeight: '600', color: colors.text, flex: 1 },
   splitBtn: { fontWeight: '600', fontSize: 13 },
-  shareRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, paddingVertical: 4 },
+  shareRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, paddingHorizontal: 14, minHeight: 46 },
   shareName: { flex: 1, fontSize: 14, color: colors.text },
   shareAmt: { width: 110 },
-  shareSum: { fontSize: 12, color: colors.textMuted, marginTop: 6, marginBottom: spacing.sm },
+  shareAmtInput: { textAlign: 'right', paddingHorizontal: 0 },
+  shareSum: { fontSize: 12, color: colors.textMuted, marginTop: -spacing.sm, marginBottom: spacing.md },
   tzNote: { fontSize: 12, color: colors.textMuted, marginBottom: spacing.sm },
-  attachRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, paddingVertical: 8 },
+  attachRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, paddingHorizontal: 14, minHeight: 46 },
   attachMain: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
   attachName: { flex: 1, fontSize: 14, color: colors.text },
+  attachAdd: { fontSize: 16, fontWeight: '500' },
   error: { color: colors.error, marginVertical: spacing.sm },
-  footer: { flexDirection: 'row', gap: spacing.sm, marginTop: spacing.md, marginBottom: spacing.xl, alignItems: 'center' },
-  endModeToggle: { flexDirection: 'row', backgroundColor: '#2A2A2A', borderRadius: 8, padding: 2, marginBottom: spacing.sm },
+  endModeToggle: { flexDirection: 'row', backgroundColor: '#2A2A2A', borderRadius: 8, padding: 2, marginBottom: spacing.md, marginTop: -spacing.sm },
   endModeBtn: { flex: 1, paddingVertical: 6, alignItems: 'center', borderRadius: 6 },
   endModeBtnActive: { backgroundColor: colors.primary },
   endModeBtnText: { fontSize: 13, color: colors.textMuted },

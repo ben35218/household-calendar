@@ -23,7 +23,7 @@ async function run() {
     const update = {};
     for (const f of SHARED) if (owner[f] !== undefined) update[f] = owner[f];
     await Household.updateOne({ _id: hh._id }, { $set: update });
-    console.log(`  ✓ ${hh.name} (${hh.joinCode}) ← ${owner.email}`);
+    console.log(`  ✓ ${hh.name} ← ${owner.email}`);
   }
   console.log('Done.');
   process.exit(0);

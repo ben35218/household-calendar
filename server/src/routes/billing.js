@@ -8,7 +8,9 @@
 // `/select` route is kept for admin/manual overrides only.
 
 const express = require('express');
+const mongoose = require('mongoose');
 const Household = require('../models/Household');
+const User = require('../models/User');
 const MonetizationConfig = require('../models/MonetizationConfig');
 const { requireAuth, requireAdmin } = require('../middleware/auth');
 const { getConfig, currentPeriodKey, nextPeriodResetAt, effectivePeriodUsage, upgradeBaselineUpdate, enforcedTokens } = require('../middleware/usageMeter');
@@ -30,6 +32,52 @@ function tierFromEntitlements(entitlementIds = []) {
   return 'free';
 }
 
+// Decide what a webhook event does to a household: the plan change (null = the
+// plan itself doesn't change) plus lifecycle-state $set/$unset fragments. Pure —
+// exported for tests.
+function planUpdateForEvent(event) {
+  let plan = null;
+  const set = {};
+  const unset = {};
+  const revoke = () => {
+    plan = 'free';
+    set.planBillingIssue = false;
+    unset.planAutoRenew = 1;
+    unset.planExpiresAt = 1;
+    unset.planProductId = 1;
+  };
+  if (event.type === 'EXPIRATION' || event.type === 'SUBSCRIPTION_PAUSED') {
+    revoke();
+  } else if (event.type === 'CANCELLATION') {
+    // CANCELLATION = auto-renew turned off; access continues until EXPIRATION
+    // fires. Only a refund (CUSTOMER_SUPPORT) revokes immediately.
+    if (event.cancel_reason === 'CUSTOMER_SUPPORT') revoke();
+    else set.planAutoRenew = false;
+  } else if (event.type === 'BILLING_ISSUE') {
+    // Payment failed; the store's grace period governs access, so the plan
+    // stays put. EXPIRATION arrives later if recovery fails.
+    set.planBillingIssue = true;
+  } else {
+    // Grant-shaped events (INITIAL_PURCHASE, RENEWAL, PRODUCT_CHANGE,
+    // UNCANCELLATION, …) set the entitlement tier. A grant never downgrades,
+    // so unrecognized entitlement ids are ignored rather than silently
+    // flipping the household to free.
+    const tier = tierFromEntitlements(event.entitlement_ids);
+    if (tier !== 'free') {
+      plan = tier;
+      set.planAutoRenew = true;
+      set.planBillingIssue = false;
+      if (event.expiration_at_ms) set.planExpiresAt = new Date(event.expiration_at_ms);
+      if (event.product_id) set.planProductId = event.product_id;
+      // Who bought it: the client sets this subscriber attribute just before
+      // purchase (all members share one app_user_id, so it's the only signal).
+      const purchaser = event.subscriber_attributes?.purchaser_user_id?.value;
+      if (purchaser && mongoose.isValidObjectId(purchaser)) set.planPurchasedBy = purchaser;
+    }
+  }
+  return { plan, set, unset };
+}
+
 router.post('/webhook', async (req, res) => {
   try {
     const secret = process.env.REVENUECAT_WEBHOOK_SECRET;
@@ -42,14 +90,16 @@ router.post('/webhook', async (req, res) => {
     const event = req.body?.event;
     if (!event) return res.status(400).json({ error: 'Missing event' });
 
+    // Decide the plan change + lifecycle-state updates before requiring
+    // app_user_id: events we ignore (e.g. TRANSFER) don't carry one and must
+    // not 400 into RC's retry loop.
+    const { plan, set, unset } = planUpdateForEvent(event);
+    if (!plan && !Object.keys(set).length) {
+      return res.json({ ok: true, ignored: event.type });
+    }
+
     const appUserId = event.app_user_id;
     if (!appUserId) return res.status(400).json({ error: 'Missing app_user_id' });
-
-    // Active-grant events set the entitlement tier; revocations drop to free.
-    const REVOKED = ['CANCELLATION', 'EXPIRATION', 'SUBSCRIPTION_PAUSED'];
-    const plan = REVOKED.includes(event.type)
-      ? 'free'
-      : tierFromEntitlements(event.entitlement_ids);
 
     // app_user_id is the household id (or a household's stored revenueCatId).
     const household = await Household.findOne({
@@ -60,12 +110,17 @@ router.post('/webhook', async (req, res) => {
       return res.json({ ok: true, matched: false });
     }
 
-    await Household.updateOne(
-      { _id: household._id },
-      // Fresh pool on upgrade: baseline the current week's counter when moving up.
-      { $set: { plan, revenueCatId: appUserId, ...upgradeBaselineUpdate(household, plan) } }
-    );
-    res.json({ ok: true, plan });
+    const update = {
+      $set: {
+        ...set,
+        revenueCatId: appUserId,
+        // Fresh pool on upgrade: baseline the current week's counter when moving up.
+        ...(plan ? { plan, ...upgradeBaselineUpdate(household, plan) } : {}),
+      },
+    };
+    if (Object.keys(unset).length) update.$unset = unset;
+    await Household.updateOne({ _id: household._id }, update);
+    res.json({ ok: true, plan: plan ?? household.plan });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -93,6 +148,43 @@ router.get('/status', async (req, res) => {
       ? Math.min(100, Math.round((tokensUsed / weeklyTokenLimit) * 100))
       : 0;
 
+    // Subscription lifecycle (paid plans only): renewal/cancellation/billing
+    // state maintained by the RevenueCat webhook, plus who bought it.
+    let subscription;
+    if (plan !== 'free' && req.household) {
+      const h = req.household;
+      let managedBy = null;
+      if (h.planPurchasedBy) {
+        const buyer = await User.findById(h.planPurchasedBy)
+          .select('firstName lastName')
+          .catch(() => null);
+        if (buyer) managedBy = { userId: buyer._id, name: buyer.name };
+      }
+      subscription = {
+        autoRenew: h.planAutoRenew ?? null, // null = unknown (predates lifecycle tracking)
+        expiresAt: h.planExpiresAt ? h.planExpiresAt.toISOString() : null,
+        billingIssue: Boolean(h.planBillingIssue),
+        productId: h.planProductId ?? null,
+        managedBy,
+      };
+    }
+
+    // Per-member token usage for the shared pool (paid plans). Per-user counters
+    // aren't baselined at a mid-week upgrade (only the household pool is), so
+    // these are relative shares, not a reconciliation against tokensUsed.
+    let members;
+    if (!perUser && req.household) {
+      const users = await User.find({ householdId: req.household._id })
+        .select('firstName lastName usageTokens');
+      members = users
+        .map((u) => ({
+          userId: u._id,
+          name: u.name,
+          tokens: u.usageTokens?.[period]?.tokens || 0,
+        }))
+        .sort((a, b) => b.tokens - a.tokens);
+    }
+
     res.json({
       plan,
       planLabel: tiers[plan]?.label || plan,
@@ -107,6 +199,8 @@ router.get('/status', async (req, res) => {
       resetsAt: nextPeriodResetAt().toISOString(),
       models: config.models || {},
       hasHousehold: Boolean(req.household),
+      ...(subscription ? { subscription } : {}),
+      ...(members ? { members } : {}),
       catalog: MonetizationConfig.TIERS.map((key) => ({
         key,
         label: tiers[key]?.label || key,
@@ -142,3 +236,4 @@ router.post('/select', requireAdmin, async (req, res) => {
 });
 
 module.exports = router;
+module.exports.planUpdateForEvent = planUpdateForEvent;

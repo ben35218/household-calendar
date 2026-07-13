@@ -8,6 +8,7 @@ import {
   View,
   StyleSheet,
   ViewStyle,
+  TextStyle,
   StyleProp,
   Modal,
   ScrollView,
@@ -15,6 +16,7 @@ import {
   Switch as RNSwitch,
   Platform,
 } from 'react-native';
+import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
 import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import { Ionicons } from '@expo/vector-icons';
 import { colors, radius, spacing } from '../theme';
@@ -26,6 +28,7 @@ export function Button({
   disabled,
   variant = 'primary',
   color,
+  compact,
 }: {
   title: string;
   onPress: () => void;
@@ -33,6 +36,7 @@ export function Button({
   disabled?: boolean;
   variant?: 'primary' | 'ghost' | 'danger';
   color?: string;
+  compact?: boolean;
 }) {
   const isGhost = variant === 'ghost';
   const isDanger = variant === 'danger';
@@ -43,6 +47,7 @@ export function Button({
       activeOpacity={0.8}
       style={[
         styles.btn,
+        compact && styles.btnCompact,
         isGhost && styles.btnGhost,
         isDanger && styles.btnDanger,
         // Solid-variant colour override (e.g. section/calendar accent).
@@ -55,7 +60,7 @@ export function Button({
       {loading ? (
         <ActivityIndicator color={isGhost ? color || colors.primary : '#fff'} />
       ) : (
-        <Text style={[styles.btnText, isGhost && styles.btnTextGhost, isGhost && color ? { color } : null]}>{title}</Text>
+        <Text style={[styles.btnText, compact && styles.btnTextCompact, isGhost && styles.btnTextGhost, isGhost && color ? { color } : null]}>{title}</Text>
       )}
     </TouchableOpacity>
   );
@@ -186,10 +191,10 @@ export function useHeaderCheckButton(
   }, [navigation, loading, color, disabled, enabled]);
 }
 
-export function Input(props: TextInputProps & { label?: string; highlight?: boolean }) {
-  const { label, style, highlight, ...rest } = props;
+export function Input(props: TextInputProps & { label?: string; highlight?: boolean; containerStyle?: StyleProp<ViewStyle> }) {
+  const { label, style, highlight, containerStyle, ...rest } = props;
   return (
-    <View style={styles.inputWrap}>
+    <View style={[styles.inputWrap, containerStyle]}>
       {label ? <Text style={styles.label}>{label}</Text> : null}
       <TextInput
         placeholderTextColor={colors.textMuted}
@@ -215,9 +220,14 @@ export function Screen({
 }) {
   if (!scroll) return <View style={[styles.screen, style]}>{children}</View>;
   return (
-    <ScrollView style={styles.screen} contentContainerStyle={[styles.screenContent, style]}>
+    <KeyboardAwareScrollView
+      style={styles.screen}
+      contentContainerStyle={[styles.screenContent, style]}
+      bottomOffset={spacing.lg}
+      keyboardShouldPersistTaps="handled"
+    >
       {children}
-    </ScrollView>
+    </KeyboardAwareScrollView>
   );
 }
 
@@ -298,6 +308,7 @@ export function SwitchRow({
   onValueChange,
   highlight,
   boxed,
+  color,
 }: {
   label: string;
   value: boolean;
@@ -305,13 +316,16 @@ export function SwitchRow({
   highlight?: boolean;
   // Render like the other form fields: a small label above a bordered box.
   boxed?: boolean;
+  // On-state track tint (e.g. a calendar's colour); defaults to the app primary.
+  color?: string;
 }) {
+  const trackColor = { true: color ?? colors.primary };
   if (boxed) {
     return (
       <View style={styles.inputWrap}>
         <View style={[styles.input, styles.selectField, highlight && styles.inputHighlight]}>
           <Text style={styles.selectValue}>{label}</Text>
-          <RNSwitch value={value} onValueChange={onValueChange} trackColor={{ true: colors.primary }} />
+          <RNSwitch value={value} onValueChange={onValueChange} trackColor={trackColor} />
         </View>
       </View>
     );
@@ -319,11 +333,7 @@ export function SwitchRow({
   return (
     <View style={[styles.switchRow, highlight && styles.switchRowHighlight]}>
       <Text style={styles.switchLabel}>{label}</Text>
-      <RNSwitch
-        value={value}
-        onValueChange={onValueChange}
-        trackColor={{ true: colors.primary }}
-      />
+      <RNSwitch value={value} onValueChange={onValueChange} trackColor={trackColor} />
     </View>
   );
 }
@@ -360,6 +370,45 @@ export function ListRow({
   );
 }
 
+// A tappable section header that reveals/collapses its children — an iOS-style
+// accordion menu row. The header is a rounded card; the body renders its own
+// chrome (GroupCard/Card), so nothing is nested inside another card.
+export function AccordionSection({
+  icon,
+  title,
+  subtitle,
+  expanded,
+  onToggle,
+  children,
+}: {
+  icon?: keyof typeof Ionicons.glyphMap;
+  title: string;
+  subtitle?: string;
+  expanded: boolean;
+  onToggle: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <View style={styles.accordion}>
+      <TouchableOpacity
+        style={styles.accordionHeader}
+        onPress={onToggle}
+        activeOpacity={0.7}
+        accessibilityRole="button"
+        accessibilityState={{ expanded }}
+      >
+        {icon ? <Ionicons name={icon} size={20} color={colors.primary} style={styles.accordionIcon} /> : null}
+        <View style={styles.accordionTitleWrap}>
+          <Text style={styles.accordionTitle}>{title}</Text>
+          {subtitle ? <Text style={styles.accordionSubtitle}>{subtitle}</Text> : null}
+        </View>
+        <Ionicons name={expanded ? 'chevron-up' : 'chevron-down'} size={18} color={colors.textMuted} />
+      </TouchableOpacity>
+      {expanded ? <View style={styles.accordionBody}>{children}</View> : null}
+    </View>
+  );
+}
+
 export interface Option<T> {
   label: string;
   value: T;
@@ -379,6 +428,11 @@ export function Select<T extends string | number>({
   values,
   onChangeMultiple,
   highlight,
+  containerStyle,
+  fieldStyle,
+  valueStyle,
+  chevronIcon,
+  inlineLabel,
 }: {
   label?: string;
   value?: T | null;
@@ -391,6 +445,14 @@ export function Select<T extends string | number>({
   values?: T[];
   onChangeMultiple?: (v: T[]) => void;
   highlight?: boolean;
+  containerStyle?: StyleProp<ViewStyle>;
+  fieldStyle?: StyleProp<ViewStyle>;
+  valueStyle?: StyleProp<TextStyle>;
+  // Override the trailing glyph (e.g. 'chevron-expand' for iOS-style menu rows).
+  chevronIcon?: keyof typeof Ionicons.glyphMap;
+  // Label rendered inside the touchable, left of the value — makes the whole
+  // row (label included) open the picker. Also titles the option modal.
+  inlineLabel?: string;
 }) {
   const [open, setOpen] = useState(false);
   const selectedLabel = multiple
@@ -405,24 +467,25 @@ export function Select<T extends string | number>({
   };
 
   return (
-    <View style={styles.inputWrap}>
+    <View style={[styles.inputWrap, containerStyle]}>
       {label ? <Text style={styles.label}>{label}</Text> : null}
       <TouchableOpacity
-        style={[styles.input, styles.selectField, highlight && styles.inputHighlight, disabled && styles.btnDisabled]}
+        style={[styles.input, styles.selectField, fieldStyle, highlight && styles.inputHighlight, disabled && styles.btnDisabled]}
         onPress={() => !disabled && setOpen(true)}
         activeOpacity={0.7}
         disabled={disabled}
       >
-        <Text style={[styles.selectValue, !selectedLabel && styles.selectPlaceholder]} numberOfLines={1}>
+        {inlineLabel ? <Text style={styles.inlineLabel}>{inlineLabel}</Text> : null}
+        <Text style={[styles.selectValue, !selectedLabel && styles.selectPlaceholder, valueStyle]} numberOfLines={1}>
           {selectedLabel || placeholder}
         </Text>
-        <Ionicons name="chevron-down" size={18} color={colors.textMuted} />
+        <Ionicons name={chevronIcon ?? 'chevron-down'} size={18} color={colors.textMuted} style={styles.selectChevron} />
       </TouchableOpacity>
 
       <Modal visible={open} transparent animationType="fade" onRequestClose={() => setOpen(false)}>
         <Pressable style={styles.modalBackdrop} onPress={() => setOpen(false)}>
           <Pressable style={styles.modalSheet} onPress={(e) => e.stopPropagation()}>
-            {label ? <Text style={styles.modalTitle}>{label}</Text> : null}
+            {label || inlineLabel ? <Text style={styles.modalTitle}>{label || inlineLabel}</Text> : null}
             <ScrollView style={styles.modalList}>
               {clearable && !multiple ? (
                 <TouchableOpacity
@@ -511,6 +574,15 @@ function friendlyDate(value: string): string {
   });
 }
 
+// The stored value is 24-hour `HH:MM`; always show it as 12-hour with AM/PM.
+function friendlyTime(value: string): string {
+  return parseTimeValue(value).toLocaleTimeString(undefined, {
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true,
+  });
+}
+
 function DateTimeField({
   mode,
   label,
@@ -522,6 +594,11 @@ function DateTimeField({
   maximumDate,
   defaultValue,
   highlight,
+  containerStyle,
+  fieldStyle,
+  hideIcon,
+  valueStyle,
+  inlineLabel,
 }: {
   mode: 'date' | 'time';
   label?: string;
@@ -533,6 +610,16 @@ function DateTimeField({
   maximumDate?: Date;
   defaultValue?: string;
   highlight?: boolean;
+  containerStyle?: StyleProp<ViewStyle>;
+  fieldStyle?: StyleProp<ViewStyle>;
+  // Drop the trailing calendar/clock glyph (compact rows show the value only).
+  hideIcon?: boolean;
+  // Override the value text (compact pills need `flex: 0` — the default
+  // `flex: 1` collapses to zero width inside a content-sized field).
+  valueStyle?: StyleProp<TextStyle>;
+  // Label rendered inside the touchable, left of the value — makes the whole
+  // row (label included) open the picker. Also titles the iOS modal.
+  inlineLabel?: string;
 }) {
   const [open, setOpen] = useState(false);
   const [temp, setTemp] = useState<Date>(new Date());
@@ -541,7 +628,7 @@ function DateTimeField({
   const display = value
     ? isDate
       ? friendlyDate(value)
-      : value
+      : friendlyTime(value)
     : placeholder || (isDate ? 'Select date' : 'Select time');
 
   const emit = (d: Date) => onChange(isDate ? formatDateValue(d) : formatTimeValue(d));
@@ -557,23 +644,27 @@ function DateTimeField({
   };
 
   return (
-    <View style={styles.inputWrap}>
+    <View style={[styles.inputWrap, containerStyle]}>
       {label ? <Text style={styles.label}>{label}</Text> : null}
       <TouchableOpacity
-        style={[styles.input, styles.selectField, highlight && styles.inputHighlight]}
+        // fieldStyle sits before the highlight so the AI-changed tint stays visible.
+        style={[styles.input, styles.selectField, fieldStyle, highlight && styles.inputHighlight]}
         onPress={openPicker}
         activeOpacity={0.7}
       >
-        <Text style={[styles.selectValue, !value && styles.selectPlaceholder]} numberOfLines={1}>
+        {inlineLabel ? <Text style={styles.inlineLabel}>{inlineLabel}</Text> : null}
+        <Text style={[styles.selectValue, !value && styles.selectPlaceholder, valueStyle]} numberOfLines={1}>
           {display}
         </Text>
         <View style={styles.dateFieldIcons}>
           {clearable && value ? (
             <TouchableOpacity onPress={() => onChange('')} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-              <Ionicons name="close-circle" size={18} color={colors.textMuted} style={{ marginRight: 6 }} />
+              <Ionicons name="close-circle" size={18} color={colors.textMuted} style={{ marginLeft: 8, marginRight: hideIcon ? 0 : 6 }} />
             </TouchableOpacity>
           ) : null}
-          <Ionicons name={isDate ? 'calendar-outline' : 'time-outline'} size={18} color={colors.textMuted} />
+          {hideIcon ? null : (
+            <Ionicons name={isDate ? 'calendar-outline' : 'time-outline'} size={18} color={colors.textMuted} />
+          )}
         </View>
       </TouchableOpacity>
 
@@ -585,6 +676,7 @@ function DateTimeField({
           onChange={onAndroidChange}
           minimumDate={minimumDate}
           maximumDate={maximumDate}
+          is24Hour={false}
         />
       ) : null}
 
@@ -592,7 +684,7 @@ function DateTimeField({
         <Modal visible={open} transparent animationType="fade" onRequestClose={() => setOpen(false)}>
           <Pressable style={styles.modalBackdrop} onPress={() => setOpen(false)}>
             <Pressable style={styles.modalSheet} onPress={(e) => e.stopPropagation()}>
-              {label ? <Text style={styles.modalTitle}>{label}</Text> : null}
+              {label || inlineLabel ? <Text style={styles.modalTitle}>{label || inlineLabel}</Text> : null}
               <DateTimePicker
                 value={temp}
                 mode={mode}
@@ -601,6 +693,8 @@ function DateTimeField({
                 onChange={(_, d) => d && setTemp(d)}
                 minimumDate={minimumDate}
                 maximumDate={maximumDate}
+                // Force a 12-hour wheel even when the device is set to 24-hour time.
+                locale={isDate ? undefined : 'en_US'}
                 themeVariant="dark"
                 accentColor={colors.primary}
                 style={styles.iosPicker}
@@ -630,6 +724,11 @@ export function DateField(props: {
   maximumDate?: Date;
   defaultValue?: string;
   highlight?: boolean;
+  containerStyle?: StyleProp<ViewStyle>;
+  fieldStyle?: StyleProp<ViewStyle>;
+  hideIcon?: boolean;
+  valueStyle?: StyleProp<TextStyle>;
+  inlineLabel?: string;
 }) {
   return <DateTimeField mode="date" {...props} />;
 }
@@ -642,6 +741,11 @@ export function TimeField(props: {
   clearable?: boolean;
   defaultValue?: string;
   highlight?: boolean;
+  containerStyle?: StyleProp<ViewStyle>;
+  fieldStyle?: StyleProp<ViewStyle>;
+  hideIcon?: boolean;
+  valueStyle?: StyleProp<TextStyle>;
+  inlineLabel?: string;
 }) {
   return <DateTimeField mode="time" {...props} />;
 }
@@ -655,12 +759,14 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  btnCompact: { paddingVertical: 6, paddingHorizontal: spacing.sm },
   btnGhost: { backgroundColor: 'transparent', borderWidth: 1, borderColor: colors.primary },
   btnDanger: { backgroundColor: colors.error },
   btnDisabled: { opacity: 0.6 },
   headerCheck: { width: 32, height: 32, borderRadius: 16, alignItems: 'center', justifyContent: 'center' },
   headerClose: { width: 32, height: 32, alignItems: 'center', justifyContent: 'center' },
   btnText: { color: '#fff', fontSize: 16, fontWeight: '600' },
+  btnTextCompact: { fontSize: 14 },
   btnTextGhost: { color: colors.primary },
   inputWrap: { marginBottom: spacing.md },
   label: { fontSize: 13, color: colors.textMuted, marginBottom: 6, fontWeight: '500' },
@@ -695,6 +801,22 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: colors.border,
   },
+  accordion: { marginBottom: spacing.md },
+  accordionHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: colors.surface,
+    borderRadius: radius.lg,
+    borderWidth: 1,
+    borderColor: colors.border,
+    paddingVertical: 14,
+    paddingHorizontal: spacing.md,
+  },
+  accordionIcon: { marginRight: spacing.sm },
+  accordionTitleWrap: { flex: 1, minWidth: 0 },
+  accordionTitle: { fontSize: 16, fontWeight: '700', color: colors.text },
+  accordionSubtitle: { fontSize: 12, color: colors.textMuted, marginTop: 2 },
+  accordionBody: { marginTop: spacing.md },
   screen: { flex: 1, backgroundColor: colors.background },
   screenContent: { padding: spacing.md },
   sectionTitle: {
@@ -750,6 +872,8 @@ const styles = StyleSheet.create({
   listRowTitle: { fontSize: 15, color: colors.text, fontWeight: '500' },
   listRowSubtitle: { fontSize: 13, color: colors.textMuted, marginTop: 2 },
   selectField: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  selectChevron: { marginLeft: 6 },
+  inlineLabel: { flex: 1, fontSize: 16, color: colors.text, marginRight: spacing.sm },
   dateFieldIcons: { flexDirection: 'row', alignItems: 'center' },
   iosPicker: { alignSelf: 'stretch' },
   selectValue: { fontSize: 16, color: colors.text, flex: 1 },
@@ -764,7 +888,9 @@ const styles = StyleSheet.create({
     borderTopLeftRadius: radius.lg,
     borderTopRightRadius: radius.lg,
     padding: spacing.md,
-    maxHeight: '70%',
+    // Tall enough that the Alert select's full option list (leave-relative
+    // choices + "Custom…") isn't clipped at the bottom.
+    maxHeight: '80%',
   },
   modalTitle: { fontSize: 16, fontWeight: '700', color: colors.text, marginBottom: spacing.sm },
   modalList: { marginBottom: spacing.sm },

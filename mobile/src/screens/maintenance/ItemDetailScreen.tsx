@@ -1,5 +1,5 @@
 import React, { useLayoutEffect, useState } from 'react';
-import { View, Text, StyleSheet, ActivityIndicator, Alert, TouchableOpacity, Linking, Share } from 'react-native';
+import { View, Text, StyleSheet, ActivityIndicator, Alert, TouchableOpacity, Linking, Share, ActionSheetIOS, Platform } from 'react-native';
 import { cacheDirectory, downloadAsync } from 'expo-file-system/legacy';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Ionicons } from '@expo/vector-icons';
@@ -15,8 +15,9 @@ import {
   ExtractedTask,
   Task,
 } from '../../api';
-import { Button, Card, Screen, Divider, ListRow, Input } from '../../components/ui';
+import { Button, Card, Screen, Divider, ListRow, Input, RoundIconButton } from '../../components/ui';
 import AssistantIcon from '../../components/AssistantIcon';
+import QuotaBlockedNotice from '../../components/QuotaBlockedNotice';
 import { useAiEnabled } from '../../lib/privacyPrefs';
 import { recurrenceLabel, formatCalendarDate, mdiName } from '../../lib/recurrence';
 import { itemTypeConfig } from '../../lib/itemTypes';
@@ -45,8 +46,8 @@ export default function ItemDetailScreen() {
   const qc = useQueryClient();
 
   const [odomReading, setOdomReading] = useState('');
-  const [odomNotes, setOdomNotes] = useState('');
   const [odoExpanded, setOdoExpanded] = useState(false);
+  const [odoAdding, setOdoAdding] = useState(false);
   const [lookup, setLookup] = useState<{ state: 'idle' | 'searching' | 'done' | 'error'; candidates: ManualCandidate[]; query?: string; error?: string; quota?: boolean }>({
     state: 'idle',
     candidates: [],
@@ -77,10 +78,10 @@ export default function ItemDetailScreen() {
   });
 
   const logOdo = useMutation({
-    mutationFn: () => odometerApi.log(id, { reading: Number(odomReading), notes: odomNotes }),
+    mutationFn: () => odometerApi.log(id, { reading: Number(odomReading) }),
     onSuccess: () => {
       setOdomReading('');
-      setOdomNotes('');
+      setOdoAdding(false);
       qc.invalidateQueries({ queryKey: ['odometer', id] });
       refreshItem();
     },
@@ -114,6 +115,27 @@ export default function ItemDetailScreen() {
     },
     onError: (e: any) => Alert.alert('Upload failed', e.response?.data?.error || 'Could not upload that file.'),
   });
+
+  // Overflow menu for the Manuals card: find a manual online or upload one.
+  const openManualsMenu = () => {
+    const find = () => runLookup.mutate();
+    const upload_ = () => upload.mutate();
+    if (Platform.OS === 'ios') {
+      ActionSheetIOS.showActionSheetWithOptions(
+        { options: ['Find online', 'Upload', 'Cancel'], cancelButtonIndex: 2 },
+        (i) => {
+          if (i === 0) find();
+          else if (i === 1) upload_();
+        }
+      );
+    } else {
+      Alert.alert('Manuals', undefined, [
+        { text: 'Find online', onPress: find },
+        { text: 'Upload', onPress: upload_ },
+        { text: 'Cancel', style: 'cancel' },
+      ]);
+    }
+  };
 
   // Open a manual: encrypted ones are downloaded as ciphertext, decrypted
   // on-device to a temp file, and shared/opened; plaintext ones open directly.
@@ -261,33 +283,60 @@ export default function ItemDetailScreen() {
       {/* Odometer (vehicles) */}
       {isVehicle ? (
         <Card style={styles.odoCard}>
-          <TouchableOpacity style={styles.odoHeader} onPress={() => setOdoExpanded((v) => !v)}>
-            <Text style={styles.odoTitle}>
-              Odometer{odoQ.data?.currentKm != null ? ` · ${odoQ.data.currentKm.toLocaleString()} km` : ''}
-            </Text>
-            <Ionicons name={odoExpanded ? 'chevron-up' : 'chevron-down'} size={18} color={colors.textMuted} />
-          </TouchableOpacity>
+          <View style={styles.odoHeader}>
+            <TouchableOpacity style={styles.odoHeaderTitle} onPress={() => setOdoExpanded((v) => !v)}>
+              <Text style={styles.odoTitle}>
+                Odometer{odoQ.data?.currentKm != null ? ` · ${odoQ.data.currentKm.toLocaleString()} km` : ''}
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              onPress={() => {
+                setOdoExpanded(true);
+                setOdoAdding((v) => !v);
+              }}
+              style={styles.odoHeaderBtn}
+              accessibilityLabel="Add odometer reading"
+            >
+              <Ionicons name="add-circle-outline" size={24} color={accent} />
+            </TouchableOpacity>
+            <TouchableOpacity onPress={() => setOdoExpanded((v) => !v)} style={styles.odoHeaderBtn}>
+              <Ionicons name={odoExpanded ? 'chevron-up' : 'chevron-down'} size={18} color={colors.textMuted} />
+            </TouchableOpacity>
+          </View>
           {odoExpanded ? (
             <>
               <Divider />
-              <View style={styles.odoForm}>
-                <View style={styles.odoRow}>
-                  <View style={{ flex: 1 }}>
-                    <Input placeholder="Current reading (km)" keyboardType="numeric" value={odomReading} onChangeText={setOdomReading} />
+              {odoAdding ? (
+                <View style={styles.odoForm}>
+                  <View style={styles.odoInputWrap}>
+                    <Input
+                      placeholder="Current reading (km)"
+                      keyboardType="numeric"
+                      value={odomReading}
+                      onChangeText={setOdomReading}
+                      autoFocus
+                      style={styles.odoInput}
+                    />
+                    <RoundIconButton
+                      icon="add"
+                      size={32}
+                      bg={accent}
+                      disabled={!odomReading || logOdo.isPending}
+                      onPress={() => logOdo.mutate()}
+                      style={styles.odoLogBtn}
+                    />
                   </View>
-                  <Button title="Log" color={accent} loading={logOdo.isPending} disabled={!odomReading} onPress={() => logOdo.mutate()} />
                 </View>
-                <Input placeholder="Notes (optional)" value={odomNotes} onChangeText={setOdomNotes} />
-              </View>
+              ) : null}
               {odoQ.data?.logs?.length ? (
                 <>
-                  <Divider />
                   {odoQ.data.logs.slice(0, 5).map((log) => (
                     <ListRow
                       key={log._id}
                       icon="speedometer-outline"
                       title={`${Number(log.reading).toLocaleString()} km`}
-                      subtitle={[formatCalendarDate(log.recordedAt), log.notes].filter(Boolean).join(' · ')}
+                      subtitle={log.notes}
+                      right={<Text style={styles.odoLogDate}>{formatCalendarDate(log.recordedAt)}</Text>}
                     />
                   ))}
                 </>
@@ -299,7 +348,18 @@ export default function ItemDetailScreen() {
 
       {/* Manuals */}
       <Card style={styles.sectionCard}>
-        <Text style={styles.cardTitle}>Manuals</Text>
+        <View style={styles.cardTitleRow}>
+          <Text style={styles.cardTitle}>Manuals</Text>
+          <View style={styles.manualActions}>
+            {runLookup.isPending || upload.isPending ? (
+              <ActivityIndicator size="small" color="#fff" style={styles.iconBtn} />
+            ) : (
+              <TouchableOpacity onPress={openManualsMenu} style={styles.iconBtn} accessibilityLabel="Manual options">
+                <Ionicons name="ellipsis-vertical" size={20} color="#fff" />
+              </TouchableOpacity>
+            )}
+          </View>
+        </View>
         <Divider />
         {item.manuals?.map((m) => (
           <View key={m._id} style={styles.manualRow}>
@@ -311,9 +371,9 @@ export default function ItemDetailScreen() {
             </View>
             <TouchableOpacity onPress={() => openManual.mutate(m)} style={styles.iconBtn}>
               {openManual.isPending && openManual.variables?._id === m._id ? (
-                <ActivityIndicator size="small" color={colors.primary} />
+                <ActivityIndicator size="small" color="#fff" />
               ) : (
-                <Ionicons name={m.encrypted ? 'lock-open-outline' : 'eye-outline'} size={20} color={colors.primary} />
+                <Ionicons name={m.encrypted ? 'lock-open-outline' : 'eye-outline'} size={20} color="#fff" />
               )}
             </TouchableOpacity>
             {aiEnabled ? (
@@ -323,9 +383,9 @@ export default function ItemDetailScreen() {
                 accessibilityLabel="Extract maintenance tasks with AI"
               >
                 {runExtract.isPending && runExtract.variables?._id === m._id ? (
-                  <ActivityIndicator size="small" color={colors.primary} />
+                  <ActivityIndicator size="small" color="#fff" />
                 ) : (
-                  <Ionicons name="download-outline" size={20} color={colors.primary} />
+                  <Ionicons name="download-outline" size={20} color="#fff" />
                 )}
               </TouchableOpacity>
             ) : null}
@@ -421,16 +481,10 @@ export default function ItemDetailScreen() {
         ) : null}
         {lookup.state === 'error' && lookup.quota ? (
           <View style={styles.pad}>
-            <Text style={styles.body}>{lookup.error}</Text>
-            <Button title="See plans" color={accent} onPress={() => navigation.navigate('Paywall')} />
+            <QuotaBlockedNotice message={lookup.error} />
           </View>
         ) : null}
         {lookup.state === 'error' && !lookup.quota ? <Text style={[styles.body, styles.pad]}>{lookup.error}</Text> : null}
-
-        <View style={styles.manualActions}>
-          <Button title="Find" color={accent} loading={runLookup.isPending} onPress={() => runLookup.mutate()} />
-          <Button title="Upload" color={accent} loading={upload.isPending} onPress={() => upload.mutate()} />
-        </View>
       </Card>
 
       {/* Related tasks */}
@@ -438,7 +492,7 @@ export default function ItemDetailScreen() {
         <View style={styles.cardTitleRow}>
           <Text style={styles.cardTitle}>Maintenance Tasks</Text>
           <TouchableOpacity onPress={() => navigation.navigate('TaskForm', {})}>
-            <Ionicons name="add-circle-outline" size={24} color={colors.primary} />
+            <Ionicons name="add-circle-outline" size={24} color={accent} />
           </TouchableOpacity>
         </View>
         <Divider />
@@ -508,16 +562,24 @@ const styles = StyleSheet.create({
   body: { fontSize: 15, color: colors.text, lineHeight: 21 },
   pad: { padding: spacing.md, gap: spacing.sm },
   odoCard: { padding: 0, marginBottom: spacing.md },
-  odoHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: spacing.md, paddingHorizontal: spacing.md },
+  odoHeader: { flexDirection: 'row', alignItems: 'center', paddingVertical: spacing.md, paddingHorizontal: spacing.md },
+  odoHeaderTitle: { flex: 1 },
+  odoHeaderBtn: { paddingLeft: spacing.md },
   odoTitle: { fontSize: 16, fontWeight: '700', color: colors.text },
   odoForm: { paddingHorizontal: spacing.md, paddingTop: spacing.sm },
-  odoRow: { flexDirection: 'row', alignItems: 'flex-start', gap: spacing.sm },
+  odoInputWrap: { position: 'relative' },
+  // Leave room on the right so the numeric reading never slides under the button.
+  odoInput: { paddingRight: 48 },
+  // top ≈ (field height ~45 − button 32) / 2 to vertically centre on the field.
+  odoLogBtn: { position: 'absolute', right: 8, top: 7 },
+  odoLogDate: { fontSize: 13, color: colors.textMuted },
   manualRow: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: spacing.md, paddingVertical: spacing.sm, gap: 4 },
   manualTitle: { fontSize: 15, fontWeight: '500', color: colors.text },
   manualSub: { fontSize: 12, color: colors.textMuted, marginTop: 2 },
   recommendedTag: { fontSize: 11, fontWeight: '700', color: colors.primary, textTransform: 'uppercase', marginTop: 2 },
   candidateActions: { flexDirection: 'row', alignItems: 'center', gap: spacing.xs },
-  manualActions: { flexDirection: 'row', gap: spacing.sm, padding: spacing.md, justifyContent: 'flex-end' },
+  // Match cardTitle's marginBottom so the buttons baseline-align with the title.
+  manualActions: { flexDirection: 'row', gap: spacing.sm, alignItems: 'center', marginBottom: spacing.sm },
   iconBtn: { padding: 6 },
   extractRow: { flexDirection: 'row', alignItems: 'flex-start', paddingVertical: spacing.sm },
   row: { flexDirection: 'row', gap: spacing.sm, alignItems: 'center', marginTop: spacing.sm },

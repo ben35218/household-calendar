@@ -1,7 +1,9 @@
-// Integration tests for §9.3 decrypt-on-share: sharing an E2EE trip requires the
-// owner's device to post the decrypted content (409 decrypt_required otherwise),
-// the server re-writes it plaintext + clears enc, and steady-state write guards
-// keep a shared trip's records plaintext. Real app + in-memory MongoDB.
+// Integration tests for trip sharing by email invitation + §9.3 decrypt-on-share:
+// adding an outside email to an E2EE trip requires the owner's device to post the
+// decrypted content (409 decrypt_required otherwise), the server re-writes it
+// plaintext + clears enc, and steady-state write guards keep a shared trip's
+// records plaintext. Accepting the invitation makes the recipient a collaborator.
+// Real app + in-memory MongoDB.
 const { test, before, after } = require('node:test');
 const assert = require('node:assert/strict');
 const {
@@ -42,31 +44,37 @@ async function setupSealedTrip() {
   return { owner, tripId: trip._id, itemId: item._id };
 }
 
-test('sharing a sealed trip without decrypted content → 409 decrypt_required', async () => {
+const DECRYPTED = {
+  trip: { name: 'Ski Week', destination: 'Whistler', notes: 'bring the good skis' },
+  items: [{ title: 'Hotel Alpina', location: 'Whistler Village', notes: 'late checkout' }],
+};
+
+test('adding an outside email to a sealed trip without decrypted content → 409', async () => {
   const { owner, tripId } = await setupSealedTrip();
-  const res = await request().post(`/api/trips/${tripId}/share`).set('Authorization', owner.auth);
+  const res = await request().put(`/api/trips/${tripId}/share`)
+    .set('Authorization', owner.auth).send({ emails: ['gil@example.com'] });
   assert.equal(res.status, 409);
   assert.equal(res.body.error, 'decrypt_required');
 });
 
-test('decrypt-on-share re-writes trip + items as plaintext, clears enc, mints the code', async () => {
+test('decrypt-on-share re-writes trip + items as plaintext, clears enc, sets the share list', async () => {
   const { owner, tripId, itemId } = await setupSealedTrip();
 
-  const res = await request().post(`/api/trips/${tripId}/share`)
+  const res = await request().put(`/api/trips/${tripId}/share`)
     .set('Authorization', owner.auth)
     .send({
+      emails: ['gil@example.com'],
       decrypted: {
-        trip: { name: 'Ski Week', destination: 'Whistler', notes: 'bring the good skis' },
-        items: [{ _id: String(itemId), title: 'Hotel Alpina', location: 'Whistler Village', notes: 'late checkout' }],
+        trip: DECRYPTED.trip,
+        items: [{ _id: String(itemId), ...DECRYPTED.items[0] }],
       },
     });
   assert.equal(res.status, 200);
-  assert.ok(res.body.shareCode);
+  assert.deepEqual(res.body.sharedWithOutside.map((e) => e.email), ['gil@example.com']);
 
   const trip = await Trip.findById(tripId).lean();
   assert.equal(trip.name, 'Ski Week');
   assert.equal(trip.destination, 'Whistler');
-  assert.equal(trip.shareCode, res.body.shareCode);
   assert.equal(trip.enc, undefined);
   assert.equal(trip.keyVersion, undefined);
 
@@ -75,21 +83,19 @@ test('decrypt-on-share re-writes trip + items as plaintext, clears enc, mints th
   assert.equal(item.location, 'Whistler Village');
   assert.equal(item.enc, undefined);
 
-  // Re-sharing returns the existing code without needing decrypted content.
-  const again = await request().post(`/api/trips/${tripId}/share`).set('Authorization', owner.auth);
+  // Re-saving the same share list needs no decrypted content (already shared).
+  const again = await request().put(`/api/trips/${tripId}/share`)
+    .set('Authorization', owner.auth).send({ emails: ['gil@example.com'] });
   assert.equal(again.status, 200);
-  assert.equal(again.body.shareCode, res.body.shareCode);
 });
 
 test('steady-state guards: edits to a shared trip and its items never re-introduce enc', async () => {
   const { owner, tripId, itemId } = await setupSealedTrip();
-  await request().post(`/api/trips/${tripId}/share`)
+  await request().put(`/api/trips/${tripId}/share`)
     .set('Authorization', owner.auth)
     .send({
-      decrypted: {
-        trip: { name: 'Ski Week', destination: 'Whistler', notes: '' },
-        items: [{ _id: String(itemId), title: 'Hotel Alpina' }],
-      },
+      emails: ['gil@example.com'],
+      decrypted: { trip: { name: 'Ski Week', destination: 'Whistler', notes: '' }, items: [{ _id: String(itemId), title: 'Hotel Alpina' }] },
     });
 
   // Trip edit carrying ciphertext (a stale client sealing out of habit) → the
@@ -127,7 +133,75 @@ test('a private trip in a non-E2EE household shares directly (no decrypt step)',
     userId: owner.user._id, name: 'Lake weekend', destination: 'Muskoka',
     start: new Date('2026-09-01'), end: new Date('2026-09-03'),
   });
-  const res = await request().post(`/api/trips/${trip._id}/share`).set('Authorization', owner.auth);
+  const res = await request().put(`/api/trips/${trip._id}/share`)
+    .set('Authorization', owner.auth).send({ emails: ['friend@example.com'] });
   assert.equal(res.status, 200);
-  assert.ok(res.body.shareCode);
+  assert.deepEqual(res.body.sharedWithOutside.map((e) => e.email), ['friend@example.com']);
+});
+
+test('invite → accept makes a collaborator; trip shows on their calendar (expanded + raw)', async () => {
+  const owner = await registerUser({ firstName: 'Hana' });
+  const guest = await registerUser({ firstName: 'Gil' });
+  const trip = await Trip.create({
+    userId: owner.user._id, name: 'Japan', destination: 'Tokyo', status: 'booked',
+    startDate: new Date('2027-01-31'), endDate: new Date('2027-02-25'),
+  });
+
+  // Owner shares to the guest's email → a pending invitation lands in the guest's inbox.
+  const share = await request().put(`/api/trips/${trip._id}/share`)
+    .set('Authorization', owner.auth).send({ emails: [guest.user.email] });
+  assert.equal(share.status, 200);
+
+  const inbox = await request().get('/api/trips/invitations').set('Authorization', guest.auth);
+  const invite = inbox.body.find((i) => i.status === 'pending');
+  assert.ok(invite, 'guest sees a pending trip invitation');
+
+  const accept = await request().post(`/api/trips/invitations/${invite._id}/accept`)
+    .set('Authorization', guest.auth).send({});
+  assert.equal(accept.status, 200);
+  assert.equal(String(accept.body.tripId), String(trip._id));
+
+  const range = 'from=2027-01-01&to=2027-03-31';
+  const cal = await request().get(`/api/calendar?${range}`).set('Authorization', guest.auth);
+  assert.equal(cal.status, 200);
+  assert.deepEqual(cal.body.trips.map(t => t.name), ['Japan']);
+
+  const raw = await request().get(`/api/calendar/raw?${range}`).set('Authorization', guest.auth);
+  assert.equal(raw.status, 200);
+  assert.deepEqual(raw.body.trips.map(t => t.name), ['Japan']);
+
+  // A stranger's calendar stays empty.
+  const other = await registerUser({ firstName: 'Uma' });
+  const none = await request().get(`/api/calendar?${range}`).set('Authorization', other.auth);
+  assert.deepEqual(none.body.trips, []);
+});
+
+test('share by phone resolves to the account with that number; they can accept', async () => {
+  const owner = await registerUser({ firstName: 'Nadia' });
+  const guest = await registerUser({ firstName: 'Omar' });
+  // The guest saves a phone number on their account (loosely normalized server-side).
+  const save = await request().put('/api/settings')
+    .set('Authorization', guest.auth).send({ phone: '(416) 555-0199' });
+  assert.equal(save.status, 200);
+
+  const trip = await Trip.create({
+    userId: owner.user._id, name: 'Road trip', destination: 'PEI',
+    startDate: new Date('2027-05-01'), endDate: new Date('2027-05-05'),
+  });
+
+  // Owner shares by the guest's phone — a slightly different format resolves to
+  // the same normalized number and to the guest's account.
+  const share = await request().put(`/api/trips/${trip._id}/share`)
+    .set('Authorization', owner.auth).send({ recipients: [{ phone: '416-555-0199' }] });
+  assert.equal(share.status, 200);
+  assert.deepEqual(share.body.sharedWithOutside.map((e) => e.phone), ['4165550199']);
+
+  const inbox = await request().get('/api/trips/invitations').set('Authorization', guest.auth);
+  const invite = inbox.body.find((i) => i.status === 'pending');
+  assert.ok(invite, 'guest sees the phone-addressed invitation resolved to their account');
+
+  const accept = await request().post(`/api/trips/invitations/${invite._id}/accept`)
+    .set('Authorization', guest.auth).send({});
+  assert.equal(accept.status, 200);
+  assert.equal(String(accept.body.tripId), String(trip._id));
 });

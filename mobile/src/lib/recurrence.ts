@@ -2,6 +2,7 @@
 // this `recurrenceLabel`/save-rebuild logic across TaskFormView, ChoreFormView,
 // TaskDetailView, ChoreDetailView, and the dashboards; here it lives once.
 import { Recurrence, IntervalUnit, RecurrenceType } from '../api';
+import type { RepeatRule, WeekdayKind } from './eventRepeat';
 
 export const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 export const WEEKDAY_NAMES = [
@@ -272,4 +273,88 @@ export function formatCalendarDate(d?: string | null): string {
 // MaterialCommunityIcons glyph set.
 export function mdiName(icon?: string | null): string {
   return (icon || 'mdi-broom').replace(/^mdi-/, '');
+}
+
+// ----- Bridge to the calendar's shared Repeat screen (lib/eventRepeat) --------
+// Tasks and calendar events use different recurrence shapes. These convert
+// between them so the maintenance task form can reuse the calendar's drill-in
+// Repeat editor. The mapping is lossy where the models diverge: task 'one-time'
+// has no repeat rule; tasks track only a single weekday / month-day; and the
+// 'day'/'weekday'/'weekend' ordinal kinds have no single-weekday task analogue.
+const WEEKDAY_KINDS: WeekdayKind[] = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
+
+const EMPTY_RULE: RepeatRule = {
+  freq: '', interval: 1, daysOfWeek: [], daysOfMonth: [], months: [], weekOfMonth: null, weekdayKind: null,
+};
+
+export function recurrenceToRule(r?: Recurrence | null): RepeatRule {
+  const rule: RepeatRule = { ...EMPTY_RULE };
+  if (!r || r.type === 'one-time') return rule;
+  if (r.type === 'calendar') {
+    rule.freq = 'yearly';
+    rule.months = r.months?.length ? [...r.months] : [];
+    return rule;
+  }
+  rule.interval = r.intervalValue || 1;
+  switch (r.intervalUnit) {
+    case 'days':
+      rule.freq = 'daily';
+      break;
+    case 'months':
+      rule.freq = 'monthly';
+      if (r.weekOfMonth != null && r.dayOfWeek != null) {
+        rule.weekOfMonth = r.weekOfMonth;
+        rule.weekdayKind = WEEKDAY_KINDS[r.dayOfWeek] ?? 'sun';
+      } else if (r.dayOfMonth != null) {
+        rule.daysOfMonth = [r.dayOfMonth];
+      }
+      break;
+    case 'years':
+      rule.freq = 'yearly';
+      if (r.months?.length) rule.months = [...r.months];
+      break;
+    case 'weeks':
+    default:
+      rule.freq = 'weekly';
+      if (r.dayOfWeek != null) rule.daysOfWeek = [r.dayOfWeek];
+      break;
+  }
+  return rule;
+}
+
+export function ruleToRecurrence(rule: RepeatRule): Recurrence {
+  if (!rule.freq) return { type: 'one-time' };
+  // Multiple months only exist in the task 'calendar' type.
+  if (rule.freq === 'yearly' && rule.months.length > 1) {
+    return { type: 'calendar', months: [...rule.months].sort((a, b) => a - b) };
+  }
+  const rec: Recurrence = { type: 'interval', intervalValue: rule.interval || 1, months: [] };
+  switch (rule.freq) {
+    case 'daily':
+      rec.intervalUnit = 'days';
+      break;
+    case 'weekly':
+      rec.intervalUnit = 'weeks';
+      if (rule.daysOfWeek.length) rec.dayOfWeek = [...rule.daysOfWeek].sort((a, b) => a - b)[0];
+      break;
+    case 'monthly':
+      rec.intervalUnit = 'months';
+      if (rule.weekOfMonth != null && rule.weekdayKind) {
+        const d = WEEKDAY_KINDS.indexOf(rule.weekdayKind);
+        if (d >= 0) {
+          rec.weekOfMonth = rule.weekOfMonth;
+          rec.dayOfWeek = d;
+        } else if (rule.daysOfMonth.length) {
+          rec.dayOfMonth = rule.daysOfMonth[0];
+        }
+      } else if (rule.daysOfMonth.length) {
+        rec.dayOfMonth = [...rule.daysOfMonth].sort((a, b) => a - b)[0];
+      }
+      break;
+    case 'yearly':
+      rec.intervalUnit = 'years';
+      if (rule.months.length) rec.months = [...rule.months];
+      break;
+  }
+  return rec;
 }

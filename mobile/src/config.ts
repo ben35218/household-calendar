@@ -18,6 +18,9 @@ const extra = (Constants.expoConfig?.extra ?? {}) as {
   revenueCatIosKey?: string;
   revenueCatAndroidKey?: string;
   passkeyRpId?: string;
+  webUrl?: string;
+  termsUrl?: string;
+  privacyUrl?: string;
 };
 
 // Passkey relying-party ID: a DOMAIN (no scheme/port) associated with this app
@@ -32,3 +35,22 @@ export const REVENUECAT_IOS_KEY =
   process.env.EXPO_PUBLIC_RC_IOS_KEY || extra.revenueCatIosKey || '';
 export const REVENUECAT_ANDROID_KEY =
   process.env.EXPO_PUBLIC_RC_ANDROID_KEY || extra.revenueCatAndroidKey || '';
+
+// Legal pages linked from the paywall. App Review guideline 3.1.2 requires
+// Terms of Use + Privacy Policy links next to auto-renewing subscriptions.
+// Served by the household-calendar-web static site (render.yaml → static/).
+// Marketing/app-landing site, linked from SMS share invites (the invitee opens
+// it to download the app and accept from their in-app Invitations inbox).
+export const WEB_URL =
+  process.env.EXPO_PUBLIC_WEB_URL || extra.webUrl || 'https://householdcalendar.com';
+export const TERMS_URL =
+  process.env.EXPO_PUBLIC_TERMS_URL || extra.termsUrl || 'https://householdcalendar.com/terms';
+export const PRIVACY_URL =
+  process.env.EXPO_PUBLIC_PRIVACY_URL || extra.privacyUrl || 'https://householdcalendar.com/privacy';
+
+// The AI assistant's persona name, shown in chat titles, greetings, and form
+// assist. Keep in sync with server/src/config/assistant.js (system prompts).
+// Settings/plumbing copy ("AI Usage", "Use AI features") intentionally stays
+// generic "AI" so users managing the technology can find it.
+export const ASSISTANT_NAME = 'Calvin';
+export const ASSISTANT_NAME_SHORT = 'Cal';

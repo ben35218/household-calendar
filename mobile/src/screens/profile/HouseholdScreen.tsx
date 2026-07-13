@@ -1,17 +1,19 @@
 import React, { useEffect, useState, useCallback } from 'react';
-import { View, Text, ScrollView, StyleSheet, Alert, ActivityIndicator, Share, TouchableOpacity } from 'react-native';
+import { View, Text, StyleSheet, Alert, ActivityIndicator, TouchableOpacity } from 'react-native';
+import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
 import { Ionicons } from '@expo/vector-icons';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import * as Clipboard from 'expo-clipboard';
-import { householdApi, HouseholdMember, JoinRequestForApprover, JoinRequestMine } from '../../api';
+import { householdApi, HouseholdMember, HouseholdInvitation, JoinRequestForApprover, JoinRequestMine } from '../../api';
 import { Button, Card, Input, SectionTitle } from '../../components/ui';
 import EncryptionSetupCard from '../../components/EncryptionSetupCard';
 import { ensureHouseholdKey, getHDK, wrapHDKForJoiner, publicKeyFingerprint } from '../../lib/e2ee';
+import { classifyRecipient, composeShareSms } from '../../lib/shareInvite';
 import { colors, spacing } from '../../theme';
 
-// Mirrors client/src/views/HouseholdView.vue: rename, invite code, members, and
-// the approve-on-device join flow (Phase 2) — request → a member verifies a
-// fingerprint and approves → membership + HDK envelope are granted.
+// Household hub: rename, invite members by email, approve-on-device joins
+// (request → a member verifies a fingerprint and approves → membership + HDK
+// envelope are granted), and member management. Joining another household is by
+// accepting an emailed invitation from the Invitations inbox.
 export default function HouseholdScreen() {
   const qc = useQueryClient();
   const { data: household, isLoading, refetch } = useQuery({
@@ -20,11 +22,16 @@ export default function HouseholdScreen() {
   });
 
   const [name, setName] = useState('');
-  const [copied, setCopied] = useState(false);
-  const [joinCode, setJoinCode] = useState('');
-  const [joining, setJoining] = useState(false);
-  const [joinError, setJoinError] = useState('');
+  const [inviteEmail, setInviteEmail] = useState('');
+  const [inviting, setInviting] = useState(false);
+  const [inviteError, setInviteError] = useState('');
+  const [inviteNote, setInviteNote] = useState('');
   const [leaving, setLeaving] = useState(false);
+
+  const { data: sentInvites, refetch: refetchInvites } = useQuery({
+    queryKey: ['householdInvitations', 'sent'],
+    queryFn: async () => (await householdApi.sentInvitations()).data,
+  });
 
   const [myRequest, setMyRequest] = useState<JoinRequestMine | null>(null);
   const [canceling, setCanceling] = useState(false);
@@ -89,39 +96,58 @@ export default function HouseholdScreen() {
     qc.invalidateQueries({ queryKey: ['household'] });
   }
 
-  async function copyCode() {
-    if (!household) return;
-    await Clipboard.setStringAsync(household.joinCode);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1500);
-  }
-
-  async function shareCode() {
-    if (!household) return;
-    await Share.share({
-      message: `Join our household "${household.name}" — use invite code ${household.joinCode}.`,
-    });
-  }
-
-  async function join() {
-    const code = joinCode.trim().toUpperCase();
-    if (!code) return;
-    setJoining(true);
-    setJoinError('');
+  async function invite() {
+    const recipient = classifyRecipient(inviteEmail);
+    if (!recipient) { setInviteError('Enter a valid email or phone number'); return; }
+    setInviting(true);
+    setInviteError('');
+    setInviteNote('');
     try {
-      const { data } = await householdApi.join(code);
-      setJoinCode('');
-      if (data.status === 'pending') {
-        setMyRequest({ status: 'pending', name: data.name, requestId: data.requestId });
+      const { data } = await householdApi.invite(recipient);
+      setInviteEmail('');
+      if ('phone' in recipient) {
+        // Phone invites carry no email — text them from this device.
+        try {
+          await composeShareSms(recipient.phone, `the ${household?.name || 'family'} household`);
+        } catch (e: any) {
+          setInviteError(e?.message || 'Saved, but the text couldn’t be started.');
+        }
+        setInviteNote(
+          data.userExists
+            ? 'Invitation sent — it’s in their Invitations inbox.'
+            : 'Invitation saved. Send the text so they can join once they get the app.',
+        );
       } else {
-        await refetch();
-        qc.invalidateQueries();
+        setInviteNote(
+          data.userExists
+            ? 'Invitation sent — it’s now in their Invitations inbox.'
+            : 'Invitation emailed. They’ll see it in the app once they sign up.',
+        );
       }
+      await refetchInvites();
     } catch (e: any) {
-      setJoinError(e?.response?.data?.error || 'Could not request to join');
+      setInviteError(e?.response?.data?.error || 'Could not send the invitation');
     } finally {
-      setJoining(false);
+      setInviting(false);
     }
+  }
+
+  function revokeInvite(inv: HouseholdInvitation) {
+    Alert.alert('Revoke invitation?', `${inv.toEmail} will no longer be able to join with this invite.`, [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Revoke',
+        style: 'destructive',
+        onPress: async () => {
+          try {
+            await householdApi.revokeInvitation(inv._id);
+            await refetchInvites();
+          } catch (e: any) {
+            Alert.alert('Could not revoke', e?.response?.data?.error || 'Please try again.');
+          }
+        },
+      },
+    ]);
   }
 
   async function cancelRequest() {
@@ -232,7 +258,7 @@ export default function HouseholdScreen() {
   }
 
   return (
-    <ScrollView style={styles.container} contentContainerStyle={styles.content}>
+    <KeyboardAwareScrollView bottomOffset={24} keyboardShouldPersistTaps="handled" style={styles.container} contentContainerStyle={styles.content}>
       <Card style={styles.card}>
         <Input
           label="Household name"
@@ -244,20 +270,6 @@ export default function HouseholdScreen() {
         />
         <Text style={styles.caption}>
           Everyone in this household shares calendars, tasks, chores, recipes, people, and settings.
-        </Text>
-
-        <SectionTitle>Invite code</SectionTitle>
-        <View style={styles.codeRow}>
-          <TouchableOpacity onPress={copyCode} activeOpacity={0.7}>
-            <Text style={styles.code}>{household.joinCode}</Text>
-          </TouchableOpacity>
-          <TouchableOpacity onPress={shareCode} style={styles.shareBtn} activeOpacity={0.7}>
-            <Ionicons name="share-outline" size={18} color={colors.primary} />
-            <Text style={styles.shareText}>Share</Text>
-          </TouchableOpacity>
-        </View>
-        <Text style={styles.caption}>
-          {copied ? 'Copied to clipboard!' : 'Share the code with family. When they enter it, you\'ll approve them on your device.'}
         </Text>
       </Card>
 
@@ -327,48 +339,78 @@ export default function HouseholdScreen() {
             </View>
           );
         })}
+
+        <SectionTitle>Invite a member</SectionTitle>
+        <View style={styles.emailAddRow}>
+          <Input
+            value={inviteEmail}
+            onChangeText={(t) => { setInviteEmail(t); setInviteError(''); setInviteNote(''); }}
+            placeholder="Add email or phone…"
+            autoCapitalize="none"
+            autoCorrect={false}
+            keyboardType="email-address"
+            returnKeyType="send"
+            onSubmitEditing={invite}
+            containerStyle={styles.emailInput}
+            style={styles.emailInputField}
+          />
+          {inviting ? (
+            <ActivityIndicator size="small" color={colors.primary} style={styles.emailAddIcon} />
+          ) : (
+            <TouchableOpacity
+              onPress={invite}
+              disabled={!inviteEmail.trim()}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              style={styles.emailAddIcon}
+            >
+              <Ionicons name="add-circle" size={28} color={inviteEmail.trim() ? colors.primary : colors.border} />
+            </TouchableOpacity>
+          )}
+        </View>
+        {inviteError ? <Text style={styles.error}>{inviteError}</Text> : null}
+        {inviteNote ? <Text style={styles.note}>{inviteNote}</Text> : null}
+
+        {(sentInvites ?? []).filter((i) => i.status !== 'declined').length > 0 ? (
+          <View style={styles.invitesList}>
+            {(sentInvites ?? []).filter((i) => i.status !== 'declined').map((inv) => (
+              <View key={inv._id} style={styles.inviteRow}>
+                <View style={styles.memberText}>
+                  <Text style={styles.memberName} numberOfLines={1}>{inv.toEmail || inv.toPhone}</Text>
+                  <Text style={styles.memberEmail}>
+                    {inv.status === 'accepted' ? 'Accepted — approve them below' : 'Invited'}
+                  </Text>
+                </View>
+                <TouchableOpacity onPress={() => revokeInvite(inv)} style={styles.removeBtn} activeOpacity={0.7}>
+                  <Ionicons name="close-circle-outline" size={20} color={colors.error} />
+                </TouchableOpacity>
+              </View>
+            ))}
+          </View>
+        ) : null}
       </Card>
 
-      {/* §9 migration checklist — owner-only, and gone once the household is
-          fully end-to-end encrypted. Members see their personal status on the
-          Sign-in & Security screen instead. */}
-      {household.isOwner && !household.e2eeActive ? <EncryptionSetupCard /> : null}
+      {/* Encryption status + §9 migration checklist — owner-only. Shows the
+          current encrypted/not-encrypted state; while not yet encrypted it also
+          surfaces the per-member readiness checklist. Members see their personal
+          status on the Sign-in & Security screen instead. */}
+      {household.isOwner ? <EncryptionSetupCard e2eeActive={household.e2eeActive} /> : null}
 
-      <Card style={styles.card}>
-        {myRequest && myRequest.status === 'pending' ? (
-          <>
-            <View style={styles.waitingRow}>
-              <ActivityIndicator color={colors.primary} />
-              <Text style={styles.waitingTitle}>Waiting for approval</Text>
-            </View>
-            <Text style={styles.caption}>
-              A family member in “{myRequest.name}” needs to approve you on their device. This stays
-              pending until they're online.
-            </Text>
-            <Button title="Cancel request" variant="ghost" onPress={cancelRequest} loading={canceling} />
-          </>
-        ) : (
-          <>
-            <SectionTitle>Join another household</SectionTitle>
-            <Text style={styles.caption}>
-              Enter a household's invite code. A member there approves you on their device; then your
-              data becomes shared with them.
-            </Text>
-            <Input
-              label="Invite code"
-              value={joinCode}
-              onChangeText={setJoinCode}
-              autoCapitalize="characters"
-              autoCorrect={false}
-            />
-            {joinError ? <Text style={styles.error}>{joinError}</Text> : null}
-            <Button title="Request" onPress={join} loading={joining} disabled={!joinCode.trim()} />
-          </>
-        )}
-      </Card>
+      {myRequest && myRequest.status === 'pending' ? (
+        <Card style={styles.card}>
+          <View style={styles.waitingRow}>
+            <ActivityIndicator color={colors.primary} />
+            <Text style={styles.waitingTitle}>Waiting for approval</Text>
+          </View>
+          <Text style={styles.caption}>
+            A family member in “{myRequest.name}” needs to approve you on their device. This stays
+            pending until they're online.
+          </Text>
+          <Button title="Cancel request" variant="ghost" onPress={cancelRequest} loading={canceling} />
+        </Card>
+      ) : null}
 
       <Button title="Leave household" variant="danger" onPress={leave} loading={leaving} />
-    </ScrollView>
+    </KeyboardAwareScrollView>
   );
 }
 
@@ -379,14 +421,13 @@ const styles = StyleSheet.create({
   card: { marginBottom: spacing.md },
   caption: { fontSize: 12, color: colors.textMuted, marginTop: 4, marginBottom: spacing.sm, lineHeight: 17 },
   warn: { fontSize: 12, color: colors.warning ?? '#b26a00', marginBottom: spacing.sm },
-  codeRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 4 },
-  code: {
-    fontSize: 18, fontWeight: '700', letterSpacing: 3, color: colors.primary,
-    backgroundColor: colors.primary + '18', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 8,
-    overflow: 'hidden',
-  },
-  shareBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 8, paddingVertical: 6 },
-  shareText: { color: colors.primary, fontSize: 15, fontWeight: '600' },
+  note: { fontSize: 12, color: colors.success, marginBottom: spacing.sm },
+  emailAddRow: { position: 'relative', justifyContent: 'center' },
+  emailInput: { marginBottom: 0 },
+  emailInputField: { paddingRight: 46 },
+  emailAddIcon: { position: 'absolute', right: 10, alignItems: 'center', justifyContent: 'center' },
+  invitesList: { marginTop: spacing.sm, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.border },
+  inviteRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 8 },
   requestRow: { paddingVertical: spacing.sm, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.border },
   requestActions: { flexDirection: 'row', gap: spacing.sm, marginTop: spacing.sm },
   actionBtn: { flex: 1 },

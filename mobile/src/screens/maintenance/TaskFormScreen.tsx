@@ -8,34 +8,31 @@ import { sealNew, sealUpdate, openRecord } from '../../lib/e2ee';
 
 // Encrypted task content (refs/dates/recurrence stay plaintext for the server).
 const TASK_ENC = (p: Record<string, unknown>) => ({
-  title: p.title, description: p.description, instructions: p.instructions,
-  estimatedCost: p.estimatedCost, estimatedDurationMins: p.estimatedDurationMins,
+  title: p.title, description: p.description,
 });
-import { Input, Select, Screen, SwitchRow, SectionTitle, DateField, useHeaderCheckButton } from '../../components/ui';
+import { Input, Select, Screen, SectionTitle, DateField, useHeaderCheckButton } from '../../components/ui';
+import { form as fs, GroupCard, CardDivider } from '../../components/formStyles';
 import { useCalendarColors } from '../../lib/calendarPrefs';
 import FormAssist from '../../components/FormAssist';
 import { useFormAssist } from '../../hooks/useFormAssist';
-import RecurrenceFields from '../../components/RecurrenceFields';
 import {
-  RecurrenceForm,
-  MonthlyMode,
-  makeRecurrenceForm,
-  recurrenceToForm,
-  buildRecurrencePayload,
+  recurrenceToRule,
+  ruleToRecurrence,
   ALERT_DAY_OPTIONS,
   AUDIENCE_OPTIONS,
 } from '../../lib/recurrence';
+import { RepeatRule, EMPTY_REPEAT, FREQ_OPTIONS, isCustomRule, repeatSummary } from '../../lib/eventRepeat';
+import { useRepeatDraft, clearRepeatDraft } from '../../lib/repeatDraft';
 import { MaintenanceStackParamList } from '../../navigation/MaintenanceNavigator';
 import { colors, spacing } from '../../theme';
 
 type Nav = NativeStackNavigationProp<MaintenanceStackParamList, 'TaskForm'>;
 type Rt = RouteProp<MaintenanceStackParamList, 'TaskForm'>;
 
-const PRIORITY_OPTIONS = [
-  { label: 'Low', value: 'low' },
-  { label: 'Medium', value: 'medium' },
-  { label: 'High', value: 'high' },
-];
+// Simple Repeat options + a Custom row that opens the shared Repeat screen. A
+// custom rule keeps the select on CUSTOM_REPEAT, labelled with its summary.
+const REPEAT_OPTIONS = [{ label: 'Never', value: '' }, ...FREQ_OPTIONS];
+const CUSTOM_REPEAT = 'custom';
 
 interface TaskForm {
   title: string;
@@ -43,12 +40,7 @@ interface TaskForm {
   subcategoryId: string | null;
   itemId: string | null;
   description: string;
-  instructions: string;
-  priority: string;
-  estimatedDurationMins: string;
-  estimatedCost: string;
   nextDueDate: string;
-  weatherSensitive: boolean;
   reminderDaysBefore: number | null;
   alert2DaysBefore: number | null;
   alertAudience: string;
@@ -60,12 +52,7 @@ const EMPTY: TaskForm = {
   subcategoryId: null,
   itemId: null,
   description: '',
-  instructions: '',
-  priority: 'medium',
-  estimatedDurationMins: '',
-  estimatedCost: '',
   nextDueDate: '',
-  weatherSensitive: false,
   reminderDaysBefore: 0,
   alert2DaysBefore: null,
   alertAudience: 'everyone',
@@ -79,14 +66,22 @@ export default function TaskFormScreen() {
   const accent = useCalendarColors().colors.maintenance;
 
   const [form, setForm] = useState<TaskForm>(EMPTY);
-  const [rec, setRec] = useState<RecurrenceForm>(makeRecurrenceForm({ intervalValue: 3, intervalUnit: 'months' }));
-  const [monthlyMode, setMonthlyMode] = useState<MonthlyMode>('day');
+  // Recurrence is edited on the shared calendar Repeat screen; we hold its rule
+  // here and convert to/from the task recurrence shape on load/save.
+  const [repeatRule, setRepeatRule] = useState<RepeatRule>({ ...EMPTY_REPEAT, freq: 'monthly', interval: 3 });
   const [error, setError] = useState('');
   const assist = useFormAssist();
 
   useEffect(() => {
     navigation.setOptions({ title: isEdit ? 'Edit Task' : 'Add Task' });
   }, [navigation, isEdit]);
+
+  // Edits made on the pushed Repeat screen sync back live via the draft store.
+  const repeatDraft = useRepeatDraft();
+  useEffect(() => {
+    if (repeatDraft) setRepeatRule(repeatDraft);
+  }, [repeatDraft]);
+  useEffect(() => () => clearRepeatDraft(), []);
 
   // Manual edits clear the "AI changed this" highlight for the touched fields.
   const set = (patch: Partial<TaskForm>) => {
@@ -130,19 +125,12 @@ export default function TaskFormScreen() {
       subcategoryId: subId,
       itemId,
       description: t.description ?? '',
-      instructions: t.instructions ?? '',
-      priority: t.priority ?? 'medium',
-      estimatedDurationMins: t.estimatedDurationMins != null ? String(t.estimatedDurationMins) : '',
-      estimatedCost: t.estimatedCost != null ? String(t.estimatedCost) : '',
       nextDueDate: t.nextDueDate ? t.nextDueDate.slice(0, 10) : '',
-      weatherSensitive: t.weatherSensitive ?? false,
       reminderDaysBefore: t.reminderDaysBefore ?? 0,
       alert2DaysBefore: t.alert2DaysBefore ?? null,
       alertAudience: t.alertAudience ?? 'everyone',
     });
-    const { form: rf, monthlyMode: mm } = recurrenceToForm(t.recurrence, { intervalValue: 3, intervalUnit: 'months' });
-    setRec(rf);
-    setMonthlyMode(mm);
+    setRepeatRule(recurrenceToRule(t.recurrence));
     })();
     return () => { cancelled = true; };
   }, [taskQ.data]);
@@ -156,12 +144,7 @@ export default function TaskFormScreen() {
       { name: 'subcategoryId', type: 'select', label: 'Subcategory', options: (subcategoriesQ.data ?? []).map((c) => ({ label: c.name, value: c._id })) },
       { name: 'itemId', type: 'select', label: 'Linked Item', options: (itemsQ.data ?? []).map((i) => ({ label: i.name, value: i._id })) },
       { name: 'description', type: 'text', label: 'Description' },
-      { name: 'instructions', type: 'text', label: 'How-to Instructions' },
-      { name: 'priority', type: 'select', label: 'Priority', options: PRIORITY_OPTIONS },
-      { name: 'estimatedDurationMins', type: 'number', label: 'Estimated Duration (minutes)' },
-      { name: 'estimatedCost', type: 'number', label: 'Estimated Cost (dollars)' },
       { name: 'nextDueDate', type: 'date', label: 'Next Due Date' },
-      { name: 'weatherSensitive', type: 'boolean', label: 'Weather-sensitive (show on outdoor forecast)' },
     ],
     [categoriesQ.data, subcategoriesQ.data, itemsQ.data]
   );
@@ -173,9 +156,8 @@ export default function TaskFormScreen() {
     const changedKeys: string[] = [];
     for (const [k, v] of Object.entries(patch)) {
       if (!(k in EMPTY)) continue;
-      const val = k === 'estimatedDurationMins' || k === 'estimatedCost' ? (v == null ? '' : String(v)) : v;
-      if ((form as any)[k] !== val) changedKeys.push(k);
-      (next as any)[k] = val;
+      if ((form as any)[k] !== v) changedKeys.push(k);
+      (next as any)[k] = v;
     }
     setForm((f) => ({ ...f, ...next }));
     assist.mark(changedKeys);
@@ -186,20 +168,15 @@ export default function TaskFormScreen() {
       const payload: Record<string, unknown> = {
         title: form.title,
         description: form.description,
-        instructions: form.instructions,
-        priority: form.priority,
-        weatherSensitive: form.weatherSensitive,
         reminderDaysBefore: form.reminderDaysBefore,
         alert2DaysBefore: form.reminderDaysBefore == null ? null : form.alert2DaysBefore,
         alertAudience: form.alertAudience,
-        recurrence: buildRecurrencePayload(rec, monthlyMode),
+        recurrence: ruleToRecurrence(repeatRule),
       };
       if (form.categoryId) payload.categoryId = form.categoryId;
       if (form.subcategoryId) payload.subcategoryId = form.subcategoryId;
       if (form.itemId) payload.itemId = form.itemId;
       if (form.nextDueDate) payload.nextDueDate = form.nextDueDate;
-      if (form.estimatedDurationMins) payload.estimatedDurationMins = Number(form.estimatedDurationMins);
-      if (form.estimatedCost) payload.estimatedCost = Number(form.estimatedCost);
       return isEdit
         ? tasksApi.update(id!, await sealUpdate('MaintenanceTask', id!, payload, TASK_ENC(payload)))
         : tasksApi.create(await sealNew('MaintenanceTask', payload, TASK_ENC(payload)));
@@ -222,6 +199,20 @@ export default function TaskFormScreen() {
 
   useHeaderCheckButton(navigation, { onPress: onSave, loading: save.isPending, color: accent });
 
+  // Repeat select: a custom rule ("every 2 weeks on Monday") selects the Custom
+  // row, labelled with the rule's summary; tapping it reopens the Repeat screen.
+  const customRepeatActive = isCustomRule(repeatRule);
+  const repeatItems = [
+    ...REPEAT_OPTIONS,
+    { label: customRepeatActive ? repeatSummary(repeatRule) : 'Custom…', value: CUSTOM_REPEAT },
+  ];
+  const repeatValue = customRepeatActive ? CUSTOM_REPEAT : repeatRule.freq;
+  const openRepeatScreen = () =>
+    navigation.navigate('EventRepeat', {
+      rule: repeatRule,
+      date: form.nextDueDate || new Date().toISOString().slice(0, 10),
+    });
+
   if (isEdit && taskQ.isLoading) {
     return (
       <View style={styles.center}>
@@ -234,118 +225,158 @@ export default function TaskFormScreen() {
     <Screen>
       <FormAssist
         formType="home maintenance task"
-        title="Maintenance Assistant"
-        placeholder={'Describe the task, e.g. "replace the furnace filter every 3 months, high priority"'}
+        placeholder={'Describe the task, e.g. "replace the furnace filter every 3 months"'}
         fields={assistFields}
         current={{ ...form }}
         onApply={applyPatch}
       />
 
-      <Input label="Task Title *" value={form.title} onChangeText={(v) => set({ title: v })} highlight={assist.changed.has('title')} />
+      <GroupCard>
+        <Input
+          value={form.title}
+          onChangeText={(v) => set({ title: v })}
+          placeholder="Task Title"
+          containerStyle={fs.headField}
+          style={[fs.headInput, assist.changed.has('title') && fs.headInputHighlight]}
+        />
+        <CardDivider />
+        <Input
+          value={form.description}
+          onChangeText={(v) => set({ description: v })}
+          multiline
+          placeholder="Add a description…"
+          containerStyle={fs.headField}
+          style={[fs.headInput, fs.notes, assist.changed.has('description') && fs.headInputHighlight]}
+        />
+      </GroupCard>
 
-      <Select
-        label="Category"
-        clearable
-        value={form.categoryId ?? undefined}
-        options={(categoriesQ.data ?? []).map((c) => ({ label: c.name, value: c._id }))}
-        onChange={(v) => set({ categoryId: (v as string) ?? null, subcategoryId: null })}
-        highlight={assist.changed.has('categoryId')}
-      />
-      <Select
-        label="Subcategory"
-        clearable
-        disabled={!form.categoryId || !(subcategoriesQ.data?.length)}
-        value={form.subcategoryId ?? undefined}
-        options={(subcategoriesQ.data ?? []).map((c) => ({ label: c.name, value: c._id }))}
-        onChange={(v) => set({ subcategoryId: (v as string) ?? null })}
-        highlight={assist.changed.has('subcategoryId')}
-      />
-      <Select
-        label="Linked Item"
-        clearable
-        value={form.itemId ?? undefined}
-        options={(itemsQ.data ?? []).map((i) => ({ label: i.name, value: i._id }))}
-        onChange={(v) => set({ itemId: (v as string) ?? null })}
-        highlight={assist.changed.has('itemId')}
-      />
+      <GroupCard>
+        <Select
+          inlineLabel="Category"
+          clearable
+          placeholder="None"
+          value={form.categoryId ?? undefined}
+          options={(categoriesQ.data ?? []).map((c) => ({ label: c.name, value: c._id }))}
+          onChange={(v) => set({ categoryId: (v as string) ?? null, subcategoryId: null })}
+          highlight={assist.changed.has('categoryId')}
+          containerStyle={fs.dtFieldWrap}
+          fieldStyle={fs.rowField}
+          valueStyle={fs.dtValue}
+          chevronIcon="chevron-expand"
+        />
+        <CardDivider />
+        <Select
+          inlineLabel="Subcategory"
+          clearable
+          placeholder="None"
+          disabled={!form.categoryId || !(subcategoriesQ.data?.length)}
+          value={form.subcategoryId ?? undefined}
+          options={(subcategoriesQ.data ?? []).map((c) => ({ label: c.name, value: c._id }))}
+          onChange={(v) => set({ subcategoryId: (v as string) ?? null })}
+          highlight={assist.changed.has('subcategoryId')}
+          containerStyle={fs.dtFieldWrap}
+          fieldStyle={fs.rowField}
+          valueStyle={fs.dtValue}
+          chevronIcon="chevron-expand"
+        />
+        <CardDivider />
+        <Select
+          inlineLabel="Linked Item"
+          clearable
+          placeholder="None"
+          value={form.itemId ?? undefined}
+          options={(itemsQ.data ?? []).map((i) => ({ label: i.name, value: i._id }))}
+          onChange={(v) => set({ itemId: (v as string) ?? null })}
+          highlight={assist.changed.has('itemId')}
+          containerStyle={fs.dtFieldWrap}
+          fieldStyle={fs.rowField}
+          valueStyle={fs.dtValue}
+          chevronIcon="chevron-expand"
+        />
+      </GroupCard>
 
-      <Input label="Description" value={form.description} onChangeText={(v) => set({ description: v })} multiline highlight={assist.changed.has('description')} />
-      <Input label="How-to Instructions" value={form.instructions} onChangeText={(v) => set({ instructions: v })} multiline highlight={assist.changed.has('instructions')} />
+      <SectionTitle>Recurrence</SectionTitle>
+      <GroupCard>
+        <Select
+          inlineLabel="Repeat"
+          value={repeatValue}
+          options={repeatItems}
+          onChange={(v) => {
+            if (v === CUSTOM_REPEAT) {
+              openRepeatScreen();
+            } else if (v) {
+              // A simple frequency: reset the pattern so the summary reads e.g.
+              // "Weekly" (the Repeat screen seeds a concrete pattern if reopened).
+              setRepeatRule({ ...EMPTY_REPEAT, freq: v as RepeatRule['freq'], interval: 1 });
+            } else {
+              setRepeatRule({ ...EMPTY_REPEAT });
+            }
+          }}
+          containerStyle={fs.dtFieldWrap}
+          fieldStyle={fs.rowField}
+          valueStyle={fs.dtValue}
+          chevronIcon="chevron-expand"
+        />
+      </GroupCard>
 
-      <View style={styles.cols}>
-        <View style={styles.col}>
-          <Select
-            label="Priority"
-            value={form.priority}
-            options={PRIORITY_OPTIONS}
-            onChange={(v) => set({ priority: (v as string) ?? 'medium' })}
-            highlight={assist.changed.has('priority')}
-          />
-        </View>
-        <View style={styles.col}>
-          <Input
-            label="Est. Duration (min)"
-            keyboardType="numeric"
-            value={form.estimatedDurationMins}
-            onChangeText={(v) => set({ estimatedDurationMins: v })}
-            highlight={assist.changed.has('estimatedDurationMins')}
-          />
-        </View>
-      </View>
-      <Input
-        label="Est. Cost ($)"
-        keyboardType="numeric"
-        value={form.estimatedCost}
-        onChangeText={(v) => set({ estimatedCost: v })}
-        highlight={assist.changed.has('estimatedCost')}
-      />
-
-      <RecurrenceFields
-        form={rec}
-        monthlyMode={monthlyMode}
-        onChange={(patch) => setRec((r) => ({ ...r, ...patch }))}
-        onChangeMonthlyMode={setMonthlyMode}
-      />
-
-      <DateField
-        label="Next Due Date"
-        clearable
-        value={form.nextDueDate}
-        onChange={(v) => set({ nextDueDate: v })}
-        highlight={assist.changed.has('nextDueDate')}
-      />
-
-      <SectionTitle>Weather</SectionTitle>
-      <SwitchRow
-        label="Weather-sensitive (show on outdoor forecast)"
-        value={form.weatherSensitive}
-        onValueChange={(v) => set({ weatherSensitive: v })}
-        highlight={assist.changed.has('weatherSensitive')}
-      />
+      <GroupCard>
+        <DateField
+          inlineLabel="Next Due Date"
+          clearable
+          placeholder="None"
+          value={form.nextDueDate}
+          onChange={(v) => set({ nextDueDate: v })}
+          highlight={assist.changed.has('nextDueDate')}
+          containerStyle={fs.dtFieldWrap}
+          fieldStyle={fs.rowField}
+          valueStyle={fs.dtValue}
+          hideIcon
+        />
+      </GroupCard>
 
       <SectionTitle>Alerts</SectionTitle>
-      <Select
-        label="Alert"
-        value={form.reminderDaysBefore ?? undefined}
-        options={ALERT_DAY_OPTIONS.map((o) => ({ label: o.label, value: o.value ?? -1 }))}
-        onChange={(v) => set({ reminderDaysBefore: v === -1 ? null : (v as number) })}
-      />
-      {form.reminderDaysBefore != null ? (
+      <GroupCard>
         <Select
-          label="Second alert"
-          value={form.alert2DaysBefore ?? undefined}
+          inlineLabel="Alert"
+          value={form.reminderDaysBefore ?? undefined}
           options={ALERT_DAY_OPTIONS.map((o) => ({ label: o.label, value: o.value ?? -1 }))}
-          onChange={(v) => set({ alert2DaysBefore: v === -1 ? null : (v as number) })}
+          onChange={(v) => set({ reminderDaysBefore: v === -1 ? null : (v as number) })}
+          containerStyle={fs.dtFieldWrap}
+          fieldStyle={fs.rowField}
+          valueStyle={fs.dtValue}
+          chevronIcon="chevron-expand"
         />
-      ) : null}
-      {memberCount > 1 && form.reminderDaysBefore != null ? (
-        <Select
-          label="Alert who?"
-          value={form.alertAudience}
-          options={AUDIENCE_OPTIONS}
-          onChange={(v) => set({ alertAudience: (v as string) ?? 'everyone' })}
-        />
-      ) : null}
+        {form.reminderDaysBefore != null ? (
+          <>
+            <CardDivider />
+            <Select
+              inlineLabel="Second alert"
+              value={form.alert2DaysBefore ?? undefined}
+              options={ALERT_DAY_OPTIONS.map((o) => ({ label: o.label, value: o.value ?? -1 }))}
+              onChange={(v) => set({ alert2DaysBefore: v === -1 ? null : (v as number) })}
+              containerStyle={fs.dtFieldWrap}
+              fieldStyle={fs.rowField}
+              valueStyle={fs.dtValue}
+              chevronIcon="chevron-expand"
+            />
+          </>
+        ) : null}
+        {memberCount > 1 && form.reminderDaysBefore != null ? (
+          <>
+            <CardDivider />
+            <Select
+              inlineLabel="Alert who?"
+              value={form.alertAudience}
+              options={AUDIENCE_OPTIONS}
+              onChange={(v) => set({ alertAudience: (v as string) ?? 'everyone' })}
+              containerStyle={fs.dtFieldWrap}
+              fieldStyle={fs.rowField}
+              valueStyle={fs.dtValue}
+              chevronIcon="chevron-expand"
+            />
+          </>
+        ) : null}
+      </GroupCard>
 
       {error ? <Text style={styles.error}>{error}</Text> : null}
     </Screen>
@@ -354,7 +385,5 @@ export default function TaskFormScreen() {
 
 const styles = StyleSheet.create({
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.background },
-  cols: { flexDirection: 'row', gap: spacing.md },
-  col: { flex: 1 },
   error: { color: colors.error, marginVertical: spacing.sm },
 });

@@ -1,19 +1,24 @@
 import React, { useLayoutEffect, useMemo, useState } from 'react';
-import { View, Text, StyleSheet, ActivityIndicator, ScrollView, TouchableOpacity, Alert, Modal, Share } from 'react-native';
-import * as Clipboard from 'expo-clipboard';
+import { View, Text, StyleSheet, ActivityIndicator, TouchableOpacity, Alert } from 'react-native';
+import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import { tripsApi, Trip, TripItem } from '../../api';
+import { loadWeatherForAddress, loadDailyClimate, geocodePlace } from '@household/weather';
+import { tripsApi, Trip, TripItem, TripStatus } from '../../api';
 import { Card, Badge, Divider, RoundIconButton } from '../../components/ui';
+import WeatherIcon from '../../components/WeatherIcon';
+import HourlyForecast from '../../components/HourlyForecast';
 import { tripTypeMeta, tripStatusLabel, tripStatusColor } from '../../lib/tripTypes';
+import { outfitSuggestion } from '../../lib/outfit';
 import { useCalendarColors } from '../../lib/calendarPrefs';
 import { zonedParts, zonedTimeLabel } from '../../lib/tz';
 import TripTimeline from '../../components/TripTimeline';
 import AssistantIcon from '../../components/AssistantIcon';
 import { useAiEnabled } from '../../lib/privacyPrefs';
-import { getHDK, openRecord } from '../../lib/e2ee';
+import { openRecord, sealUpdate } from '../../lib/e2ee';
+import { useHorizontalSwipe } from '../../lib/useHorizontalSwipe';
 import { TripsStackParamList } from '../../navigation/TripsNavigator';
 import { colors, spacing } from '../../theme';
 
@@ -42,39 +47,41 @@ export default function TripDetailScreen() {
   const [dayIndex, setDayIndex] = useState<number | null>(null); // null = grid view
   const [expandedType, setExpandedType] = useState<string | null>(null); // budget category drill-down
   const [showUncosted, setShowUncosted] = useState(false);
-  const [shareModal, setShareModal] = useState(false);
-  const [copied, setCopied] = useState(false);
+  const [climateOpen, setClimateOpen] = useState(false); // typical-weather card, collapsed by default
 
   const tripQ = useQuery({ queryKey: ['trips', id], queryFn: async () => (await tripsApi.get(id)).data });
   const budgetQ = useQuery({ queryKey: ['trips', id, 'budget'], queryFn: async () => (await tripsApi.budget(id)).data });
   // GET /trips/:id returns { trip, items, isOwner }; flatten into a single Trip-with-items.
-  const data = tripQ.data as unknown as { trip: Trip; items: TripItem[] } | undefined;
+  const data = tripQ.data as unknown as { trip: Trip; items: TripItem[]; isOwner?: boolean } | undefined;
   const trip = data ? { ...data.trip, items: data.items } : undefined;
   const tz = trip?.destinationTz || '';
 
-  const share = useMutation({
-    mutationFn: async () => {
-      try {
-        return (await tripsApi.share(id)).data;
-      } catch (e: any) {
-        // Decrypt-on-share (§9.3): an E2EE private trip is ciphertext-only, so the
-        // server asks us to hand it the decrypted trip + items to re-write as
-        // plaintext for collaborators. Requires the household key to be unlocked.
-        if (e?.response?.data?.error !== 'decrypt_required') throw e;
-        if (!getHDK() || !data) throw new Error('Unlock your account, then try sharing again.');
-        const decTrip = await openRecord('Trip', data.trip as any);
-        const decItems = await Promise.all((data.items || []).map((i) => openRecord('TripItem', i as any)));
-        return (await tripsApi.share(id, { trip: decTrip, items: decItems })).data;
-      }
+  // Status-only update. sealUpdate rebuilds the enc blob from the fields we
+  // pass, so re-seal the current decrypted enc fields (TRIP_ENC) or an E2EE
+  // trip would lose its name/destination/notes.
+  const statusMut = useMutation({
+    mutationFn: async (status: TripStatus) => {
+      const dec: any = data ? await openRecord('Trip', data.trip as any) : {};
+      return tripsApi.update(id, await sealUpdate('Trip', id, { status }, {
+        name: dec.name, destination: dec.destination, notes: dec.notes,
+      }));
     },
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['trips', id] });
-      setShareModal(true);
-    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['trips'] }),
     onError: (e: any) => {
-      Alert.alert('Could not share trip', e?.message || e?.response?.data?.message || 'Please try again.');
+      Alert.alert('Could not update status', e?.response?.data?.error || e?.message || 'Please try again.');
     },
   });
+
+  const changeStatus = () => {
+    const options: TripStatus[] = ['considering', 'booked', 'completed'];
+    Alert.alert('Trip status', undefined, [
+      ...options.map((s) => ({
+        text: trip?.status === s ? `${tripStatusLabel(s)} ✓` : tripStatusLabel(s),
+        onPress: () => { if (s !== trip?.status) statusMut.mutate(s); },
+      })),
+      { text: 'Cancel', style: 'cancel' as const },
+    ]);
+  };
 
   const dayList = useMemo(() => {
     if (!trip) return [];
@@ -92,6 +99,36 @@ export default function TripDetailScreen() {
     if (!start) return [];
     return eachDay(start.slice(0, 10), (end || start).slice(0, 10));
   }, [trip]);
+
+  // Destination weather, fetched client-direct from open-meteo (keyless) like
+  // home weather in §9.1 P5b — the destination never touches our server.
+  const destination = trip?.destination;
+  const tripFrom = dayList[0];
+  const tripTo = dayList[dayList.length - 1];
+
+  // Swipe left → next day, right → previous day, clamped to the trip's range.
+  // Called unconditionally (hooks rule); only wired into the day-itinerary view.
+  const daySwipe = useHorizontalSwipe({
+    onSwipeLeft: () => setDayIndex((i) => Math.min((i ?? 0) + 1, dayList.length - 1)),
+    onSwipeRight: () => setDayIndex((i) => Math.max((i ?? 0) - 1, 0)),
+  });
+  // 7-day forecast for the destination — feeds the day itinerary view when the
+  // day is close enough to have a forecast.
+  const forecastQ = useQuery({
+    queryKey: ['tripWeather', destination],
+    queryFn: () => loadWeatherForAddress(destination!, { geocoder: geocodePlace }),
+    enabled: !!destination,
+    staleTime: 30 * 60 * 1000,
+    retry: 1,
+  });
+  // Historic per-day averages for the trip dates (past 3 years).
+  const climateQ = useQuery({
+    queryKey: ['tripClimate', destination, tripFrom, tripTo],
+    queryFn: () => loadDailyClimate(destination!, tripFrom, tripTo, { geocoder: geocodePlace }),
+    enabled: !!destination && !!tripFrom,
+    staleTime: 24 * 60 * 60 * 1000,
+    retry: 1,
+  });
 
   // Bookings whose dates all fall outside the trip's day window.
   const outOfRangeItems = useMemo(() => {
@@ -154,42 +191,6 @@ export default function TripDetailScreen() {
       return dateStr >= ci && dateStr <= co;
     });
 
-  const confirmShare = () => {
-    if (trip?.shareCode) {
-      setShareModal(true);
-    } else {
-      share.mutate();
-    }
-  };
-
-  const sendCode = () => {
-    if (!trip?.shareCode) return;
-    Share.share({
-      message: `Join my trip "${trip.name}" on Household Calendar — use invite code ${trip.shareCode}.`,
-    });
-  };
-
-  const copyCode = async () => {
-    if (!trip?.shareCode) return;
-    await Clipboard.setStringAsync(trip.shareCode);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1500);
-  };
-
-  const stopSharing = () => {
-    Alert.alert('Stop sharing?', 'The invite code will stop working and others will lose access.', [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Stop sharing',
-        style: 'destructive',
-        onPress: () => {
-          setShareModal(false);
-          tripsApi.unshare(id).then(() => qc.invalidateQueries({ queryKey: ['trips', id] }));
-        },
-      },
-    ]);
-  };
-
   useLayoutEffect(() => {
     const targetDate = dayIndex != null ? dayList[dayIndex] : (dayList[0] ?? undefined);
     navigation.setOptions({
@@ -200,16 +201,23 @@ export default function TripDetailScreen() {
       headerTitle: dayIndex == null
         ? () => (
             <View style={styles.headerTitleRow}>
-              <View style={styles.titleSpacer} />
-              <Text style={styles.headerTitleText} numberOfLines={1}>{trip?.name || 'Trip'}</Text>
-              <View style={styles.titleActions}>
-                <TouchableOpacity onPress={() => navigation.navigate('TripForm', { id })} hitSlop={8}>
+              <View style={styles.titleSide}>
+                {trip ? (
+                  <TouchableOpacity onPress={changeStatus} hitSlop={8} disabled={statusMut.isPending}>
+                    <Badge label={tripStatusLabel(trip.status)} color={tripStatusColor(trip.status)} />
+                  </TouchableOpacity>
+                ) : null}
+              </View>
+              <View style={styles.titleGroup}>
+                {/* Invisible spacer mirrors the pencil's width+gap so the title
+                    text stays centered within the group (pencil doesn't shift it). */}
+                <View style={styles.pencilSpacer} />
+                <Text style={styles.headerTitleText} numberOfLines={1}>{trip?.name || 'Trip'}</Text>
+                <TouchableOpacity style={styles.pencilBtn} onPress={() => navigation.navigate('TripForm', { id })} hitSlop={8}>
                   <Ionicons name="pencil" size={17} color="#fff" />
                 </TouchableOpacity>
-                <TouchableOpacity onPress={confirmShare} hitSlop={8}>
-                  <MaterialCommunityIcons name="share" size={22} color="#fff" />
-                </TouchableOpacity>
               </View>
+              <View style={styles.titleSide} />
             </View>
           )
         : undefined,
@@ -228,7 +236,7 @@ export default function TripDetailScreen() {
         />
       ),
     });
-  }, [navigation, id, trip?.name, trip?.shareCode, dayIndex, dayList]);
+  }, [navigation, id, trip?.name, trip?.status, dayIndex, dayList]);
 
   if (tripQ.isLoading || !trip) {
     return (
@@ -269,7 +277,7 @@ export default function TripDetailScreen() {
       return zonedParts(it.start, tz).dateStr === selectedDate;
     });
     return (
-      <View style={styles.screen}>
+      <View style={styles.screen} {...daySwipe}>
         <View style={styles.dayNav}>
           <TouchableOpacity disabled={dayIndex === 0} onPress={() => setDayIndex((i) => (i ?? 0) - 1)}>
             <Ionicons name="chevron-back" size={24} color={dayIndex === 0 ? colors.border : accent} />
@@ -283,7 +291,36 @@ export default function TripDetailScreen() {
             <Ionicons name="chevron-forward" size={24} color={dayIndex === dayList.length - 1 ? colors.border : accent} />
           </TouchableOpacity>
         </View>
-        <ScrollView contentContainerStyle={styles.content}>
+        <KeyboardAwareScrollView bottomOffset={24} keyboardShouldPersistTaps="handled" contentContainerStyle={styles.content}>
+          {(() => {
+            // Destination forecast for this day, when it's within the 7-day window.
+            const fc = forecastQ.data?.forecast ?? [];
+            const i = fc.findIndex((d) => d.date === selectedDate);
+            if (i < 0) return null;
+            const wd = fc[i];
+            return (
+              <Card style={styles.weatherCard}>
+                <View style={styles.weatherRow}>
+                  <WeatherIcon code={wd.weatherCode} size={36} />
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.weatherTemp}>{Math.round(wd.tempMax)}° / {Math.round(wd.tempMin)}°</Text>
+                    <Text style={styles.weatherDesc}>{wd.description}</Text>
+                  </View>
+                  {wd.precipProbability > 0 ? <Text style={styles.weatherSub}>{wd.precipProbability}% rain</Text> : null}
+                </View>
+                <View style={styles.outfitRow}>
+                  <MaterialCommunityIcons name="tshirt-crew" size={15} color="rgba(255,255,255,0.85)" />
+                  <Text style={styles.outfitText}>{outfitSuggestion(wd)}</Text>
+                </View>
+                {wd.hours?.length ? (
+                  <>
+                    <View style={styles.weatherDivider} />
+                    <HourlyForecast days={fc.slice(i)} tz={tz || undefined} />
+                  </>
+                ) : null}
+              </Card>
+            );
+          })()}
           {lodgingForDay.map((h) => (
             <View key={`lodge-${h._id}`} style={styles.lodgeBanner}>
               <MaterialCommunityIcons name="bed" size={18} color="#6A1B9A" />
@@ -304,7 +341,7 @@ export default function TripDetailScreen() {
               onEditItem={(itemId) => navigation.navigate('TripItemForm', { tripId: id, itemId, date: selectedDate })}
             />
           )}
-        </ScrollView>
+        </KeyboardAwareScrollView>
         {aiEnabled && (
           <TouchableOpacity
             style={[styles.fab, { backgroundColor: accent }]}
@@ -321,11 +358,38 @@ export default function TripDetailScreen() {
   // ── Grid (calendar) view ──
   return (
     <View style={styles.screen}>
-      <ScrollView contentContainerStyle={styles.content}>
-        <View style={styles.titleRow}>
-          <Badge label={tripStatusLabel(trip.status)} color={tripStatusColor(trip.status)} />
-          {trip.destination ? <Text style={styles.destination}>{trip.destination}</Text> : null}
-        </View>
+      <KeyboardAwareScrollView bottomOffset={24} keyboardShouldPersistTaps="handled" contentContainerStyle={styles.content}>
+        {/* Typical weather: 3-year historical averages for the trip dates. */}
+        {climateQ.data?.days?.some((cd) => cd.avgTempMax != null) ? (
+          <Card style={styles.weatherCard}>
+            <TouchableOpacity style={styles.weatherHeader} onPress={() => setClimateOpen((v) => !v)} activeOpacity={0.7}>
+              <Ionicons name="partly-sunny" size={16} color="rgba(255,255,255,0.8)" />
+              <Text style={styles.weatherHeaderText}>TYPICAL WEATHER · {trip.destination?.toUpperCase()}</Text>
+              <Ionicons name={climateOpen ? 'chevron-up' : 'chevron-down'} size={16} color="rgba(255,255,255,0.8)" />
+            </TouchableOpacity>
+            {climateOpen ? <Text style={styles.weatherCaption}>Averages for these dates over the past 3 years</Text> : null}
+            {climateOpen && climateQ.data.days.map((cd) => (
+              <View key={cd.date} style={styles.climateRow}>
+                <Text style={styles.climateDate}>
+                  {new Date(cd.date + 'T12:00:00').toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })}
+                </Text>
+                <View style={styles.climateTemp}>
+                  <MaterialCommunityIcons name="thermometer-high" size={14} color="#EF6C00" />
+                  <Text style={styles.climateHigh}>{cd.avgTempMax != null ? `${cd.avgTempMax}°` : '—'}</Text>
+                  <Text style={styles.climateLow}>/ {cd.avgTempMin != null ? `${cd.avgTempMin}°` : '—'}</Text>
+                </View>
+                <View style={styles.climatePrecip}>
+                  <MaterialCommunityIcons
+                    name="water"
+                    size={14}
+                    color={(cd.avgPrecip ?? 0) > 5 ? '#9BD1FF' : (cd.avgPrecip ?? 0) > 1 ? '#CFE8FF' : 'rgba(255,255,255,0.5)'}
+                  />
+                  <Text style={styles.climatePrecipText}>{cd.avgPrecip != null ? `${cd.avgPrecip} mm` : '—'}</Text>
+                </View>
+              </View>
+            ))}
+          </Card>
+        ) : null}
 
         {trip.status === 'considering' && trip.candidateRanges?.length ? (
           <View style={styles.optionsWrap}>
@@ -482,7 +546,7 @@ export default function TripDetailScreen() {
             <Text style={styles.notes}>{trip.notes}</Text>
           </View>
         ) : null}
-      </ScrollView>
+      </KeyboardAwareScrollView>
       {aiEnabled && (
         <TouchableOpacity
           style={[styles.fab, { backgroundColor: accent }]}
@@ -492,33 +556,6 @@ export default function TripDetailScreen() {
           <AssistantIcon size={26} color="#fff" />
         </TouchableOpacity>
       )}
-
-      <Modal visible={shareModal} transparent animationType="fade" onRequestClose={() => setShareModal(false)}>
-        <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={() => setShareModal(false)}>
-          <TouchableOpacity style={styles.shareSheet} activeOpacity={1}>
-            <View style={styles.shareHandle} />
-            <Text style={styles.shareTitle}>Share this trip</Text>
-            <Text style={styles.shareSub}>Anyone with this code can view and add to the trip.</Text>
-
-            <TouchableOpacity style={styles.codeBox} activeOpacity={0.7} onPress={copyCode}>
-              <Text style={styles.codeText}>{trip?.shareCode}</Text>
-              <View style={styles.codeCopy}>
-                <Ionicons name={copied ? 'checkmark' : 'copy-outline'} size={16} color={accent} />
-                <Text style={[styles.codeCopyText, { color: accent }]}>{copied ? 'Copied' : 'Copy'}</Text>
-              </View>
-            </TouchableOpacity>
-
-            <TouchableOpacity style={[styles.shareSendBtn, { backgroundColor: accent }]} activeOpacity={0.85} onPress={sendCode}>
-              <MaterialCommunityIcons name="share" size={18} color="#fff" />
-              <Text style={styles.shareSendText}>Send code</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity style={styles.shareStopBtn} onPress={stopSharing}>
-              <Text style={styles.shareStopText}>Stop sharing</Text>
-            </TouchableOpacity>
-          </TouchableOpacity>
-        </TouchableOpacity>
-      </Modal>
     </View>
   );
 }
@@ -530,10 +567,14 @@ const styles = StyleSheet.create({
   headerBtn: { paddingHorizontal: 5 },
   headerTitleRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10 },
   headerTitleText: { color: '#fff', fontSize: 17, fontWeight: '600', flexShrink: 1 },
-  // Left spacer mirrors the icon block's width so the title text stays centered on screen
-  // while the pencil sits tight to its right.
-  titleSpacer: { width: 49 },
-  titleActions: { flexDirection: 'row', alignItems: 'center', gap: 10, width: 49 },
+  // Status badge sits left; an equal-width empty slot on the right keeps the
+  // title group centered in the header.
+  titleSide: { minWidth: 49, alignItems: 'flex-start' },
+  // Title + pencil, tight together. The left spacer matches the pencil's
+  // width+gap so the title text itself stays centered within the group.
+  titleGroup: { flexDirection: 'row', alignItems: 'center', flexShrink: 1 },
+  pencilSpacer: { width: 23 },
+  pencilBtn: { marginLeft: 6 },
   fab: {
     position: 'absolute',
     right: spacing.lg,
@@ -549,8 +590,6 @@ const styles = StyleSheet.create({
     shadowRadius: 4,
     elevation: 5,
   },
-  titleRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, marginBottom: spacing.md, flexWrap: 'wrap' },
-  destination: { fontSize: 14, color: colors.textMuted },
   sectionLabel: { fontSize: 13, fontWeight: '700', color: colors.textMuted, textTransform: 'uppercase', marginBottom: spacing.sm },
   optionsWrap: { marginBottom: spacing.md },
   optionCard: { marginBottom: spacing.sm },
@@ -577,6 +616,25 @@ const styles = StyleSheet.create({
   itemTitle: { flex: 1, fontSize: 16, fontWeight: '600', color: colors.text },
   itemTime: { fontSize: 13, color: colors.text, marginTop: 4, fontWeight: '500' },
   itemSub: { fontSize: 13, color: colors.textMuted, marginTop: 2 },
+  // Weather cards: solid sky blue matching the weather screens.
+  weatherCard: { marginBottom: spacing.md, backgroundColor: '#5089D2', borderColor: 'rgba(255,255,255,0.22)' },
+  weatherRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.md },
+  weatherTemp: { fontSize: 18, fontWeight: '700', color: '#fff' },
+  weatherDesc: { fontSize: 13, color: 'rgba(255,255,255,0.85)' },
+  weatherSub: { fontSize: 13, color: '#CFE8FF', fontWeight: '600' },
+  weatherDivider: { height: StyleSheet.hairlineWidth, backgroundColor: 'rgba(255,255,255,0.25)', marginVertical: spacing.sm },
+  outfitRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 6, marginTop: spacing.sm },
+  outfitText: { flex: 1, fontSize: 13, color: 'rgba(255,255,255,0.9)', lineHeight: 18 },
+  weatherHeader: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  weatherHeaderText: { fontSize: 12, fontWeight: '700', letterSpacing: 0.8, color: 'rgba(255,255,255,0.8)', flex: 1 },
+  weatherCaption: { fontSize: 12, color: 'rgba(255,255,255,0.7)', marginTop: 2, marginBottom: spacing.xs },
+  climateRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 8, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: 'rgba(255,255,255,0.25)' },
+  climateDate: { flex: 1, fontSize: 13, color: '#fff' },
+  climateTemp: { flexDirection: 'row', alignItems: 'center', gap: 3 },
+  climateHigh: { fontSize: 13, fontWeight: '600', color: '#fff' },
+  climateLow: { fontSize: 13, color: 'rgba(255,255,255,0.7)' },
+  climatePrecip: { flexDirection: 'row', alignItems: 'center', gap: 3, width: 76, justifyContent: 'flex-end' },
+  climatePrecipText: { fontSize: 12, color: '#fff' },
   budgetCard: { marginBottom: spacing.md },
   budgetHeader: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, marginBottom: spacing.sm },
   budgetTitle: { fontSize: 15, fontWeight: '700', color: colors.text, flex: 1 },
@@ -606,42 +664,4 @@ const styles = StyleSheet.create({
   notesWrap: { marginTop: spacing.sm },
   notes: { fontSize: 14, color: colors.textMuted, lineHeight: 20 },
   empty: { textAlign: 'center', color: colors.textMuted, marginTop: spacing.xl },
-  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
-  shareSheet: {
-    backgroundColor: colors.surface,
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
-    paddingHorizontal: spacing.lg,
-    paddingTop: spacing.sm,
-    paddingBottom: spacing.xl,
-  },
-  shareHandle: { alignSelf: 'center', width: 40, height: 4, borderRadius: 2, backgroundColor: colors.border, marginBottom: spacing.md },
-  shareTitle: { fontSize: 18, fontWeight: '700', color: colors.text, textAlign: 'center' },
-  shareSub: { fontSize: 13, color: colors.textMuted, textAlign: 'center', marginTop: 4, marginBottom: spacing.md },
-  codeBox: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    backgroundColor: colors.background,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: colors.border,
-    paddingVertical: spacing.md,
-    paddingHorizontal: spacing.md,
-    marginBottom: spacing.md,
-  },
-  codeText: { fontSize: 22, fontWeight: '700', letterSpacing: 3, color: colors.text },
-  codeCopy: { flexDirection: 'row', alignItems: 'center', gap: 4 },
-  codeCopyText: { fontSize: 13, fontWeight: '600' },
-  shareSendBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    borderRadius: 12,
-    paddingVertical: spacing.md,
-  },
-  shareSendText: { color: '#fff', fontSize: 16, fontWeight: '700' },
-  shareStopBtn: { alignItems: 'center', paddingVertical: spacing.md, marginTop: 4 },
-  shareStopText: { color: '#C62828', fontSize: 15, fontWeight: '600' },
 });

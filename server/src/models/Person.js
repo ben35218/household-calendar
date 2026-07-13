@@ -13,8 +13,15 @@ const personSchema = new mongoose.Schema({
   interests:    [{ type: String, trim: true }],
   notes:        { type: String, trim: true },
   address:      { type: String, trim: true },
+  // Professionals split the old combined "Address or business" field into a
+  // business name + its address. Only meaningful for type 'service'.
+  businessName: { type: String, trim: true },
   phone:        { type: String, trim: true },
   email:        { type: String, trim: true },
+  // The device address-book id this Person was imported from, when applicable.
+  // Lets a later import warn before re-creating the same contact. Opaque + not
+  // sensitive content, so it stays plaintext (never in the enc blob).
+  deviceContactId: { type: String, trim: true, index: true, sparse: true },
   // E2EE dual-write ciphertext (Phase 3+): see models/encFields.js.
   ...encFields,
 }, { timestamps: true });

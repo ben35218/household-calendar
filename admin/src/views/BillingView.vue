@@ -19,7 +19,7 @@
     </div>
 
     <v-text-field
-      v-model="search" placeholder="Search by name or join code" prepend-inner-icon="mdi-magnify"
+      v-model="search" placeholder="Search by name" prepend-inner-icon="mdi-magnify"
       density="comfortable" variant="outlined" hide-details clearable class="mb-4" style="max-width: 420px" />
 
     <v-card rounded="lg" variant="outlined">
@@ -29,7 +29,6 @@
           <thead>
             <tr>
               <th>Household</th>
-              <th>Join code</th>
               <th>Plan</th>
               <th>Billing source</th>
               <th>RevenueCat ID</th>
@@ -38,7 +37,6 @@
           <tbody>
             <tr v-for="h in filtered" :key="h._id">
               <td class="font-weight-medium">{{ h.name }}</td>
-              <td><code>{{ h.joinCode }}</code></td>
               <td>
                 <v-chip size="small" :color="h.plan === 'free' ? 'default' : 'primary'" variant="tonal">{{ h.plan }}</v-chip>
               </td>
@@ -53,7 +51,7 @@
               </td>
             </tr>
             <tr v-if="!filtered.length">
-              <td colspan="5" class="text-medium-emphasis py-4">No households found.</td>
+              <td colspan="4" class="text-medium-emphasis py-4">No households found.</td>
             </tr>
           </tbody>
         </v-table>
@@ -84,7 +82,7 @@ const filtered = computed(() => {
   const q = (search.value || '').trim().toLowerCase();
   if (!q) return households.value;
   return households.value.filter(
-    (h) => h.name.toLowerCase().includes(q) || (h.joinCode || '').toLowerCase().includes(q)
+    (h) => h.name.toLowerCase().includes(q)
   );
 });
 

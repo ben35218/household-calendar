@@ -14,17 +14,34 @@ const BASE = 'https://places.googleapis.com/v1';
 const LEG_FRESH_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 
 router.get('/autocomplete', async (req, res) => {
-  const { query, type } = req.query;
+  const { query, type, lat, lon, country } = req.query;
   if (!query || query.trim().length < 2) return res.json({ predictions: [] });
 
   const apiKey = process.env.GOOGLE_PLACES_API_KEY;
   if (!apiKey) return res.status(503).json({ error: 'Google Places API key not configured' });
 
+  // Bias results toward the household's locale so a generic query ("beach")
+  // ranks nearby places over globally prominent ones. Coords come from the
+  // client (post-drop the server can't read the encrypted home location) or,
+  // pre-drop, from the plaintext coords the weather geocoder caches on the
+  // household. The client's holiday-calendar country is the coarse fallback.
+  const hh = req.household || req.user;
+  const qLat = Number(lat);
+  const qLon = Number(lon);
+  const biasLat = Number.isFinite(qLat) ? qLat : hh?.lat;
+  const biasLon = Number.isFinite(qLon) ? qLon : hh?.lon;
+  const hasCoords = Number.isFinite(biasLat) && Number.isFinite(biasLon);
+  const region = typeof country === 'string' && /^[A-Za-z]{2}$/.test(country) ? country.toUpperCase() : null;
+
   try {
     const body = { input: query };
+    if (hasCoords) {
+      // 50 km is the API's max circle radius — roughly "my metro area".
+      body.locationBias = { circle: { center: { latitude: biasLat, longitude: biasLon }, radius: 50000 } };
+    }
     if (type === 'address') {
       body.includedPrimaryTypes = ['street_address', 'route', 'premise', 'subpremise'];
-      body.includedRegionCodes = ['CA'];
+      body.includedRegionCodes = [region ?? 'CA'];
     } else if (type === 'city') {
       // Cities worldwide (no region restriction) for trip destinations
       body.includedPrimaryTypes = ['(cities)'];
@@ -35,10 +52,13 @@ router.get('/autocomplete', async (req, res) => {
       body.includedPrimaryTypes = ['train_station', 'transit_station', 'subway_station', 'light_rail_station', 'ferry_terminal'];
     } else if (type === 'business') {
       // Service contacts: match both businesses and street addresses (no
-      // primary-type filter so a plumber name *or* an address resolves), CA-scoped.
-      body.includedRegionCodes = ['CA'];
+      // primary-type filter so a plumber name *or* an address resolves).
+      body.includedRegionCodes = [region ?? 'CA'];
     } else {
       body.includedPrimaryTypes = ['establishment'];
+      // No coords to bias with — restricting to the user's country is the
+      // only locality signal left (keeps "beach" from resolving to India).
+      if (!hasCoords && region) body.includedRegionCodes = [region];
     }
 
     const { data } = await axios.post(

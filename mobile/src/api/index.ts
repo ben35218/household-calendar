@@ -20,6 +20,16 @@ export interface AuthResponse {
   user: User;
 }
 
+// Passkey sign-in ceremony payloads (WebAuthn JSON, verified server-side).
+export interface PasskeyChallenge {
+  challengeId: string;
+  challenge: string; // b64url
+  rpId: string;
+  // Each registered credential with its E2EE PRF salt (when that credential is
+  // also an unlock factor) so one assertion can sign in AND unlock.
+  allowCredentials: { id: string; prfSalt: string | null }[];
+}
+
 export const authApi = {
   login: (data: { email: string; password: string }) =>
     api.post<AuthResponse>('/auth/login', data),
@@ -29,6 +39,16 @@ export const authApi = {
   updateEmail: (data: { email: string; password: string }) => api.put('/auth/email', data),
   updatePassword: (data: { currentPassword: string; newPassword: string }) =>
     api.put('/auth/password', data),
+  // Forgot password: emailed 6-digit code, then reset signs the user in.
+  forgotPassword: (data: { email: string }) => api.post<{ ok: boolean }>('/auth/forgot', data),
+  resetPassword: (data: { email: string; code: string; newPassword: string }) =>
+    api.post<AuthResponse & { e2eeEnrolled: boolean }>('/auth/reset', data),
+  // Passkey sign-in + server-verified registration (see routes/authPasskey.js).
+  passkeyRegisterOptions: () => api.post<Record<string, unknown>>('/auth/passkey/register-options'),
+  passkeyRegister: (response: unknown) => api.post('/auth/passkey/register', response),
+  passkeyChallenge: (data: { email: string }) => api.post<PasskeyChallenge>('/auth/passkey/challenge', data),
+  passkeyLogin: (data: { challengeId: string; response: unknown }) =>
+    api.post<AuthResponse>('/auth/passkey/login', data),
 };
 
 // E2EE key material (Phase 1). The server is a blind store: it only sees the
@@ -89,7 +109,6 @@ export interface Task {
   nextDueDate?: string;
   lastCompletedAt?: string;
   recurrence?: Recurrence;
-  weatherSensitive?: boolean;
   reminderDaysBefore?: number | null;
   alert2DaysBefore?: number | null;
   alertAudience?: 'everyone' | 'owner';
@@ -331,6 +350,8 @@ export const recipesApi = {
     api.post<Partial<Recipe>>('/recipes/edit-with-ai', { recipe, instruction }),
   computeIngredientTags: (ingredients: Ingredient[], instructions: string[]) =>
     api.post<{ instructionIngredients: number[][] }>('/recipes/compute-ingredient-tags', { ingredients, instructions }),
+  // Styled recipe email sent by the server (share sheet emails are plain text).
+  shareEmail: (id: string, email: string) => api.post(`/recipes/${id}/share-email`, { email }),
   // fromPhoto handled via lib/upload (field 'photo'): POST /recipes/from-photo
 };
 
@@ -403,10 +424,15 @@ export interface Settings {
   firstName?: string;
   lastName?: string;
   birthday?: string;
+  phone?: string;
   timezone?: string;
   homeAddress?: string;
   reminderLeadDays?: number;
   groceryShoppingDay?: number;
+  // Shopping cadence; for 'biweekly', groceryAnchor (YYYY-MM-DD, a known
+  // shopping day) fixes which alternating week is the shopping week.
+  groceryFrequency?: 'weekly' | 'biweekly';
+  groceryAnchor?: string | null;
   grocerySections?: string[];
   // Encrypted home-location blob (§9.1 P5).
   householdId?: string;
@@ -450,6 +476,32 @@ export interface Person {
   email?: string;
   phone?: string;
   address?: string;
+  businessName?: string;
+  interests?: string[];
+  notes?: string;
+  deviceContactId?: string;
+}
+
+// Raw device contact sent to the AI classifier; results echo back the same key.
+export interface ImportContact {
+  key: string;
+  name: string;
+  phone?: string;
+  email?: string;
+  birthday?: string;
+  company?: string;
+}
+
+export interface ClassifiedContact {
+  key: string;
+  type: 'family' | 'friend' | 'service';
+  name: string;
+  relationship?: string;
+  businessName?: string;
+  address?: string;
+  phone?: string;
+  email?: string;
+  birthday?: string;
   interests?: string[];
   notes?: string;
 }
@@ -461,6 +513,9 @@ export const peopleApi = {
   update: (id: string, data: Record<string, unknown>) => api.put<Person>(`/people/${id}`, data),
   delete: (id: string) => api.delete(`/people/${id}`),
   bulk: (people: Record<string, unknown>[]) => api.post('/people/bulk', { people }),
+  // AI-assisted import: categorize + pre-fill (+ web-search enrich professionals).
+  classify: (contacts: ImportContact[], enrich = true) =>
+    api.post<{ results: ClassifiedContact[] }>('/people/classify', { contacts, enrich }),
 };
 
 // ----- Household (sharing) ---------------------------------------------------
@@ -475,7 +530,6 @@ export interface HouseholdMember {
 export interface Household {
   _id: string;
   name: string;
-  joinCode: string;
   ownerId: string;
   isOwner?: boolean;
   homeAddress?: string;
@@ -515,6 +569,22 @@ export interface HouseholdMemberKey {
   userId: string;
   identityPublicKey: string;
 }
+
+// A household-membership invitation (replaces the join code). Sent by a member;
+// accepting opens a JoinRequest a member then approves on-device.
+export interface HouseholdInvitation {
+  _id: string;
+  householdId: string;
+  fromName?: string;
+  fromEmail?: string;
+  householdName: string;
+  toEmail?: string;
+  toPhone?: string;
+  toUserId?: string;
+  status: 'pending' | 'accepted' | 'declined';
+  respondedAt?: string;
+  createdAt: string;
+}
 export interface RotationPayload {
   keyVersion: number;
   envelopes: { userId: string; wrappedHDK: string }[];
@@ -523,7 +593,17 @@ export interface RotationPayload {
 export const householdApi = {
   get: () => api.get<Household>('/household'),
   rename: (name: string) => api.put<Household>('/household', { name }),
-  join: (joinCode: string) => api.post<{ status: string; requestId?: string; name?: string; householdId?: string }>('/household/join', { joinCode }),
+  // Invite by email or phone (replaces the join code). Phone invites resolve to
+  // an account by the invitee's saved phone; the caller texts them separately.
+  invite: (target: { email?: string; phone?: string }) =>
+    api.post<{ invitation: HouseholdInvitation; userExists: boolean }>('/household/invitations', target),
+  sentInvitations: () => api.get<HouseholdInvitation[]>('/household/invitations'),
+  revokeInvitation: (id: string) => api.delete(`/household/invitations/${id}`),
+  myInvitations: () => api.get<HouseholdInvitation[]>('/household/invitations/mine'),
+  acceptInvitation: (id: string) =>
+    api.post<{ status: string; requestId?: string; name?: string }>(`/household/invitations/${id}/accept`),
+  declineInvitation: (id: string) =>
+    api.post<{ invitation: HouseholdInvitation }>(`/household/invitations/${id}/decline`),
   myJoinRequest: () => api.get<JoinRequestMine>('/household/join-requests/mine'),
   cancelJoinRequest: () => api.delete('/household/join-requests/mine'),
   joinRequests: () => api.get<JoinRequestForApprover[]>('/household/join-requests'),
@@ -583,9 +663,9 @@ export interface PlacePrediction {
 }
 
 export const placesApi = {
-  autocomplete: (query: string, type?: string) =>
+  autocomplete: (query: string, type?: string, bias?: { lat?: number; lon?: number; country?: string }) =>
     api.get<{ predictions: PlacePrediction[] }>('/places/autocomplete', {
-      params: { query, ...(type ? { type } : {}) },
+      params: { query, ...(type ? { type } : {}), ...(bias ?? {}) },
     }),
   getDetails: (placeId: string) => api.get(`/places/details/${placeId}`),
   getTimezone: (placeId: string) => api.get<{ timeZoneId?: string }>(`/places/timezone/${placeId}`),
@@ -663,7 +743,10 @@ export interface Trip {
   candidateRanges?: CandidateRange[];
   items?: TripItem[];
   collaborators?: { _id: string; firstName?: string; lastName?: string; email?: string }[];
-  shareCode?: string;
+  // Outside-household addresses (email or phone) the owner shared this trip with
+  // (owner-only in the response). A non-empty list, or any collaborator, means
+  // the trip is shared.
+  sharedWithOutside?: { email?: string; phone?: string }[];
 }
 
 export interface TripBudget {
@@ -735,15 +818,38 @@ export const tripsApi = {
   //   POST /trips/:id/items/:itemId/attachments
   removeAttachment: (id: string, itemId: string, attId: string) =>
     api.delete(`/trips/${id}/items/${itemId}/attachments/${attId}`),
-  // Decrypt-on-share (§9.3): on an E2EE household the first share of a private
-  // trip must include the client-decrypted trip + items so the server can
-  // re-write them as plaintext for collaborators who hold no HDK.
-  share: (id: string, decrypted?: { trip: unknown; items: unknown[] }) =>
-    api.post<{ shareCode: string }>(`/trips/${id}/share`, decrypted ? { decrypted } : undefined),
+  // Sharing by outside email → invitation → collaborator (mirrors calendars).
+  // Set the full list of outside emails. Decrypt-on-share (§9.3): on an E2EE
+  // household the first outside email must include the client-decrypted trip +
+  // items so the server can re-write them as plaintext for collaborators (who
+  // hold no HDK).
+  // Set the trip's outside-share list. Entries are addressed by email or phone.
+  setShareRecipients: (id: string, recipients: { email?: string; phone?: string }[], decrypted?: { trip: unknown; items: unknown[] }) =>
+    api.put<{ sharedWithOutside: { email?: string; phone?: string }[] }>(`/trips/${id}/share`, decrypted ? { recipients, decrypted } : { recipients }),
   unshare: (id: string) => api.delete(`/trips/${id}/share`),
-  joinShare: (shareCode: string) => api.post<{ tripId: string }>('/trips/join', { shareCode }),
   leaveShare: (id: string) => api.post(`/trips/${id}/leave-share`),
+  removeCollaborator: (id: string, userId: string) => api.delete(`/trips/${id}/collaborators/${userId}`),
+  // Trip-share invitations addressed to me (Invitations inbox).
+  invitations: () => api.get<TripInvitation[]>('/trips/invitations'),
+  acceptInvitation: (id: string) =>
+    api.post<{ invitation: TripInvitation; tripId: string; name: string }>(`/trips/invitations/${id}/accept`),
+  declineInvitation: (id: string) =>
+    api.post<{ invitation: TripInvitation }>(`/trips/invitations/${id}/decline`),
 };
+
+// A per-trip sharing invitation addressed to me. Accepting makes me a
+// collaborator with live access to the itinerary.
+export interface TripInvitation {
+  _id: string;
+  fromName?: string;
+  fromEmail?: string;
+  tripId: string;
+  tripName: string;
+  destination?: string;
+  status: 'pending' | 'accepted' | 'declined';
+  respondedAt?: string;
+  createdAt: string;
+}
 
 // ----- Calendar & billing (foundation; expanded in their waves) --------------
 
@@ -761,10 +867,30 @@ export interface CalendarEvent {
   travelDistanceKm?: string | null;
   reminderMinutes?: number | null;
   alert2Minutes?: number | null;
-  recurrence?: { freq: string; interval?: number; until?: string };
+  recurrence?: {
+    freq: string;
+    interval?: number;
+    until?: string;
+    // Weekly: which weekdays (0=Sun..6=Sat).
+    daysOfWeek?: number[];
+    // Monthly "each": numbered dates of the month (1..31).
+    daysOfMonth?: number[];
+    // Yearly: which months (1..12).
+    months?: number[];
+    // Monthly "on the" / yearly "days of week": ordinal (1..5, -1=last,
+    // -2=next to last) + day kind. For yearly it applies within each month.
+    weekOfMonth?: number;
+    weekdayKind?: 'sun' | 'mon' | 'tue' | 'wed' | 'thu' | 'fri' | 'sat' | 'day' | 'weekday' | 'weekend';
+  };
+  // Whether cross-household invitees may see who else is invited (default true).
+  guestListVisible?: boolean;
   // Set when this event is a copy accepted from a cross-household invitation —
   // the form shows "Leave event" instead of Delete.
   invitationId?: string;
+  // Response-only flag on GET /calendar/events/:id: this user has view-only
+  // access to the event's calendar (housemate or outside collaborator) — the
+  // form renders read-only.
+  readOnly?: boolean;
   // E2EE dual-write (Phase 3a): opaque ciphertext of the content + its key version.
   keyVersion?: number;
   enc?: { alg: string; nonce: string; ct: string };
@@ -821,6 +947,66 @@ export const calendarApi = {
   deleteEvent: (id: string) => api.delete(`/calendar/events/${id}`),
 };
 
+// ----- Custom calendars (Calendars → Add Calendar) ----------------------------
+
+// Per-person permission on a shared calendar.
+export type CalendarAccess = 'view' | 'full';
+
+// Server record for a user-created calendar. `key` is the client-minted
+// `custom-<slug>` id that events reference via calendarType; `mine` = created
+// by the requester (creator-only edit/delete); `access` = the requester's
+// effective event permission on it.
+export interface CustomCalendarRecord {
+  _id: string;
+  userId: string;
+  key: string;
+  name: string;
+  color: string;
+  alertsEnabled: boolean;
+  sharedWithHousehold: boolean;
+  householdAccess: CalendarAccess;
+  sharedWith: { userId: string; access: CalendarAccess }[];
+  sharedWithOutside: { email?: string; phone?: string; access: CalendarAccess }[];
+  // ICS subscription source. Present => read-only subscribed calendar whose
+  // events each device fetches/expands itself (lib/calendarFeeds).
+  feedUrl?: string;
+  // Present => read-only holiday calendar whose events each device computes
+  // itself from this country config (lib/holidays via calendarPrefs).
+  holiday?: { country: string; selectedRegions?: string[]; disabledIds?: string[] };
+  mine: boolean;
+  access: CalendarAccess;
+}
+
+export type CustomCalendarPayload = Omit<CustomCalendarRecord, '_id' | 'userId' | 'mine' | 'access'>;
+
+// An outside-household calendar-sharing invitation addressed to me. Accepting
+// grants live access to the calendar and its events at `access` level.
+export interface CalendarInvitation {
+  _id: string;
+  fromName?: string;
+  fromEmail?: string;
+  calendarKey: string;
+  calendarName: string;
+  color?: string;
+  access: CalendarAccess;
+  status: 'pending' | 'accepted' | 'declined';
+  respondedAt?: string;
+  createdAt: string;
+}
+
+export const customCalendarsApi = {
+  list: () => api.get<CustomCalendarRecord[]>('/calendars'),
+  create: (data: CustomCalendarPayload) => api.post<CustomCalendarRecord>('/calendars', data),
+  update: (key: string, data: Partial<Omit<CustomCalendarPayload, 'key'>>) =>
+    api.put<CustomCalendarRecord>(`/calendars/${key}`, data),
+  remove: (key: string) => api.delete(`/calendars/${key}`),
+  invitations: () => api.get<CalendarInvitation[]>('/calendars/invitations'),
+  acceptInvitation: (id: string) =>
+    api.post<{ invitation: CalendarInvitation; calendar: CustomCalendarRecord }>(`/calendars/invitations/${id}/accept`),
+  declineInvitation: (id: string) =>
+    api.post<{ invitation: CalendarInvitation }>(`/calendars/invitations/${id}/decline`),
+};
+
 // ----- Event invitations (cross-household sharing by email) -------------------
 
 // Plaintext snapshot of the event carried by an invitation (the client decrypts
@@ -842,8 +1028,12 @@ export interface EventInvitation {
   fromUserId: string;
   fromName?: string;
   fromEmail?: string;
-  toEmail: string;
+  // Exactly one of toEmail/toPhone is set (SMS invites are phone-addressed).
+  toEmail?: string;
+  toPhone?: string;
   toUserId?: string;
+  // Capability secret for the public .ics link carried by an SMS invite.
+  shareToken?: string;
   eventId?: string;
   event: InvitationEventSnapshot;
   // 'left' = accepted then later left the event (copy deleted).
@@ -860,7 +1050,9 @@ export const invitationsApi = {
   // The organizer's invitee list for one of their events.
   sentForEvent: (eventId: string) =>
     api.get<EventInvitation[]>('/invitations/sent', { params: { eventId } }),
-  send: (data: { eventId: string; email: string; event: InvitationEventSnapshot }) =>
+  // Address with either email or phone. Phone invites are recorded here but
+  // texted from the sender's own device (see EventInviteesScreen).
+  send: (data: { eventId: string; email?: string; phone?: string; event: InvitationEventSnapshot }) =>
     api.post<{ invitation: EventInvitation; userExists: boolean }>('/invitations', data),
   accept: (id: string) =>
     api.post<{ invitation: EventInvitation; event: CalendarEvent }>(`/invitations/${id}/accept`),
@@ -869,7 +1061,25 @@ export const invitationsApi = {
   leave: (id: string) => api.post<{ invitation: EventInvitation }>(`/invitations/${id}/leave`),
   // Organizer: uninvite (deletes the invitation and, if accepted, the copy).
   revoke: (id: string) => api.delete(`/invitations/${id}`),
+  // Recipient: who else is invited, if the event's guestListVisible flag allows.
+  guests: (id: string) => api.get<InvitationGuestList>(`/invitations/${id}/guests`),
 };
+
+// GET /invitations/:id/guests — visible:false means the organizer keeps the
+// guest list private (or the source event is gone); guests is then empty.
+export interface InvitationGuestList {
+  visible: boolean;
+  organizer?: { name?: string; email?: string };
+  guests: { _id: string; toEmail?: string; toPhone?: string; status: EventInvitation['status'] }[];
+}
+
+export interface BillingSubscription {
+  autoRenew: boolean | null;   // null = unknown (predates lifecycle tracking)
+  expiresAt: string | null;    // renewal date, or access-until date when cancelled
+  billingIssue: boolean;       // payment failed; store grace period running
+  productId: string | null;    // store product id, for matching a package's price
+  managedBy: { userId: string; name: string } | null; // who bought it
+}
 
 export interface BillingStatus {
   plan: string;
@@ -887,6 +1097,11 @@ export interface BillingStatus {
   resetsAt?: string; // ISO instant of the next weekly usage reset (Wed 5PM ET)
   hasHousehold: boolean;
   catalog: { key: string; label: string; price: number; weeklyTokenLimit?: number | null }[];
+  // Subscription lifecycle (paid plans only).
+  subscription?: BillingSubscription;
+  // Per-member share of the pooled weekly tokens (household-scoped plans only).
+  // Relative shares — member counters aren't baselined at a mid-week upgrade.
+  members?: { userId: string; name: string; tokens: number }[];
 }
 
 export const billingApi = {
@@ -908,7 +1123,7 @@ export interface WeatherHour {
 export interface WeatherData {
   current: { temperature: number; weatherCode: number; description: string; humidity: number; windSpeed: number; precipitation: number };
   units: { temperature: string; wind: string; precipitation: string };
-  forecast: { date: string; weatherCode: number; tempMax: number; tempMin: number; precipProbability: number; precipSum: number; goodWeather?: boolean; hours?: WeatherHour[] }[];
+  forecast: { date: string; weatherCode: number; tempMax: number; tempMin: number; precipProbability: number; precipSum: number; goodWeather?: boolean; sunrise?: string; sunset?: string; hours?: WeatherHour[] }[];
 }
 
 export interface OutlookWeek {

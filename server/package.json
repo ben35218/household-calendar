@@ -17,6 +17,7 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.104.2",
     "@household/calendar": "file:../shared/calendar",
+    "@simplewebauthn/server": "^9.0.3",
     "axios": "^1.18.0",
     "bcryptjs": "^3.0.3",
     "cors": "^2.8.6",
@@ -24,6 +25,7 @@
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
     "helmet": "^8.2.0",
+    "imapflow": "^1.4.6",
     "jsonwebtoken": "^9.0.3",
     "mailparser": "^3.9.11",
     "mongoose": "^9.7.1",

@@ -33,9 +33,29 @@ const factorEnvelopeSchema = new mongoose.Schema({
   prfSalt:      String,
 }, { _id: false, timestamps: true });
 
+// A WebAuthn credential this user can SIGN IN with (distinct from the passkey
+// unlock *factor* envelopes above, which only wrap the E2EE private key). The
+// public key is captured at registration via a server-verified ceremony, so
+// /auth/passkey/login can verify assertion signatures.
+const passkeyCredentialSchema = new mongoose.Schema({
+  credentialId: { type: String, required: true },  // b64url
+  publicKey:    { type: String, required: true },  // b64url COSE public key
+  counter:      { type: Number, default: 0 },      // signature counter (0 on Apple platforms)
+  transports:   { type: [String], default: [] },
+}, { _id: false, timestamps: true });
+
 const userSchema = new mongoose.Schema({
   email:             { type: String, required: true, unique: true, lowercase: true },
   passwordHash:      { type: String, required: true },
+
+  // Forgot-password reset code: bcrypt hash of a short-lived 6-digit code sent
+  // by email. Attempts are counted so the code can't be brute-forced.
+  resetCodeHash:      { type: String },
+  resetCodeExpiresAt: { type: Date },
+  resetCodeAttempts:  { type: Number, default: 0 },
+
+  // Passkey sign-in credentials (WebAuthn public halves). See schema above.
+  passkeyCredentials: { type: [passkeyCredentialSchema], default: [] },
 
   // ── E2EE key material (Phase 1) ──────────────────────────────────────────
   // Plaintext public half of the identity keypair; used by household members to
@@ -50,6 +70,10 @@ const userSchema = new mongoose.Schema({
   personId:          { type: mongoose.Schema.Types.ObjectId, ref: 'Person' },    // optional link to the People roster
   firstName:         { type: String, required: true, trim: true },
   lastName:          { type: String, trim: true, default: '' },
+  // Plaintext phone (like email) so sharing flows can resolve a phone number to
+  // an account. Sparse-indexed: absent on accounts that never set one. Stored
+  // loosely normalized (leading + and digits) via services/phone.js.
+  phone:             { type: String, trim: true, default: '', index: true },
   birthday:          { type: Date },
   // Lead-time (days) used by the tasks/chores "due-soon" list filter. Not a
   // notification setting — alerts are configured per item now.
@@ -80,6 +104,10 @@ const userSchema = new mongoose.Schema({
   // Per-user weekly TOKEN usage (the enforced metric on the FREE tier):
   // { 'YYYY-MM-DD': { tokens } } where tokens = input+output+cache read+write.
   usageTokens: { type: mongoose.Schema.Types.Mixed, default: () => ({}) },
+  // AI calls refused with 402 after the weekly budget was exhausted:
+  // { 'YYYY-MM-DD': { action: count } }. Analytics-only — feeds the admin
+  // AI-usage abuse view (hammering the API after the cap is the signal).
+  usageBlocked: { type: mongoose.Schema.Types.Mixed, default: () => ({}) },
 
   // ── Storage mode + cloud-purge lifecycle (Phase 6, §4.1/§6) ──────────────
   // Server-authoritative mirror of the device "store on this device only" pref.
@@ -100,6 +128,9 @@ const userSchema = new mongoose.Schema({
   interests:           [{ type: String, trim: true }],
   aboutMe:             { type: String, trim: true },
   groceryShoppingDay:  { type: Number, default: 6 },  // 0=Sun...6=Sat, default Saturday
+  // Shopping cadence (see Household.js); kept on User for pre-household fallback.
+  groceryFrequency:    { type: String, enum: ['weekly', 'biweekly'], default: 'weekly' },
+  groceryAnchor:       { type: String, default: null },
   grocerySections:     { type: [String], default: () => ['Produce', 'Deli', 'Bakery', 'Meat & Seafood', 'Dairy', 'Frozen', 'Pantry', 'Other'] },
 }, { timestamps: true, toJSON: { virtuals: true } });
 

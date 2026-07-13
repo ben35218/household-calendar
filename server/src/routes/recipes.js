@@ -5,6 +5,7 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 const Recipe = require('../models/Recipe');
+const { sendRecipeShare } = require('../services/mailer');
 const { requireAuth } = require('../middleware/auth');
 const { meter } = require('../middleware/usageMeter');
 const { activity } = require('../middleware/activity');
@@ -381,6 +382,24 @@ router.put('/:id', async (req, res) => {
     res.json(recipe);
   } catch (err) {
     res.status(400).json({ error: err.message });
+  }
+});
+
+// Email a styled copy of the recipe (the share sheet can only send plain text).
+router.post('/:id/share-email', async (req, res) => {
+  try {
+    const recipe = await Recipe.findOne({ _id: req.params.id, userId: { $in: req.scopeIds } });
+    if (!recipe) return res.status(404).json({ error: 'Not found' });
+    const email = String(req.body?.email || '').trim().toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      return res.status(400).json({ error: 'Enter a valid email address' });
+    }
+    const fromName = [req.user.firstName, req.user.lastName].filter(Boolean).join(' ');
+    const sent = await sendRecipeShare({ toEmail: email, fromName, recipe });
+    if (!sent.sent) return res.status(502).json({ error: 'Could not send the email' });
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 

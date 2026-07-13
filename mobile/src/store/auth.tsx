@@ -4,8 +4,11 @@ import Constants from 'expo-constants';
 import { authApi, householdApi, User } from '../api';
 import { setUnauthorizedHandler } from '../api/client';
 import { loadToken, saveToken, clearToken } from '../lib/secureToken';
-import { ensureEnrolledOnLogin, ensureHouseholdKey, unlockWithPasskey, lock as lockE2EE } from '../lib/e2ee';
-import { passkeysSupported } from '../lib/passkeys';
+import {
+  ensureEnrolledOnLogin, ensureHouseholdKey, unlockWithPasskey,
+  unlockWithPasskeyPrfOutput, rewrapForNewPassword, lock as lockE2EE,
+} from '../lib/e2ee';
+import { passkeysSupported, assertPasskeyForLogin } from '../lib/passkeys';
 import { queryClient } from '../lib/queryClient';
 import { clearAll as clearReplica } from '../lib/replica';
 
@@ -29,6 +32,11 @@ type AuthState = {
   bootstrapping: boolean;
   isLoggedIn: boolean;
   login: (creds: { email: string; password: string }) => Promise<void>;
+  // One-tap sign-in with a registered passkey; false = user canceled the sheet.
+  loginWithPasskey: (email: string) => Promise<boolean>;
+  // Emailed-code reset; signs the user in and reports the E2EE outcome so the
+  // screen can explain a still-locked state ('none' = account not enrolled).
+  resetPassword: (data: { email: string; code: string; newPassword: string }) => Promise<'unlocked' | 'locked' | 'none'>;
   register: (data: { email: string; password: string; firstName: string; lastName?: string }) => Promise<void>;
   logout: () => Promise<void>;
   setUser: (user: User | null) => void;
@@ -100,6 +108,49 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     await initE2EE(creds.password); // token stored → keysApi is authed
   }, []);
 
+  const loginWithPasskey = useCallback(async (email: string) => {
+    const { data: ch } = await authApi.passkeyChallenge({ email });
+    const assertion = await assertPasskeyForLogin(ch);
+    if (!assertion) return false; // user canceled the Face ID sheet
+    const { data } = await authApi.passkeyLogin({ challengeId: ch.challengeId, response: assertion.response });
+    await saveToken(data.token);
+    setUser(data.user);
+    // Same-gesture E2EE unlock: the assertion already evaluated the PRF.
+    // Best-effort like initE2EE — a crypto failure must not block sign-in.
+    try {
+      if (assertion.prfOutput && (await unlockWithPasskeyPrfOutput(assertion.credentialId, assertion.prfOutput))) {
+        await ensureHouseholdKey();
+      }
+    } catch (err) {
+      console.warn('[e2ee] passkey unlock skipped:', (err as Error)?.message ?? err);
+    }
+    return true;
+  }, []);
+
+  const resetPassword = useCallback(
+    async (payload: { email: string; code: string; newPassword: string }) => {
+      const { data } = await authApi.resetPassword(payload);
+      await saveToken(data.token);
+      setUser(data.user);
+      if (!data.e2eeEnrolled) return 'none' as const;
+      // The password envelope is wrapped under the OLD password. Try a silent
+      // passkey unlock; if it works, re-wrap under the new password right away.
+      // Otherwise the account stays locked until Face ID / recovery code in
+      // Profile → Security.
+      try {
+        if (passkeysSupported() && (await unlockWithPasskey())) {
+          await ensureHouseholdKey();
+          await rewrapForNewPassword(payload.newPassword);
+          return 'unlocked' as const;
+        }
+      } catch {
+        // canceled / PRF unavailable — stay locked
+      }
+      return 'locked' as const;
+    },
+    []
+  );
+
   const register = useCallback(
     async (payload: { email: string; password: string; firstName: string; lastName?: string }) => {
       const { data } = await authApi.register(payload);
@@ -112,7 +163,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   return (
     <AuthContext.Provider
-      value={{ user, bootstrapping, isLoggedIn: !!user, login, register, logout, setUser }}
+      value={{ user, bootstrapping, isLoggedIn: !!user, login, loginWithPasskey, resetPassword, register, logout, setUser }}
     >
       {children}
     </AuthContext.Provider>

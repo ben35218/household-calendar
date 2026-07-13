@@ -17,6 +17,7 @@ import * as Notifications from 'expo-notifications';
 import { notificationsApi, CalendarData } from '../api';
 import { loadCalendarData } from './calendarData';
 import { getPrivacyPrefs } from './privacyPrefs';
+import { getAlertMutedCalendarIds } from './calendarPrefs';
 
 // Foreground notification behavior (applies to local reminders and any push).
 Notifications.setNotificationHandler({
@@ -58,12 +59,15 @@ function pushDayAlerts(out: Reminder[], item: { nextDueDate?: string; reminderDa
 }
 
 // Turn a calendar range into the soonest reminders to schedule.
-export function computeReminders(data: CalendarData): Reminder[] {
+// `mutedCalendarIds` = calendars whose Alerts switch is off (custom calendars);
+// their events are skipped entirely.
+export function computeReminders(data: CalendarData, mutedCalendarIds?: Set<string>): Reminder[] {
   const out: Reminder[] = [];
   const now = Date.now();
 
   for (const e of data.events) {
     if (!e.startDate) continue;
+    if (mutedCalendarIds?.has(e.calendarType)) continue;
     const start = new Date(e.startDate).getTime();
     for (const mins of [e.reminderMinutes, e.alert2Minutes]) {
       if (mins == null) continue;
@@ -71,8 +75,9 @@ export function computeReminders(data: CalendarData): Reminder[] {
       if (at.getTime() > now) out.push({ at, title: e.title, body: 'Upcoming event' });
     }
   }
-  for (const t of data.tasks) pushDayAlerts(out, t, 'Maintenance due', now);
-  for (const c of data.chores) pushDayAlerts(out, c, 'Chore due', now);
+  // The Maintenance/Chores calendars' Alerts switch mutes their day alerts too.
+  if (!mutedCalendarIds?.has('maintenance')) for (const t of data.tasks) pushDayAlerts(out, t, 'Maintenance due', now);
+  if (!mutedCalendarIds?.has('chores')) for (const c of data.chores) pushDayAlerts(out, c, 'Chore due', now);
   for (const b of data.birthdays) {
     const at = atLocalHour(b.date, ALERT_HOUR);
     if (at.getTime() > now) out.push({ at, title: '🎂 Birthday today', body: b.name });
@@ -116,7 +121,7 @@ export async function rescheduleReminders(): Promise<number> {
     const from = new Date();
     const to = new Date(Date.now() + WINDOW_DAYS * 86400000);
     const data = await loadCalendarData({ from: from.toISOString(), to: to.toISOString() });
-    const reminders = computeReminders(data);
+    const reminders = computeReminders(data, await getAlertMutedCalendarIds());
 
     await Notifications.cancelAllScheduledNotificationsAsync();
     for (const r of reminders) {

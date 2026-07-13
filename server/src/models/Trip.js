@@ -22,8 +22,15 @@ const tripSchema = new mongoose.Schema({
   color:              { type: String, default: '#5E35B1' },
   budget:             Number,                                  // planned spend, in baseCurrency
   baseCurrency:       { type: String, default: 'CAD' },        // currency the roll-up totals into
-  collaborators:      [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }], // shared with (outside household)
-  shareCode:          { type: String, index: true },           // per-trip invite code
+  collaborators:      [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }], // outside-household users who accepted a share
+  // Outside-household addresses (email OR phone) the owner shared this trip with.
+  // Each gets a TripInvitation; accepting lands the user in `collaborators`.
+  // Mirrors a shared calendar's sharedWithOutside (models/CustomCalendar.js).
+  sharedWithOutside:  [{
+    _id: false,
+    email: { type: String, lowercase: true, trim: true },
+    phone: { type: String, trim: true },
+  }],
   // Per-family budget for this trip (the owning family + each collaborator family).
   householdBudgets:   [{
     householdId: { type: mongoose.Schema.Types.ObjectId, ref: 'Household' },

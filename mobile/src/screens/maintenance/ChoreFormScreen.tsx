@@ -11,6 +11,7 @@ import { sealNew, sealUpdate, openRecord } from '../../lib/e2ee';
 const CHORE_ENC = (p: Record<string, unknown>) => ({ title: p.title, instructions: p.instructions });
 import { useAuth } from '../../store/auth';
 import { Input, Select, Screen, SectionTitle, DateField, useHeaderCheckButton } from '../../components/ui';
+import { form as fs, GroupCard, CardDivider } from '../../components/formStyles';
 import FormAssist from '../../components/FormAssist';
 import { useFormAssist } from '../../hooks/useFormAssist';
 import RecurrenceFields from '../../components/RecurrenceFields';
@@ -194,45 +195,69 @@ export default function ChoreFormScreen() {
     <Screen>
       <FormAssist
         formType="household chore"
-        title="AI Assistant"
         placeholder={'Describe the chore, e.g. "take out the recycling every Sunday, assign to Alex"'}
         fields={assistFields}
         current={{ ...form }}
         onApply={applyPatch}
       />
 
-      <Input label="Chore Title *" value={form.title} onChangeText={(v) => set({ title: v })} highlight={assist.changed.has('title')} />
-      <Input label="Instructions" value={form.instructions} onChangeText={(v) => set({ instructions: v })} multiline highlight={assist.changed.has('instructions')} />
+      <GroupCard>
+        <Input
+          value={form.title}
+          onChangeText={(v) => set({ title: v })}
+          placeholder="Chore Title"
+          containerStyle={fs.headField}
+          style={[fs.headInput, assist.changed.has('title') && fs.headInputHighlight]}
+        />
+      </GroupCard>
 
-      <Select
-        label="Assigned to"
-        clearable
-        placeholder="Unassigned"
-        value={form.assignedTo ?? undefined}
-        options={familyOptions}
-        onChange={(v) => set({ assignedTo: (v as string) ?? null })}
-        highlight={assist.changed.has('assignedTo')}
+      <SectionTitle>Instructions</SectionTitle>
+      <Input
+        value={form.instructions}
+        onChangeText={(v) => set({ instructions: v })}
+        multiline
+        placeholder="Add instructions…"
+        style={fs.notes}
+        highlight={assist.changed.has('instructions')}
       />
 
-      <Text style={styles.fieldLabel}>Icon</Text>
-      <View style={styles.iconGrid}>
-        {CHORE_ICONS.map((name) => {
-          const selected = mdiName(form.icon) === name;
-          return (
-            <TouchableOpacity
-              key={name}
-              style={[styles.iconOption, selected && { backgroundColor: accent, borderColor: accent }]}
-              onPress={() => set({ icon: `mdi-${name}` })}
-            >
-              <MaterialCommunityIcons
-                name={name as any}
-                size={22}
-                color={selected ? '#fff' : colors.textMuted}
-              />
-            </TouchableOpacity>
-          );
-        })}
-      </View>
+      <GroupCard>
+        <Select
+          inlineLabel="Assigned to"
+          clearable
+          placeholder="Unassigned"
+          value={form.assignedTo ?? undefined}
+          options={familyOptions}
+          onChange={(v) => set({ assignedTo: (v as string) ?? null })}
+          highlight={assist.changed.has('assignedTo')}
+          containerStyle={fs.dtFieldWrap}
+          fieldStyle={fs.rowField}
+          valueStyle={fs.dtValue}
+          chevronIcon="chevron-expand"
+        />
+      </GroupCard>
+
+      <SectionTitle>Icon</SectionTitle>
+      <GroupCard>
+        <View style={styles.iconGrid}>
+          {CHORE_ICONS.map((name) => {
+            const selected = mdiName(form.icon) === name;
+            return (
+              <TouchableOpacity
+                key={name}
+                style={[styles.iconOption, selected && { backgroundColor: accent, borderColor: accent }]}
+                onPress={() => set({ icon: `mdi-${name}` })}
+              >
+                <MaterialCommunityIcons
+                  name={name as any}
+                  size={22}
+                  color={selected ? '#fff' : colors.textMuted}
+                />
+              </TouchableOpacity>
+            );
+          })}
+        </View>
+      </GroupCard>
 
       <RecurrenceFields
         form={rec}
@@ -241,37 +266,64 @@ export default function ChoreFormScreen() {
         onChangeMonthlyMode={setMonthlyMode}
       />
 
-      <DateField
-        label="Next Due Date"
-        clearable
-        value={form.nextDueDate}
-        onChange={(v) => set({ nextDueDate: v })}
-        highlight={assist.changed.has('nextDueDate')}
-      />
+      <GroupCard>
+        <DateField
+          inlineLabel="Next Due Date"
+          clearable
+          placeholder="None"
+          value={form.nextDueDate}
+          onChange={(v) => set({ nextDueDate: v })}
+          highlight={assist.changed.has('nextDueDate')}
+          containerStyle={fs.dtFieldWrap}
+          fieldStyle={fs.rowField}
+          valueStyle={fs.dtValue}
+          hideIcon
+        />
+      </GroupCard>
 
       <SectionTitle>Alerts</SectionTitle>
-      <Select
-        label="Alert"
-        value={form.reminderDaysBefore ?? undefined}
-        options={ALERT_DAY_OPTIONS.map((o) => ({ label: o.label, value: o.value ?? -1 }))}
-        onChange={(v) => set({ reminderDaysBefore: v === -1 ? null : (v as number) })}
-      />
-      {form.reminderDaysBefore != null ? (
+      <GroupCard>
         <Select
-          label="Second alert"
-          value={form.alert2DaysBefore ?? undefined}
+          inlineLabel="Alert"
+          value={form.reminderDaysBefore ?? undefined}
           options={ALERT_DAY_OPTIONS.map((o) => ({ label: o.label, value: o.value ?? -1 }))}
-          onChange={(v) => set({ alert2DaysBefore: v === -1 ? null : (v as number) })}
+          onChange={(v) => set({ reminderDaysBefore: v === -1 ? null : (v as number) })}
+          containerStyle={fs.dtFieldWrap}
+          fieldStyle={fs.rowField}
+          valueStyle={fs.dtValue}
+          chevronIcon="chevron-expand"
         />
-      ) : null}
-      {memberCount > 1 && form.reminderDaysBefore != null ? (
-        <Select
-          label="Alert who?"
-          value={form.alertAudience}
-          options={AUDIENCE_OPTIONS}
-          onChange={(v) => set({ alertAudience: (v as string) ?? 'everyone' })}
-        />
-      ) : null}
+        {form.reminderDaysBefore != null ? (
+          <>
+            <CardDivider />
+            <Select
+              inlineLabel="Second alert"
+              value={form.alert2DaysBefore ?? undefined}
+              options={ALERT_DAY_OPTIONS.map((o) => ({ label: o.label, value: o.value ?? -1 }))}
+              onChange={(v) => set({ alert2DaysBefore: v === -1 ? null : (v as number) })}
+              containerStyle={fs.dtFieldWrap}
+              fieldStyle={fs.rowField}
+              valueStyle={fs.dtValue}
+              chevronIcon="chevron-expand"
+            />
+          </>
+        ) : null}
+        {memberCount > 1 && form.reminderDaysBefore != null ? (
+          <>
+            <CardDivider />
+            <Select
+              inlineLabel="Alert who?"
+              value={form.alertAudience}
+              options={AUDIENCE_OPTIONS}
+              onChange={(v) => set({ alertAudience: (v as string) ?? 'everyone' })}
+              containerStyle={fs.dtFieldWrap}
+              fieldStyle={fs.rowField}
+              valueStyle={fs.dtValue}
+              chevronIcon="chevron-expand"
+            />
+          </>
+        ) : null}
+      </GroupCard>
 
       {error ? <Text style={styles.error}>{error}</Text> : null}
     </Screen>
@@ -281,8 +333,7 @@ export default function ChoreFormScreen() {
 
 const styles = StyleSheet.create({
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.background },
-  fieldLabel: { fontSize: 13, color: colors.textMuted, marginBottom: 6, fontWeight: '500' },
-  iconGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: spacing.md },
+  iconGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, padding: 14 },
   iconOption: {
     width: 44,
     height: 44,

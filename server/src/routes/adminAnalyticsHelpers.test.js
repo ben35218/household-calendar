@@ -117,3 +117,67 @@ test('action lists are the expected buckets', () => {
   assert.deepEqual(AI_ACTIONS, ['chat', 'scan', 'generation', 'manualParse', 'aiHelper']);
   assert.ok(ACTIVITY_ACTIONS.includes('eventCreated') && ACTIVITY_ACTIONS.includes('taskCompleted'));
 });
+
+// ── Per-user token usage + abuse signals ────────────────────────────────────
+
+const {
+  HAMMER_MIN_BLOCKED, SPIKE_FACTOR, SPIKE_MIN_TOKENS,
+  periodKeysBack, tokenSeries, blockedCount, abuseFlags,
+} = require('./adminAnalyticsHelpers');
+
+test('periodKeysBack walks weekly anchors backward, oldest→newest', () => {
+  assert.deepEqual(periodKeysBack('2026-07-01', 3), ['2026-06-17', '2026-06-24', '2026-07-01']);
+  // Crosses a month/year boundary cleanly.
+  assert.deepEqual(periodKeysBack('2026-01-07', 2), ['2025-12-31', '2026-01-07']);
+  assert.deepEqual(periodKeysBack('2026-07-01', 1), ['2026-07-01']);
+});
+
+test('tokenSeries reads per-period tokens, 0 for missing periods', () => {
+  const usageTokens = { '2026-06-24': { tokens: 120 }, '2026-07-01': { tokens: 45 } };
+  assert.deepEqual(
+    tokenSeries(usageTokens, ['2026-06-17', '2026-06-24', '2026-07-01']),
+    [0, 120, 45]
+  );
+  assert.deepEqual(tokenSeries(null, ['2026-07-01']), [0]);
+});
+
+test('blockedCount sums per-action 402 counts for one period', () => {
+  const blocked = { '2026-07-01': { chat: 7, scan: 3 } };
+  assert.equal(blockedCount(blocked, '2026-07-01'), 10);
+  assert.equal(blockedCount(blocked, '2026-06-24'), 0);
+  assert.equal(blockedCount(undefined, '2026-07-01'), 0);
+});
+
+test('abuseFlags: overLimit when enforced usage hit the budget', () => {
+  assert.deepEqual(abuseFlags({ used: 100_000, limit: 100_000 }), ['overLimit']);
+  assert.deepEqual(abuseFlags({ used: 99_999, limit: 100_000 }), []);
+  // No limit configured (unlimited tier) → never overLimit.
+  assert.deepEqual(abuseFlags({ used: 9e9, limit: null }), []);
+});
+
+test('abuseFlags: hammering at the blocked-attempt threshold', () => {
+  assert.deepEqual(abuseFlags({ blocked: HAMMER_MIN_BLOCKED }), ['hammering']);
+  assert.deepEqual(abuseFlags({ blocked: HAMMER_MIN_BLOCKED - 1 }), []);
+});
+
+test('abuseFlags: spike needs 3× own baseline AND the absolute floor', () => {
+  // 3× the 20k average and above the 50k floor → spike.
+  assert.deepEqual(
+    abuseFlags({ series: [20_000, 20_000, SPIKE_FACTOR * 20_000] }),
+    ['spike']
+  );
+  // Big multiple of a tiny baseline but under the floor → not a spike.
+  assert.deepEqual(abuseFlags({ series: [100, 100, SPIKE_MIN_TOKENS - 1] }), []);
+  // No history (first week) → never a spike, however large.
+  assert.deepEqual(abuseFlags({ series: [500_000] }), []);
+  assert.deepEqual(abuseFlags({ series: [0, 0, 500_000] }), []);
+});
+
+test('abuseFlags stack when several signals fire', () => {
+  const flags = abuseFlags({
+    series: [10_000, 10_000, 90_000],
+    used: 90_000, limit: 80_000,
+    blocked: 25,
+  });
+  assert.deepEqual(flags, ['overLimit', 'hammering', 'spike']);
+});

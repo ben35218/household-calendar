@@ -12,13 +12,12 @@ import {
 } from 'react-native';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useNavigation } from '@react-navigation/native';
-import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { colors, radius, spacing } from '../../theme';
 import { flattenMarkdown } from '../../lib/markdown';
 import { formatCompact } from '../../lib/format';
 import { usePrivacyPrefs } from '../../lib/privacyPrefs';
-import type { RootStackParamList } from '../../navigation/types';
+import QuotaBlockedNotice from '../../components/QuotaBlockedNotice';
+import AssistantIcon from '../../components/AssistantIcon';
 import type { ChatController } from '../../hooks/useChat';
 
 // Reusable assistant chat UI. Ports client/src/components/ChatPanel.vue. Each
@@ -27,7 +26,7 @@ import type { ChatController } from '../../hooks/useChat';
 // Clear action.
 export default function ChatScreen({
   chat,
-  emptyIcon = 'message-text-outline',
+  accessory,
   emptyText,
   emptyHint,
   placeholder = 'Type a message…',
@@ -36,7 +35,8 @@ export default function ChatScreen({
   onFollowupPress,
 }: {
   chat: ChatController;
-  emptyIcon?: keyof typeof MaterialCommunityIcons.glyphMap;
+  // Domain badge on Calvin in the empty state (wrench, calendar, suitcase, …).
+  accessory?: keyof typeof MaterialCommunityIcons.glyphMap;
   emptyText: string;
   emptyHint?: string;
   placeholder?: string;
@@ -49,7 +49,6 @@ export default function ChatScreen({
   const scrollRef = useRef<ScrollView>(null);
   const [contextOpen, setContextOpen] = useState(false);
   const insets = useSafeAreaInsets();
-  const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const aiEnabled = usePrivacyPrefs().prefs.aiEnabled;
   const scrollToEnd = () => scrollRef.current?.scrollToEnd({ animated: true });
 
@@ -128,7 +127,7 @@ export default function ChatScreen({
         {/* Empty state + suggested prompts */}
         {empty ? (
           <View style={styles.emptyWrap}>
-            <MaterialCommunityIcons name={emptyIcon} size={52} color={colors.primary} />
+            <AssistantIcon size={52} color={colors.primary} accessory={accessory} />
             <Text style={styles.emptyText}>{emptyText}</Text>
             {chat.suggestedPrompts.length ? (
               <View style={styles.suggestions}>
@@ -206,31 +205,16 @@ export default function ChatScreen({
         {/* Error + retry. Over quota, retrying is futile — offer the upgrade
             path (Plan screen) instead. */}
         {chat.error ? (
-          <View style={styles.errorBox}>
-            {chat.quotaExceeded && chat.error.includes('Upgrade') ? (
-              // Over quota, retrying is futile: render "Upgrade" inline as an
-              // underlined link to the Plan screen (Paywall) instead of a button.
-              <Text style={styles.errorText}>
-                {chat.error.slice(0, chat.error.indexOf('Upgrade'))}
-                <Text
-                  style={styles.upgradeLink}
-                  onPress={() => navigation.navigate('Paywall')}
-                  accessibilityRole="link"
-                  accessibilityLabel="Upgrade — open the Plan screen"
-                >
-                  Upgrade
-                </Text>
-                {chat.error.slice(chat.error.indexOf('Upgrade') + 'Upgrade'.length)}
-              </Text>
-            ) : (
-              <>
-                <Text style={styles.errorText}>{chat.error}</Text>
-                <TouchableOpacity onPress={() => chat.retry()}>
-                  <Text style={styles.retryText}>Retry</Text>
-                </TouchableOpacity>
-              </>
-            )}
-          </View>
+          chat.quotaExceeded ? (
+            <QuotaBlockedNotice message={chat.error} />
+          ) : (
+            <View style={styles.errorBox}>
+              <Text style={styles.errorText}>{chat.error}</Text>
+              <TouchableOpacity onPress={() => chat.retry()}>
+                <Text style={styles.retryText}>Retry</Text>
+              </TouchableOpacity>
+            </View>
+          )
         ) : null}
       </ScrollView>
 
@@ -320,7 +304,6 @@ const styles = StyleSheet.create({
   },
   errorText: { flex: 1, color: colors.error, fontSize: 13 },
   retryText: { color: colors.error, fontWeight: '700', fontSize: 13, paddingLeft: spacing.sm },
-  upgradeLink: { color: colors.error, fontWeight: '700', textDecorationLine: 'underline' },
   inputBar: {
     flexDirection: 'row',
     alignItems: 'flex-end',

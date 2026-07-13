@@ -1,14 +1,16 @@
 {
   "cli": {
     "version": ">= 16.0.0",
-    "appVersionSource": "remote"
+    "appVersionSource": "remote",
+    "promptToConfigurePushNotifications": false
   },
   "build": {
     "development": {
       "developmentClient": true,
       "distribution": "internal",
       "env": {
-        "EXPO_PUBLIC_API_URL": "http://localhost:3001"
+        "EXPO_PUBLIC_API_URL": "http://localhost:3001",
+        "EXPO_PUBLIC_RC_IOS_KEY": "appl_fVFOKjziHJrHEUDeBLlPeEHGYzW"
       }
     },
     "development-simulator": {
@@ -35,25 +37,25 @@
       },
       "env": {
         "EXPO_PUBLIC_API_URL": "https://household-calendar-api.onrender.com",
-        "EXPO_PUBLIC_RC_IOS_KEY": "REPLACE_WITH_REVENUECAT_IOS_PUBLIC_KEY",
-        "EXPO_PUBLIC_RC_ANDROID_KEY": "REPLACE_WITH_REVENUECAT_ANDROID_PUBLIC_KEY"
+        "EXPO_PUBLIC_RC_IOS_KEY": "appl_fVFOKjziHJrHEUDeBLlPeEHGYzW"
       }
     },
     "production": {
       "autoIncrement": true,
       "env": {
         "EXPO_PUBLIC_API_URL": "https://household-calendar-api.onrender.com",
-        "EXPO_PUBLIC_RC_IOS_KEY": "REPLACE_WITH_REVENUECAT_IOS_PUBLIC_KEY",
-        "EXPO_PUBLIC_RC_ANDROID_KEY": "REPLACE_WITH_REVENUECAT_ANDROID_PUBLIC_KEY"
+        "EXPO_PUBLIC_RC_IOS_KEY": "appl_fVFOKjziHJrHEUDeBLlPeEHGYzW"
       }
     }
   },
   "submit": {
     "production": {
       "ios": {
-        "appleId": "REPLACE_WITH_APPLE_ID_EMAIL",
         "ascAppId": "6785258847",
-        "appleTeamId": "RXV5LML9T5"
+        "appleTeamId": "RXV5LML9T5",
+        "ascApiKeyPath": "/Users/benpolk/.appstoreconnect/private_keys/AuthKey_Q5MT22THX9.p8",
+        "ascApiKeyId": "Q5MT22THX9",
+        "ascApiKeyIssuerId": "767d4bb3-fca8-47c5-ae55-e47a989bf893"
       },
       "android": {
         "serviceAccountKeyPath": "./play-service-account.json",

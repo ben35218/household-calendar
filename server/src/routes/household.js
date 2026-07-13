@@ -3,8 +3,11 @@ const User = require('../models/User');
 const Household = require('../models/Household');
 const HouseholdKeyEnvelope = require('../models/HouseholdKeyEnvelope');
 const JoinRequest = require('../models/JoinRequest');
+const HouseholdInvitation = require('../models/HouseholdInvitation');
 const AuditLog = require('../models/AuditLog');
 const { requireAuth } = require('../middleware/auth');
+const { sendHouseholdInvitation } = require('../services/mailer');
+const { resolveShareTarget } = require('../services/phone');
 const { rateLimit } = require('../middleware/rateLimit');
 const { dedupeCategoriesForScope } = require('../services/dedupeCategories');
 const { validateHDKEnvelope, validateRotation, pickRecordEnc } = require('../services/householdKey');
@@ -12,6 +15,8 @@ const { computeReadiness, DROP_FIELDS } = require('../services/dropReadiness');
 const { cancelDeletionSet } = require('../services/cloudDeletion');
 const { CONTENT_MODELS } = require('../services/contentModels');
 const { sharedTripIds, excludeSharedFilter } = require('../services/tripSharing');
+const { outsideSharedCalendarKeys, excludeOutsideCalendarFilter } = require('../services/calendarSharing');
+const CustomCalendar = require('../models/CustomCalendar');
 
 const router = express.Router();
 router.use(requireAuth);
@@ -58,7 +63,6 @@ router.get('/', async (req, res) => {
     res.json({
       _id: req.household._id,
       name: req.household.name,
-      joinCode: req.household.joinCode,
       ownerId: req.household.ownerId,
       isOwner: String(req.household.ownerId) === String(req.user._id),
       e2eeActive: !!req.household.e2eeActive,
@@ -106,7 +110,9 @@ router.get('/e2ee/stragglers', async (req, res) => {
     let total = 0;
     // Shared trips (and their items) stay plaintext for cross-household
     // collaborators, so they're not stragglers — never offer them for sealing.
+    // Same for events on outside-shared custom calendars (§9.5).
     const sharedIds = await sharedTripIds(CONTENT_MODELS.Trip, req.scopeIds);
+    const sharedCalKeys = await outsideSharedCalendarKeys(CustomCalendar, req.scopeIds);
     for (const [collection, Model] of Object.entries(CONTENT_MODELS)) {
       const fields = DROP_FIELDS[collection];
       if (!fields) continue;
@@ -114,6 +120,7 @@ router.get('/e2ee/stragglers', async (req, res) => {
       const rows = await Model.find({
         userId: { $in: req.scopeIds },
         ...excludeSharedFilter(collection, sharedIds),
+        ...excludeOutsideCalendarFilter(collection, sharedCalKeys),
         $or: [{ enc: { $exists: false } }, { enc: null }],
       }).select(projection).limit(LIMIT).lean();
       if (rows.length) { collections.push({ collection, fields, records: rows }); total += rows.length; }
@@ -337,37 +344,178 @@ router.post('/key/rotate', async (req, res) => {
   }
 });
 
-// ── Approve-on-device join ──────────────────────────────────────────────────
+// ── Invite by email (replaces the shared join code) ──────────────────────────
 
-// Request to join a household by its invite code. Under E2EE the code carries no
-// key — this only opens a pending JoinRequest; membership (and the HDK envelope)
-// are granted when an existing member approves on-device. Replaces instant join.
-router.post('/join', joinLimiter, async (req, res) => {
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+// The invitations addressed to a user: to their account, or (before it's claimed)
+// to their email or saved phone. Used by the inbox/accept/decline endpoints.
+function addressedToUser(user) {
+  const or = [{ toUserId: user._id }];
+  if (user.email) or.push({ toEmail: user.email.toLowerCase() });
+  if (user.phone) or.push({ toPhone: user.phone });
+  return or;
+}
+
+// A member invites an email OR phone number to join the household. Creates (or
+// refreshes) a HouseholdInvitation; email invites are emailed, phone invites are
+// texted from the inviter's own device. The recipient accepts from their
+// Invitations inbox, which opens a JoinRequest a member then approves on-device.
+router.post('/invitations', async (req, res) => {
   try {
-    const code = (req.body.joinCode || '').trim().toUpperCase();
-    if (!code) return res.status(400).json({ error: 'Join code required' });
-    if (!req.user.identityPublicKey) {
-      return res.status(400).json({ error: 'Set up your encryption key before joining a household' });
+    if (!req.household) return res.status(404).json({ error: 'No household' });
+
+    let target;
+    try { target = await resolveShareTarget({ email: req.body?.email, phone: req.body?.phone }); }
+    catch (msg) { return res.status(400).json({ error: String(msg) }); }
+    const { toEmail, toPhone, toUserId, recipient } = target;
+
+    if ((toEmail && toEmail === (req.user.email || '').toLowerCase()) ||
+        (toPhone && toPhone === (req.user.phone || ''))) {
+      return res.status(400).json({ error: "You can't invite yourself" });
+    }
+    if (recipient && String(recipient.householdId) === String(req.household._id)) {
+      return res.status(400).json({ error: 'That person is already in your household' });
     }
 
-    const target = await Household.findOne({ joinCode: code });
-    if (!target) return res.status(404).json({ error: 'No household found for that code' });
-    if (String(target._id) === String(req.user.householdId)) {
-      return res.json({ status: 'member', householdId: target._id });
-    }
-
-    // One live request per (requester, target); refresh the pinned public key in
-    // case it changed since a prior attempt.
-    const request = await JoinRequest.findOneAndUpdate(
-      { householdId: target._id, requesterUserId: req.user._id, status: 'pending' },
-      { $set: { requesterPublicKey: req.user.identityPublicKey } },
+    const fromName = [req.user.firstName, req.user.lastName].filter(Boolean).join(' ');
+    // One live invitation per (household, address); refresh its sender snapshot
+    // and re-open it if a prior one was declined.
+    const match = toEmail
+      ? { householdId: req.household._id, toEmail }
+      : { householdId: req.household._id, toPhone };
+    const invitation = await HouseholdInvitation.findOneAndUpdate(
+      match,
+      {
+        $set: {
+          fromUserId: req.user._id, fromName, fromEmail: req.user.email,
+          householdName: req.household.name, toUserId,
+          toEmail: toEmail || undefined, toPhone: toPhone || undefined,
+          status: 'pending', respondedAt: null, joinRequestId: null,
+        },
+      },
       { new: true, upsert: true, setDefaultsOnInsert: true },
     );
-    res.status(201).json({ status: 'pending', requestId: request._id, name: target.name });
+    // Phone invites carry no email to send — the inviter's device texts them.
+    if (toEmail) {
+      sendHouseholdInvitation({ toEmail, fromName, householdName: req.household.name, hasAccount: !!recipient });
+    }
+    res.status(201).json({ invitation, userExists: !!recipient });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
+
+// Pending/most-recent invitations this household has sent (members see the list).
+router.get('/invitations', async (req, res) => {
+  try {
+    if (!req.household) return res.status(404).json({ error: 'No household' });
+    const invitations = await HouseholdInvitation
+      .find({ householdId: req.household._id }).sort('-createdAt').lean();
+    res.json(invitations);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Revoke a sent invitation (and any pending join request it opened).
+router.delete('/invitations/:id', async (req, res) => {
+  try {
+    if (!req.household) return res.status(404).json({ error: 'No household' });
+    const invitation = await HouseholdInvitation.findOneAndDelete({
+      _id: req.params.id, householdId: req.household._id,
+    });
+    if (!invitation) return res.status(404).json({ error: 'Invitation not found' });
+    if (invitation.joinRequestId) {
+      await JoinRequest.deleteOne({ _id: invitation.joinRequestId, status: 'pending' }).catch(() => {});
+    }
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Invitations addressed to me, newest first (my Invitations inbox).
+router.get('/invitations/mine', async (req, res) => {
+  try {
+    const email = (req.user.email || '').toLowerCase();
+    const phone = req.user.phone || '';
+    const invitations = await HouseholdInvitation
+      .find({ $or: addressedToUser(req.user) })
+      .sort('-createdAt');
+    // Lazily claim email/phone-only invitations sent before this account existed.
+    const unclaimed = invitations.filter(
+      (i) => !i.toUserId && ((i.toEmail && i.toEmail === email) || (i.toPhone && i.toPhone === phone)),
+    );
+    if (unclaimed.length) {
+      await HouseholdInvitation.updateMany(
+        { _id: { $in: unclaimed.map((i) => i._id) } },
+        { toUserId: req.user._id },
+      );
+    }
+    res.json(invitations);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Accept an invitation → open (or refresh) a JoinRequest pinning my public key.
+// Membership isn't granted here: a member still approves on-device (wrapping the
+// HDK), exactly as before — the invitation just replaced the shared code.
+router.post('/invitations/:id/accept', joinLimiter, async (req, res) => {
+  try {
+    if (!req.user.identityPublicKey) {
+      return res.status(400).json({ error: 'Set up your encryption key before joining a household' });
+    }
+    const invitation = await HouseholdInvitation.findOne({
+      _id: req.params.id,
+      $or: addressedToUser(req.user),
+    });
+    if (!invitation) return res.status(404).json({ error: 'Invitation not found' });
+    if (String(invitation.householdId) === String(req.user.householdId)) {
+      return res.status(400).json({ error: "You're already in this household" });
+    }
+
+    // One live request per (requester, target); refresh the pinned public key.
+    const request = await JoinRequest.findOneAndUpdate(
+      { householdId: invitation.householdId, requesterUserId: req.user._id, status: 'pending' },
+      { $set: { requesterPublicKey: req.user.identityPublicKey } },
+      { new: true, upsert: true, setDefaultsOnInsert: true },
+    );
+    invitation.toUserId = req.user._id;
+    invitation.status = 'accepted';
+    invitation.respondedAt = new Date();
+    invitation.joinRequestId = request._id;
+    await invitation.save();
+    res.status(201).json({ status: 'pending', requestId: request._id, name: invitation.householdName });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/invitations/:id/decline', async (req, res) => {
+  try {
+    const invitation = await HouseholdInvitation.findOne({
+      _id: req.params.id,
+      $or: addressedToUser(req.user),
+    });
+    if (!invitation) return res.status(404).json({ error: 'Invitation not found' });
+    // Declining after accepting also withdraws the pending join request.
+    if (invitation.joinRequestId) {
+      await JoinRequest.deleteOne({ _id: invitation.joinRequestId, status: 'pending' }).catch(() => {});
+    }
+    invitation.toUserId = req.user._id;
+    invitation.status = 'declined';
+    invitation.respondedAt = new Date();
+    invitation.joinRequestId = null;
+    await invitation.save();
+    res.json({ invitation });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Approve-on-device join ──────────────────────────────────────────────────
 
 // The caller's own pending/most-recent join request (joiner polls this while
 // waiting for a family member to approve).
@@ -494,6 +642,10 @@ router.post('/join-requests/:id/approve', async (req, res) => {
       { _id: request._id },
       { $set: { status: 'approved', resolvedByUserId: req.user._id } },
     );
+    // The invitation has done its job — clear it from both inboxes.
+    await HouseholdInvitation.deleteMany({
+      householdId: req.household._id, toUserId: requester._id,
+    }).catch(() => {});
     await AuditLog.create({
       userId: requester._id, householdId: req.household._id, event: 'member_approved',
       meta: { approvedBy: req.user._id, keyVersion: version },
@@ -508,11 +660,16 @@ router.post('/join-requests/:id/approve', async (req, res) => {
 router.post('/join-requests/:id/reject', async (req, res) => {
   try {
     if (!req.household) return res.status(404).json({ error: 'No household' });
-    const result = await JoinRequest.updateOne(
+    const request = await JoinRequest.findOneAndUpdate(
       { _id: req.params.id, householdId: req.household._id, status: 'pending' },
       { $set: { status: 'rejected', resolvedByUserId: req.user._id } },
     );
-    if (!result.matchedCount) return res.status(404).json({ error: 'No pending request found' });
+    if (!request) return res.status(404).json({ error: 'No pending request found' });
+    // Retire the invitation the reject answers, so the person sees it was declined.
+    await HouseholdInvitation.updateMany(
+      { householdId: req.household._id, toUserId: request.requesterUserId, status: 'accepted' },
+      { $set: { status: 'declined', respondedAt: new Date(), joinRequestId: null } },
+    ).catch(() => {});
     res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ error: err.message });

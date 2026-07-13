@@ -1,8 +1,12 @@
 import React, { useMemo, useState } from 'react';
-import { View, Text, StyleSheet, FlatList, ActivityIndicator } from 'react-native';
+import { View, Text, StyleSheet, FlatList, ActivityIndicator, TouchableOpacity } from 'react-native';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { invitationsApi, EventInvitation } from '../../api';
+import {
+  invitationsApi, EventInvitation, customCalendarsApi, CalendarInvitation,
+  tripsApi, TripInvitation, householdApi, HouseholdInvitation,
+} from '../../api';
+import { refreshCustomCalendars } from '../../lib/calendarPrefs';
 import { Button, SegmentedControl, Badge } from '../../components/ui';
 import { colors, spacing } from '../../theme';
 
@@ -14,6 +18,14 @@ import { colors, spacing } from '../../theme';
 // invite.ics can add it to Apple/Google Calendar.
 
 type Tab = 'new' | 'replied';
+
+// The inbox mixes invitation kinds: one-shot event invites, and ongoing shares
+// of a calendar, a trip, or a whole household.
+type Row =
+  | { kind: 'event'; inv: EventInvitation }
+  | { kind: 'calendar'; inv: CalendarInvitation }
+  | { kind: 'trip'; inv: TripInvitation }
+  | { kind: 'household'; inv: HouseholdInvitation };
 
 // "Monday, July 13, 2026" or "Jul 13, 3:00 PM – 4:00 PM" style when-line.
 function whenLabel(e: EventInvitation['event']): string {
@@ -29,10 +41,59 @@ function whenLabel(e: EventInvitation['event']): string {
     return s;
   }
   const day = start.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
-  const t1 = start.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+  const t1 = start.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit', hour12: true });
   if (!e.endDate) return `${day}, ${t1}`;
-  const t2 = new Date(e.endDate).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+  const t2 = new Date(e.endDate).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit', hour12: true });
   return `${day}, ${t1} – ${t2}`;
+}
+
+const GUEST_STATUS_LABEL: Record<string, string> = {
+  pending: 'Invited',
+  accepted: 'Going',
+  declined: 'Declined',
+  left: 'Left',
+};
+
+// Lazy "See who's invited" expander on an event invitation card. Fetches only
+// once opened (no eager per-card requests); the server answers visible:false
+// when the organizer keeps the guest list private.
+function GuestList({ invitation }: { invitation: EventInvitation }) {
+  const [open, setOpen] = useState(false);
+  const guestsQ = useQuery({
+    queryKey: ['invitations', 'guests', invitation._id],
+    queryFn: async () => (await invitationsApi.guests(invitation._id)).data,
+    enabled: open,
+  });
+  return (
+    <View>
+      <TouchableOpacity style={styles.guestsToggle} onPress={() => setOpen((v) => !v)} activeOpacity={0.7}>
+        <Ionicons name={open ? 'chevron-down' : 'chevron-forward'} size={14} color={colors.textMuted} />
+        <Text style={styles.guestsToggleText}>See who’s invited</Text>
+      </TouchableOpacity>
+      {!open ? null : guestsQ.isLoading ? (
+        <ActivityIndicator size="small" color={colors.primary} style={styles.guestsLoading} />
+      ) : guestsQ.data?.visible ? (
+        <View style={styles.guestsList}>
+          <View style={styles.metaRow}>
+            <Ionicons name="person-circle-outline" size={14} color={colors.textMuted} />
+            <Text style={styles.meta} numberOfLines={1}>
+              {guestsQ.data.organizer?.name || guestsQ.data.organizer?.email} · Organizer
+            </Text>
+          </View>
+          {guestsQ.data.guests.map((g) => (
+            <View key={g._id} style={styles.metaRow}>
+              <Ionicons name="person-outline" size={14} color={colors.textMuted} />
+              <Text style={styles.meta} numberOfLines={1}>
+                {g._id === invitation._id ? 'You' : g.toEmail || g.toPhone} · {GUEST_STATUS_LABEL[g.status]}
+              </Text>
+            </View>
+          ))}
+        </View>
+      ) : (
+        <Text style={styles.guestsHidden}>The organizer hasn’t shared the guest list.</Text>
+      )}
+    </View>
+  );
 }
 
 export default function InvitationsScreen() {
@@ -43,6 +104,18 @@ export default function InvitationsScreen() {
   const invQ = useQuery({
     queryKey: ['invitations'],
     queryFn: async () => (await invitationsApi.list()).data,
+  });
+  const calInvQ = useQuery({
+    queryKey: ['calendarInvitations'],
+    queryFn: async () => (await customCalendarsApi.invitations()).data,
+  });
+  const tripInvQ = useQuery({
+    queryKey: ['tripInvitations'],
+    queryFn: async () => (await tripsApi.invitations()).data,
+  });
+  const hhInvQ = useQuery({
+    queryKey: ['householdInvitations', 'mine'],
+    queryFn: async () => (await householdApi.myInvitations()).data,
   });
 
   const respond = useMutation({
@@ -57,14 +130,244 @@ export default function InvitationsScreen() {
     onError: (e: any) => setError(e.response?.data?.error || 'Something went wrong'),
   });
 
-  const items = useMemo(() => {
-    const all = invQ.data ?? [];
-    return tab === 'new'
-      ? all.filter((i) => i.status === 'pending')
-      : all.filter((i) => i.status !== 'pending');
-  }, [invQ.data, tab]);
+  const respondCal = useMutation({
+    mutationFn: ({ id, action }: { id: string; action: 'accept' | 'decline' }) =>
+      action === 'accept' ? customCalendarsApi.acceptInvitation(id) : customCalendarsApi.declineInvitation(id),
+    onSuccess: async () => {
+      setError('');
+      qc.invalidateQueries({ queryKey: ['calendarInvitations'] });
+      // Access changed either way (decline after accept revokes it): re-pull
+      // the calendar list and every calendar view.
+      await refreshCustomCalendars();
+      qc.invalidateQueries({ queryKey: ['calendar'] });
+    },
+    onError: (e: any) => setError(e.response?.data?.error || 'Something went wrong'),
+  });
 
-  const renderItem = ({ item }: { item: EventInvitation }) => {
+  const respondTrip = useMutation({
+    mutationFn: async ({ id, action }: { id: string; action: 'accept' | 'decline' }) => {
+      if (action === 'accept') await tripsApi.acceptInvitation(id);
+      else await tripsApi.declineInvitation(id);
+    },
+    onSuccess: () => {
+      setError('');
+      qc.invalidateQueries({ queryKey: ['tripInvitations'] });
+      // Access changed either way — refresh the trip list and calendar overlay.
+      qc.invalidateQueries({ queryKey: ['trips'] });
+      qc.invalidateQueries({ queryKey: ['calendar'] });
+    },
+    onError: (e: any) => setError(e.response?.data?.error || 'Something went wrong'),
+  });
+
+  const respondHousehold = useMutation({
+    mutationFn: async ({ id, action }: { id: string; action: 'accept' | 'decline' }) => {
+      if (action === 'accept') await householdApi.acceptInvitation(id);
+      else await householdApi.declineInvitation(id);
+    },
+    onSuccess: () => {
+      setError('');
+      qc.invalidateQueries({ queryKey: ['householdInvitations', 'mine'] });
+      // Accepting opens a join request; the Household screen reflects the wait.
+      qc.invalidateQueries({ queryKey: ['household'] });
+    },
+    onError: (e: any) => setError(e.response?.data?.error || 'Something went wrong'),
+  });
+
+  const items = useMemo<Row[]>(() => {
+    const wantPending = tab === 'new';
+    const hh: Row[] = (hhInvQ.data ?? [])
+      .filter((i) => (i.status === 'pending') === wantPending)
+      .map((inv) => ({ kind: 'household', inv }));
+    const cals: Row[] = (calInvQ.data ?? [])
+      .filter((i) => (i.status === 'pending') === wantPending)
+      .map((inv) => ({ kind: 'calendar', inv }));
+    const trips: Row[] = (tripInvQ.data ?? [])
+      .filter((i) => (i.status === 'pending') === wantPending)
+      .map((inv) => ({ kind: 'trip', inv }));
+    const events: Row[] = (invQ.data ?? [])
+      .filter((i) => (i.status === 'pending') === wantPending)
+      .map((inv) => ({ kind: 'event', inv }));
+    return [...hh, ...cals, ...trips, ...events];
+  }, [invQ.data, calInvQ.data, tripInvQ.data, hhInvQ.data, tab]);
+
+  const renderCalendarItem = (item: CalendarInvitation) => {
+    const busy = respondCal.isPending && respondCal.variables?.id === item._id;
+    return (
+      <View style={styles.card}>
+        <Text style={styles.from}>
+          {item.fromName || item.fromEmail || 'Someone'}
+          <Text style={styles.fromSub}> shared a calendar</Text>
+        </Text>
+        <View style={styles.calTitleRow}>
+          <View style={[styles.calDot, { backgroundColor: item.color || colors.primary }]} />
+          <Text style={styles.title}>{item.calendarName}</Text>
+        </View>
+        <Text style={styles.meta}>
+          {item.access === 'full'
+            ? 'Accepting lets you see, add, and edit this calendar’s events.'
+            : 'Accepting shows this calendar and its events alongside your own.'}
+        </Text>
+
+        {item.status === 'pending' ? (
+          <View style={styles.actions}>
+            <View style={styles.actionBtn}>
+              <Button
+                title="Accept"
+                loading={busy && respondCal.variables?.action === 'accept'}
+                onPress={() => respondCal.mutate({ id: item._id, action: 'accept' })}
+              />
+            </View>
+            <View style={styles.actionBtn}>
+              <Button
+                title="Decline"
+                variant="ghost"
+                color={colors.error}
+                loading={busy && respondCal.variables?.action === 'decline'}
+                onPress={() => respondCal.mutate({ id: item._id, action: 'decline' })}
+              />
+            </View>
+          </View>
+        ) : (
+          <View style={styles.statusRow}>
+            <Badge
+              label={item.status === 'accepted' ? 'Accepted' : 'Declined'}
+              color={item.status === 'accepted' ? colors.success : colors.error}
+            />
+            {item.respondedAt ? (
+              <Text style={styles.meta}>
+                {new Date(item.respondedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}
+              </Text>
+            ) : null}
+            {/* An accepted share stays revocable: declining gives up access. */}
+            {item.status === 'accepted' ? (
+              <View style={styles.leaveBtn}>
+                <Button
+                  title="Leave"
+                  variant="ghost"
+                  color={colors.error}
+                  loading={busy}
+                  onPress={() => respondCal.mutate({ id: item._id, action: 'decline' })}
+                />
+              </View>
+            ) : null}
+          </View>
+        )}
+      </View>
+    );
+  };
+
+  const renderTripItem = (item: TripInvitation) => {
+    const busy = respondTrip.isPending && respondTrip.variables?.id === item._id;
+    return (
+      <View style={styles.card}>
+        <Text style={styles.from}>
+          {item.fromName || item.fromEmail || 'Someone'}
+          <Text style={styles.fromSub}> shared a trip</Text>
+        </Text>
+        <View style={styles.calTitleRow}>
+          <MaterialCommunityIcons name="bag-suitcase" size={16} color={colors.primary} style={{ marginTop: 2 }} />
+          <Text style={styles.title}>{item.tripName}</Text>
+        </View>
+        {item.destination ? (
+          <View style={styles.metaRow}>
+            <Ionicons name="location-outline" size={14} color={colors.textMuted} />
+            <Text style={styles.meta} numberOfLines={1}>{item.destination}</Text>
+          </View>
+        ) : null}
+        <Text style={styles.meta}>Accepting shows the full itinerary and lets you add to it.</Text>
+
+        {item.status === 'pending' ? (
+          <View style={styles.actions}>
+            <View style={styles.actionBtn}>
+              <Button
+                title="Accept"
+                loading={busy && respondTrip.variables?.action === 'accept'}
+                onPress={() => respondTrip.mutate({ id: item._id, action: 'accept' })}
+              />
+            </View>
+            <View style={styles.actionBtn}>
+              <Button
+                title="Decline"
+                variant="ghost"
+                color={colors.error}
+                loading={busy && respondTrip.variables?.action === 'decline'}
+                onPress={() => respondTrip.mutate({ id: item._id, action: 'decline' })}
+              />
+            </View>
+          </View>
+        ) : (
+          <View style={styles.statusRow}>
+            <Badge
+              label={item.status === 'accepted' ? 'Accepted' : 'Declined'}
+              color={item.status === 'accepted' ? colors.success : colors.error}
+            />
+            {/* An accepted share stays revocable: declining gives up access. */}
+            {item.status === 'accepted' ? (
+              <View style={styles.leaveBtn}>
+                <Button
+                  title="Leave"
+                  variant="ghost"
+                  color={colors.error}
+                  loading={busy}
+                  onPress={() => respondTrip.mutate({ id: item._id, action: 'decline' })}
+                />
+              </View>
+            ) : null}
+          </View>
+        )}
+      </View>
+    );
+  };
+
+  const renderHouseholdItem = (item: HouseholdInvitation) => {
+    const busy = respondHousehold.isPending && respondHousehold.variables?.id === item._id;
+    return (
+      <View style={styles.card}>
+        <Text style={styles.from}>
+          {item.fromName || item.fromEmail || 'Someone'}
+          <Text style={styles.fromSub}> invited you to their household</Text>
+        </Text>
+        <View style={styles.calTitleRow}>
+          <MaterialCommunityIcons name="home-heart" size={16} color={colors.primary} style={{ marginTop: 2 }} />
+          <Text style={styles.title}>{item.householdName}</Text>
+        </View>
+        <Text style={styles.meta}>
+          Accepting shares the family calendar, tasks, trips, and more. A member
+          then confirms you on their device (your data is end-to-end encrypted).
+        </Text>
+
+        {item.status === 'pending' ? (
+          <View style={styles.actions}>
+            <View style={styles.actionBtn}>
+              <Button
+                title="Accept"
+                loading={busy && respondHousehold.variables?.action === 'accept'}
+                onPress={() => respondHousehold.mutate({ id: item._id, action: 'accept' })}
+              />
+            </View>
+            <View style={styles.actionBtn}>
+              <Button
+                title="Decline"
+                variant="ghost"
+                color={colors.error}
+                loading={busy && respondHousehold.variables?.action === 'decline'}
+                onPress={() => respondHousehold.mutate({ id: item._id, action: 'decline' })}
+              />
+            </View>
+          </View>
+        ) : (
+          <View style={styles.statusRow}>
+            <Badge
+              label={item.status === 'accepted' ? 'Waiting for approval' : 'Declined'}
+              color={item.status === 'accepted' ? colors.warning : colors.error}
+            />
+          </View>
+        )}
+      </View>
+    );
+  };
+
+  const renderEventItem = (item: EventInvitation) => {
     const busy = respond.isPending && respond.variables?.id === item._id;
     return (
       <View style={styles.card}>
@@ -86,6 +389,8 @@ export default function InvitationsScreen() {
         {item.event.description ? (
           <Text style={styles.description} numberOfLines={3}>{item.event.description}</Text>
         ) : null}
+
+        <GuestList invitation={item} />
 
         {item.status === 'pending' ? (
           <View style={styles.actions}>
@@ -138,7 +443,7 @@ export default function InvitationsScreen() {
 
       {error ? <Text style={styles.error}>{error}</Text> : null}
 
-      {invQ.isLoading ? (
+      {invQ.isLoading || calInvQ.isLoading || tripInvQ.isLoading || hhInvQ.isLoading ? (
         <View style={styles.center}><ActivityIndicator color={colors.primary} /></View>
       ) : items.length === 0 ? (
         <View style={styles.center}>
@@ -150,8 +455,12 @@ export default function InvitationsScreen() {
       ) : (
         <FlatList
           data={items}
-          keyExtractor={(i) => i._id}
-          renderItem={renderItem}
+          keyExtractor={(row) => `${row.kind}-${row.inv._id}`}
+          renderItem={({ item }) =>
+            item.kind === 'calendar' ? renderCalendarItem(item.inv)
+              : item.kind === 'trip' ? renderTripItem(item.inv)
+                : item.kind === 'household' ? renderHouseholdItem(item.inv)
+                  : renderEventItem(item.inv)}
           contentContainerStyle={styles.list}
         />
       )}
@@ -176,4 +485,12 @@ const styles = StyleSheet.create({
   actions: { flexDirection: 'row', gap: spacing.sm, marginTop: spacing.md },
   actionBtn: { flex: 1 },
   statusRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, marginTop: spacing.md },
+  calTitleRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
+  calDot: { width: 12, height: 12, borderRadius: 6, marginTop: 2 },
+  leaveBtn: { marginLeft: 'auto' },
+  guestsToggle: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: spacing.sm },
+  guestsToggleText: { fontSize: 13, fontWeight: '600', color: colors.textMuted },
+  guestsList: { marginTop: spacing.xs, gap: 2 },
+  guestsLoading: { alignSelf: 'flex-start', marginTop: spacing.xs },
+  guestsHidden: { fontSize: 13, color: colors.textMuted, marginTop: spacing.xs, fontStyle: 'italic' },
 });

@@ -118,8 +118,111 @@ function computeNextDueDate(task, fromDate) {
 }
 
 // ── Recurring-event expansion (calendar events) ──────────────────────────────
+
+const WEEKDAY_KINDS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
+
+// The date matching "the <weekOfMonth> <weekdayKind>" of a month, or null when
+// the month has no such day (e.g. no 5th Friday). weekOfMonth: 1..5, -1 = last,
+// -2 = next to last. weekdayKind: 'sun'..'sat' | 'day' | 'weekday' | 'weekend'.
+function ordinalDayOfMonth(year, month, weekOfMonth, weekdayKind) {
+  const dim = getDaysInMonth(new Date(year, month, 1));
+  const matches = [];
+  for (let day = 1; day <= dim; day++) {
+    const d = new Date(year, month, day);
+    const dow = getDay(d);
+    const ok =
+      weekdayKind === 'day'     ? true :
+      weekdayKind === 'weekday' ? dow >= 1 && dow <= 5 :
+      weekdayKind === 'weekend' ? dow === 0 || dow === 6 :
+      dow === WEEKDAY_KINDS.indexOf(weekdayKind);
+    if (ok) matches.push(d);
+  }
+  const idx = weekOfMonth > 0 ? weekOfMonth - 1 : matches.length + weekOfMonth;
+  return matches[idx] ?? null;
+}
+
 function expandRecurringEvent(event, fromDate, toDate) {
-  const { freq, interval = 1, until } = event.recurrence;
+  const r = event.recurrence;
+  const { freq, interval = 1, until } = r;
+
+  const endBound = (until && new Date(until) < toDate) ? new Date(until) : new Date(toDate);
+  const durationMs = event.endDate ? new Date(event.endDate) - new Date(event.startDate) : null;
+  const start = new Date(event.startDate);
+  const instances = [];
+
+  const emit = (d) => {
+    if (d < start || d < fromDate || d > endBound) return;
+    instances.push({
+      ...event,
+      startDate: new Date(d),
+      endDate: durationMs != null ? new Date(d.getTime() + durationMs) : event.endDate,
+      _instanceDate: d.toISOString().slice(0, 10),
+    });
+  };
+  // Pattern-generated days carry the original occurrence's time of day.
+  const atStartTime = (d) => {
+    const t = new Date(d);
+    t.setHours(start.getHours(), start.getMinutes(), start.getSeconds(), start.getMilliseconds());
+    return t;
+  };
+
+  // Weekly on chosen weekdays: step whole weeks (anchored to the start date's
+  // week) by the interval, emitting each selected day within the week.
+  if (freq === 'weekly' && r.daysOfWeek && r.daysOfWeek.length) {
+    const days = [...r.daysOfWeek].sort((a, b) => a - b);
+    let weekStart = addDays(startOfDay(start), -getDay(start));
+    while (weekStart <= endBound) {
+      for (const dow of days) emit(atStartTime(addDays(weekStart, dow)));
+      weekStart = addWeeks(weekStart, interval);
+    }
+    return instances;
+  }
+
+  // Monthly on numbered dates ("each 5th and 20th") or an ordinal rule ("the
+  // second Tuesday", "the last weekday"): step months by the interval.
+  if (freq === 'monthly' && ((r.daysOfMonth && r.daysOfMonth.length) || r.weekOfMonth != null)) {
+    const days = [...(r.daysOfMonth ?? [])].sort((a, b) => a - b);
+    let year = start.getFullYear();
+    let month = start.getMonth();
+    while (new Date(year, month, 1) <= endBound) {
+      if (days.length) {
+        const dim = getDaysInMonth(new Date(year, month, 1));
+        for (const day of days) {
+          if (day <= dim) emit(atStartTime(new Date(year, month, day)));
+        }
+      } else {
+        const d = ordinalDayOfMonth(year, month, r.weekOfMonth, r.weekdayKind ?? 'day');
+        if (d) emit(atStartTime(d));
+      }
+      month += interval;
+      year += Math.floor(month / 12);
+      month %= 12;
+    }
+    return instances;
+  }
+
+  // Yearly in chosen months: step years by the interval, emitting per selected
+  // month either the ordinal rule ("second Tuesday of…") or the start date's
+  // day of month (skipping months too short for it).
+  if (freq === 'yearly' && r.months && r.months.length) {
+    const months = [...r.months].sort((a, b) => a - b);
+    let year = start.getFullYear();
+    while (new Date(year, 0, 1) <= endBound) {
+      for (const m of months) {
+        if (r.weekOfMonth != null) {
+          const d = ordinalDayOfMonth(year, m - 1, r.weekOfMonth, r.weekdayKind ?? 'day');
+          if (d) emit(atStartTime(d));
+        } else {
+          const day = start.getDate();
+          if (day <= getDaysInMonth(new Date(year, m - 1, 1))) emit(atStartTime(new Date(year, m - 1, day)));
+        }
+      }
+      year += interval;
+    }
+    return instances;
+  }
+
+  // Plain frequency stepping from the start date.
   const advance = {
     daily:   d => addDays(d, interval),
     weekly:  d => addWeeks(d, interval),
@@ -128,20 +231,10 @@ function expandRecurringEvent(event, fromDate, toDate) {
   }[freq];
   if (!advance) return [];
 
-  const endBound = (until && new Date(until) < toDate) ? new Date(until) : new Date(toDate);
-  const durationMs = event.endDate ? new Date(event.endDate) - new Date(event.startDate) : null;
-  const instances = [];
   let cursor = new Date(event.startDate);
-
   while (cursor < fromDate) cursor = advance(cursor);
   while (cursor <= endBound) {
-    const startDate = new Date(cursor);
-    instances.push({
-      ...event,
-      startDate,
-      endDate: durationMs != null ? new Date(startDate.getTime() + durationMs) : event.endDate,
-      _instanceDate: cursor.toISOString().slice(0, 10),
-    });
+    emit(new Date(cursor));
     cursor = advance(new Date(cursor));
   }
   return instances;
@@ -240,6 +333,9 @@ function assembleCalendarData({
   events = [], tasks = [], chores = [], people = [],
   recipeSchedules = [], trips = [],
   fromDate, toDate, selfId = null, groceryShoppingDay = 6,
+  // 'weekly' | 'biweekly'; groceryAnchor (YYYY-MM-DD, a known shopping day)
+  // fixes which alternating week is the shopping week.
+  groceryFrequency = 'weekly', groceryAnchor = null,
 }) {
   const from = new Date(fromDate);
   const to   = new Date(toDate);
@@ -283,17 +379,26 @@ function assembleCalendarData({
     .filter(s => s.scheduledDate && new Date(s.scheduledDate) >= from && new Date(s.scheduledDate) <= to)
     .sort((a, b) => new Date(a.scheduledDate) - new Date(b.scheduledDate));
 
-  // Grocery shopping day: a weekly marker on the configured weekday for every
-  // week in view — it recurs regardless of whether meals are scheduled that week
-  // (mirrors the planner, which always badges the grocery day). Local-midnight
-  // dates match the birthday/day-cell convention.
+  // Grocery shopping day: a recurring marker on the configured weekday — every
+  // week, or every other week anchored to `groceryAnchor` — regardless of
+  // whether meals are scheduled (mirrors the planner, which always badges the
+  // grocery day). Local-midnight dates match the birthday/day-cell convention.
   const groceryShopping = [];
   {
     // First grocery weekday on or after `from` (UTC, matching the range bounds
     // and the toISOString date keys used throughout this engine).
     const g = new Date(Date.UTC(from.getUTCFullYear(), from.getUTCMonth(), from.getUTCDate()));
     g.setUTCDate(g.getUTCDate() + ((groceryShoppingDay - g.getUTCDay() + 7) % 7));
-    for (; g <= to; g.setUTCDate(g.getUTCDate() + 7)) {
+    const biweekly = groceryFrequency === 'biweekly';
+    if (biweekly && groceryAnchor) {
+      // Shift onto the anchor's parity: shopping happens on weeks an even
+      // number of weeks from the anchor's shopping day.
+      const a = new Date(`${groceryAnchor}T00:00:00Z`);
+      a.setUTCDate(a.getUTCDate() - ((a.getUTCDay() - groceryShoppingDay + 7) % 7));
+      const weeks = Math.round((g - a) / 604800000);
+      if (((weeks % 2) + 2) % 2 === 1) g.setUTCDate(g.getUTCDate() + 7);
+    }
+    for (; g <= to; g.setUTCDate(g.getUTCDate() + (biweekly ? 14 : 7))) {
       const weekKey = g.toISOString().slice(0, 10);
       groceryShopping.push({ id: `grocery-${weekKey}`, date: weekKey, weekStart: weekKey });
     }

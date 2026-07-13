@@ -51,7 +51,7 @@ export default function AddMealScreen() {
 
   const recipesQ = useQuery({
     queryKey: ['recipes'],
-    // Offline-first, mirroring RecipesPane: sync the replica, then decrypt.
+    // Offline-first, mirroring RecipesScreen: sync the replica, then decrypt.
     queryFn: async () => {
       const rows = await replica.syncedList<Recipe>('Recipe', async () => (await recipesApi.list()).data);
       return Promise.all(rows.map((r) => openRecord('Recipe', r)));

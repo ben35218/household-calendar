@@ -13,7 +13,8 @@ const RECIPE_ENC = (p: Record<string, unknown>) => ({
   instructions: p.instructions, tags: p.tags,
   servings: p.servings, prepTimeMins: p.prepTimeMins, cookTimeMins: p.cookTimeMins,
 });
-import { Button, Input, Screen, SectionTitle, Card, useHeaderCheckButton } from '../../components/ui';
+import { Button, Input, Screen, SectionTitle, useHeaderCheckButton } from '../../components/ui';
+import { form as fs, GroupCard, CardDivider } from '../../components/formStyles';
 import StepIngredientLinker from '../../components/StepIngredientLinker';
 import AssistantIcon from '../../components/AssistantIcon';
 import AiUsageBanner from '../../components/AiUsageBanner';
@@ -412,7 +413,7 @@ export default function RecipeFormScreen() {
 
       {/* Import bar — all three actions (URL, photo, assistant) call the AI provider */}
       {showQuickImport ? (
-        <Card style={styles.importCard}>
+        <GroupCard style={styles.importCard}>
           <Text style={styles.importTitle}>Quick import</Text>
           <View style={styles.importBtns}>
             <TouchableOpacity
@@ -440,24 +441,64 @@ export default function RecipeFormScreen() {
             </View>
           ) : null}
           {importing && importer === null ? <ActivityIndicator color={colors.primary} style={{ marginTop: spacing.sm }} /> : null}
-        </Card>
+        </GroupCard>
       ) : null}
 
-      <Input label="Title *" value={form.title} onChangeText={(v) => set({ title: v })} />
-      <Input label="Description" value={form.description} onChangeText={(v) => set({ description: v })} multiline />
+      <GroupCard>
+        <Input
+          value={form.title}
+          onChangeText={(v) => set({ title: v })}
+          placeholder="Title"
+          containerStyle={fs.headField}
+          style={fs.headInput}
+        />
+        <CardDivider />
+        <Input
+          value={form.description}
+          onChangeText={(v) => set({ description: v })}
+          placeholder="Description"
+          multiline
+          containerStyle={fs.headField}
+          style={fs.headInput}
+        />
+      </GroupCard>
 
-      <View style={styles.cols}>
-        <View style={styles.col}>
-          <Input label="Servings" keyboardType="numeric" value={form.servings} onChangeText={(v) => set({ servings: v })} />
+      <GroupCard>
+        <View style={fs.dtRow}>
+          <Text style={fs.dtLabel}>Servings</Text>
+          <Input
+            keyboardType="numeric"
+            value={form.servings}
+            onChangeText={(v) => set({ servings: v })}
+            containerStyle={[fs.headField, fs.rowInputWrap]}
+            style={[fs.headInput, fs.rowInput]}
+          />
         </View>
-        <View style={styles.col}>
-          <Input label="Prep (minutes)" keyboardType="numeric" value={form.prepTimeMins} onChangeText={(v) => set({ prepTimeMins: v })} />
+        <CardDivider />
+        <View style={fs.dtRow}>
+          <Text style={fs.dtLabel}>Prep (minutes)</Text>
+          <Input
+            keyboardType="numeric"
+            value={form.prepTimeMins}
+            onChangeText={(v) => set({ prepTimeMins: v })}
+            containerStyle={[fs.headField, fs.rowInputWrap]}
+            style={[fs.headInput, fs.rowInput]}
+          />
         </View>
-        <View style={styles.col}>
-          <Input label="Cook (minutes)" keyboardType="numeric" value={form.cookTimeMins} onChangeText={(v) => set({ cookTimeMins: v })} />
+        <CardDivider />
+        <View style={fs.dtRow}>
+          <Text style={fs.dtLabel}>Cook (minutes)</Text>
+          <Input
+            keyboardType="numeric"
+            value={form.cookTimeMins}
+            onChangeText={(v) => set({ cookTimeMins: v })}
+            containerStyle={[fs.headField, fs.rowInputWrap]}
+            style={[fs.headInput, fs.rowInput]}
+          />
         </View>
-      </View>
-      <Text style={styles.tagLabel}>Tags</Text>
+      </GroupCard>
+
+      <SectionTitle>Tags</SectionTitle>
       {form.tags.length ? (
         <View style={styles.chipsWrap}>
           {form.tags.map((t, i) => (
@@ -470,8 +511,8 @@ export default function RecipeFormScreen() {
           ))}
         </View>
       ) : null}
-      <View style={styles.tagInputRow}>
-        <View style={{ flex: 1 }}>
+      <GroupCard>
+        <View style={styles.tagInputRow}>
           <Input
             placeholder="Add a tag"
             value={tagInput}
@@ -480,79 +521,113 @@ export default function RecipeFormScreen() {
             returnKeyType="done"
             blurOnSubmit={false}
             autoCapitalize="none"
+            containerStyle={[fs.headField, styles.flex1]}
+            style={fs.headInput}
           />
-        </View>
-        <Button title="Add" color={accent} disabled={!tagInput.trim()} onPress={addTag} />
-      </View>
-
-      <SectionTitle>Ingredients</SectionTitle>
-      {form.ingredients.map((ing, i) => (
-        <View key={i} style={styles.ingRow}>
-          <View style={styles.ingAmount}>
-            <Input placeholder="1" value={ing.amount ?? ''} onChangeText={(v) => set({ ingredients: form.ingredients.map((x, j) => (j === i ? { ...x, amount: v } : x)) })} />
-          </View>
-          <View style={styles.ingUnit}>
-            <Input placeholder="cup" value={ing.unit ?? ''} onChangeText={(v) => set({ ingredients: form.ingredients.map((x, j) => (j === i ? { ...x, unit: v } : x)) })} />
-          </View>
-          <View style={styles.ingName}>
-            <Input placeholder="flour" value={ing.name} onChangeText={(v) => set({ ingredients: form.ingredients.map((x, j) => (j === i ? { ...x, name: v } : x)) })} />
-          </View>
-          <TouchableOpacity onPress={() => removeIngredient(i)} style={styles.removeBtn}>
-            <Ionicons name="close" size={20} color={colors.textMuted} />
+          <TouchableOpacity onPress={addTag} disabled={!tagInput.trim()} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+            <Ionicons name="add-circle" size={28} color={tagInput.trim() ? accent : colors.border} />
           </TouchableOpacity>
         </View>
-      ))}
-      <Button title="+ Add Ingredient" color={accent} onPress={addIngredient} />
+      </GroupCard>
+
+      <SectionTitle>Ingredients</SectionTitle>
+      <GroupCard>
+        {form.ingredients.map((ing, i) => (
+          <React.Fragment key={i}>
+            {i > 0 ? <CardDivider /> : null}
+            <View style={styles.ingRow}>
+              <Input
+                placeholder="1"
+                value={ing.amount ?? ''}
+                onChangeText={(v) => set({ ingredients: form.ingredients.map((x, j) => (j === i ? { ...x, amount: v } : x)) })}
+                containerStyle={[fs.headField, styles.ingAmount]}
+                style={[fs.headInput, styles.ingInput]}
+              />
+              <Input
+                placeholder="cup"
+                value={ing.unit ?? ''}
+                onChangeText={(v) => set({ ingredients: form.ingredients.map((x, j) => (j === i ? { ...x, unit: v } : x)) })}
+                containerStyle={[fs.headField, styles.ingUnit]}
+                style={[fs.headInput, styles.ingInput]}
+              />
+              <Input
+                placeholder="flour"
+                value={ing.name}
+                onChangeText={(v) => set({ ingredients: form.ingredients.map((x, j) => (j === i ? { ...x, name: v } : x)) })}
+                containerStyle={[fs.headField, styles.flex1]}
+                style={[fs.headInput, styles.ingInput]}
+              />
+              <TouchableOpacity onPress={() => removeIngredient(i)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                <Ionicons name="close-circle" size={20} color={colors.textMuted} />
+              </TouchableOpacity>
+            </View>
+          </React.Fragment>
+        ))}
+        {form.ingredients.length > 0 ? <CardDivider /> : null}
+        <TouchableOpacity style={fs.dtRow} activeOpacity={0.7} onPress={addIngredient}>
+          <Text style={[styles.addRowText, { color: accent }]}>+ Add Ingredient</Text>
+        </TouchableOpacity>
+      </GroupCard>
 
       <View style={styles.instrHead}>
         <SectionTitle>Instructions</SectionTitle>
-        {!isEdit && form.ingredients.length && form.instructions.length ? (
-          <Button title="Auto-link" color={accent} loading={autoLink.isPending} onPress={() => autoLink.mutate()} />
-        ) : null}
       </View>
       {form.instructions.map((step, i) => (
-        <View key={i} style={styles.stepBlock}>
+        <GroupCard key={i}>
           <View style={styles.stepRow}>
             <Text style={styles.stepNum}>{i + 1}.</Text>
-            <View style={{ flex: 1 }}>
-              <Input placeholder={`Step ${i + 1}`} value={step} onChangeText={(v) => set({ instructions: form.instructions.map((x, j) => (j === i ? v : x)) })} multiline />
-            </View>
-            <TouchableOpacity onPress={() => removeStep(i)} style={styles.removeBtn}>
-              <Ionicons name="close" size={20} color={colors.textMuted} />
+            <Input
+              placeholder={`Step ${i + 1}`}
+              value={step}
+              onChangeText={(v) => set({ instructions: form.instructions.map((x, j) => (j === i ? v : x)) })}
+              multiline
+              containerStyle={[fs.headField, styles.flex1]}
+              style={fs.headInput}
+            />
+            <TouchableOpacity onPress={() => removeStep(i)} style={styles.removeBtn} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+              <Ionicons name="close-circle" size={20} color={colors.textMuted} />
             </TouchableOpacity>
           </View>
+          <CardDivider />
           <View style={styles.timerRow}>
             <Ionicons name="timer-outline" size={16} color={accent} />
-            <View style={styles.timerField}>
-              <Input
-                placeholder="Timer (minutes)"
-                keyboardType="numeric"
-                value={form.timers[i] || ''}
-                onChangeText={(v) => setStepTimer(i, v)}
-              />
-            </View>
+            <Input
+              placeholder="Timer (minutes)"
+              keyboardType="numeric"
+              value={form.timers[i] || ''}
+              onChangeText={(v) => setStepTimer(i, v)}
+              containerStyle={[fs.headField, styles.flex1]}
+              style={fs.headInput}
+            />
           </View>
           {form.ingredients.length ? (
-            <StepIngredientLinker
-              value={form.linkedIds[i] || []}
-              ingredients={lidIngredients}
-              assignmentsById={assignmentsById}
-              stepNumber={i + 1}
-              stepText={step}
-              onChange={(lids) => setStepLinks(i, lids)}
-              accent={accent}
-            />
+            <>
+              <CardDivider />
+              <View style={styles.linkerPad}>
+                <StepIngredientLinker
+                  value={form.linkedIds[i] || []}
+                  ingredients={lidIngredients}
+                  assignmentsById={assignmentsById}
+                  stepNumber={i + 1}
+                  stepText={step}
+                  onChange={(lids) => setStepLinks(i, lids)}
+                  accent={accent}
+                />
+              </View>
+            </>
           ) : null}
-        </View>
+        </GroupCard>
       ))}
-      <View style={{ marginTop: spacing.md }}>
-        <Button title="+ Add Step" color={accent} onPress={addStep} />
-      </View>
+      <GroupCard>
+        <TouchableOpacity style={fs.dtRow} activeOpacity={0.7} onPress={addStep}>
+          <Text style={[styles.addRowText, { color: accent }]}>+ Add Step</Text>
+        </TouchableOpacity>
+      </GroupCard>
 
       {error ? <Text style={styles.error}>{error}</Text> : null}
 
       {isEdit ? (
-        <View style={styles.deleteWrap}>
+        <View style={fs.footer}>
           <Button title="Delete recipe" variant="danger" loading={del.isPending} onPress={confirmDelete} />
         </View>
       ) : null}
@@ -585,30 +660,27 @@ const styles = StyleSheet.create({
   },
   tagBtnDisabled: { opacity: 0.6 },
   tagBtnText: { fontSize: 16, fontWeight: '600' },
-  importCard: { marginBottom: spacing.md },
+  importCard: { padding: 14 },
   importTitle: { fontSize: 14, fontWeight: '700', color: colors.text, marginBottom: spacing.sm },
   importBtns: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: spacing.sm },
   iconBtn: { backgroundColor: colors.primary, borderRadius: radius.md, paddingVertical: 14, paddingHorizontal: 16, alignItems: 'center', justifyContent: 'center' },
   iconBtnActive: { opacity: 0.75 },
   importPad: { marginTop: spacing.sm, gap: spacing.sm },
-  cols: { flexDirection: 'row', gap: spacing.sm },
-  col: { flex: 1 },
-  tagLabel: { fontSize: 13, color: colors.textMuted, marginBottom: 6, fontWeight: '500' },
+  flex1: { flex: 1 },
   chipsWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm, marginBottom: spacing.sm },
   chip: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: colors.surface, borderRadius: radius.md, paddingVertical: 6, paddingHorizontal: 10 },
   chipText: { color: colors.text, fontSize: 14 },
-  tagInputRow: { flexDirection: 'row', alignItems: 'flex-start', gap: spacing.sm, marginBottom: spacing.md },
-  ingRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 4 },
+  tagInputRow: { flexDirection: 'row', alignItems: 'center', paddingRight: 14 },
+  ingRow: { flexDirection: 'row', alignItems: 'center', paddingRight: 14, gap: 4 },
   ingAmount: { width: 56 },
   ingUnit: { width: 64 },
-  ingName: { flex: 1 },
+  ingInput: { paddingHorizontal: 8 },
+  addRowText: { fontSize: 16, fontWeight: '500' },
   instrHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  stepBlock: { marginBottom: spacing.lg },
-  stepRow: { flexDirection: 'row', alignItems: 'flex-start', gap: spacing.sm },
-  timerRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, paddingLeft: 20, marginTop: spacing.xs },
-  timerField: { width: 150 },
+  stepRow: { flexDirection: 'row', alignItems: 'flex-start', paddingLeft: 14, paddingRight: 14 },
+  timerRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, paddingLeft: 14, paddingRight: 14 },
+  linkerPad: { paddingHorizontal: 14, paddingVertical: spacing.sm },
   stepNum: { fontSize: 15, fontWeight: '700', color: colors.primary, paddingTop: 12 },
   removeBtn: { paddingTop: 12 },
   error: { color: colors.error, marginVertical: spacing.sm },
-  deleteWrap: { marginTop: spacing.md, marginBottom: spacing.xl },
 });

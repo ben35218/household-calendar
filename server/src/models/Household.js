@@ -1,20 +1,9 @@
 const mongoose = require('mongoose');
-const { randomInt } = require('crypto');
 const { encFields } = require('./encFields');
-
-// Short, unambiguous join code (no 0/O/1/I) used to invite members.
-// Uses a CSPRNG so codes aren't predictable from previously issued ones.
-function genCode() {
-  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-  let s = '';
-  for (let i = 0; i < 8; i++) s += alphabet[randomInt(alphabet.length)];
-  return s;
-}
 
 const householdSchema = new mongoose.Schema({
   name:     { type: String, required: true },
   ownerId:  { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
-  joinCode: { type: String, required: true, unique: true, index: true },
   // Current Household Data Key version. 0 = no HDK minted yet; the owner mints
   // v1 (self-wrapped envelope) on first unlock. Bumped on lazy rotation (Phase 7).
   currentKeyVersion: { type: Number, default: 0 },
@@ -36,6 +25,10 @@ const householdSchema = new mongoose.Schema({
   lat:                { type: Number },
   lon:                { type: Number },
   groceryShoppingDay: { type: Number, default: 6 },  // 0=Sun…6=Sat
+  // Shopping cadence; for 'biweekly', groceryAnchor (YYYY-MM-DD, any known
+  // shopping day) fixes which alternating week is the shopping week.
+  groceryFrequency:   { type: String, enum: ['weekly', 'biweekly'], default: 'weekly' },
+  groceryAnchor:      { type: String, default: null },
   grocerySections:    { type: [String], default: () => ['Produce', 'Deli', 'Bakery', 'Meat & Seafood', 'Dairy', 'Frozen', 'Pantry', 'Other'] },
   reminderLeadDays:   { type: Number, default: 7 },
 
@@ -44,6 +37,18 @@ const householdSchema = new mongoose.Schema({
   // RevenueCat app_user_id this household is mapped to (set at SDK init in the
   // mobile app to the household id; webhooks carry it back to flip `plan`).
   revenueCatId: { type: String, index: true },
+  // Subscription lifecycle state, maintained by the RevenueCat webhook. Absent =
+  // unknown (household predates these fields or has never had a paid plan).
+  planAutoRenew:    { type: Boolean },  // false after CANCELLATION; true again on any grant
+  planExpiresAt:    { type: Date },     // current period end (renewal or access-until date)
+  planBillingIssue: { type: Boolean, default: false },  // payment failed; store grace period running
+  // Which member initiated the purchase. All members share one RevenueCat
+  // app_user_id (the household), so only the client-set purchaser_user_id
+  // subscriber attribute identifies the buyer.
+  planPurchasedBy:  { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  // Store product id of the active subscription, so clients can match it to a
+  // store package for a localized price string.
+  planProductId:    { type: String },
   // Weekly AI-action usage counters: { 'YYYY-MM-DD': { chat, scan, generation, manualParse, aiHelper } }.
   // Mixed so we can $inc arbitrary period/action paths without a fixed schema.
   // This is the RAW counter (never reset mid-week) — it feeds admin analytics and
@@ -69,18 +74,12 @@ const householdSchema = new mongoose.Schema({
 
   // E2EE dual-write ciphertext (§9.1 P5): the home location (homeAddress/lat/lon)
   // is sensitive, so it's sealed here alongside the plaintext during dual-write
-  // and read from `enc` after the drop. Name/joinCode/plan/timezone stay plaintext.
+  // and read from `enc` after the drop. Name/plan/timezone stay plaintext.
   ...encFields,
 }, { timestamps: true, minimize: false });
 
-// Create a household with a guaranteed-unique join code.
 householdSchema.statics.createForOwner = async function createForOwner(ownerId, name) {
-  for (let attempt = 0; attempt < 10; attempt++) {
-    const joinCode = genCode();
-    if (await this.exists({ joinCode })) continue;
-    return this.create({ name, ownerId, joinCode });
-  }
-  throw new Error('Could not generate a unique household join code');
+  return this.create({ name, ownerId });
 };
 
 module.exports = mongoose.model('Household', householdSchema);

@@ -9,6 +9,7 @@ const WeatherRecord = require('../models/WeatherRecord');
 const { requireAuth } = require('../middleware/auth');
 const { streamChat } = require('../services/chatStream');
 const { meter, getConfig } = require('../middleware/usageMeter');
+const { ASSISTANT_NAME } = require('../config/assistant');
 const { collectCalendarRecords } = require('../services/calendarData');
 const { assembleCalendarData } = require('@household/calendar');
 
@@ -59,6 +60,7 @@ const TOOLS = [
         startTime:    { type: 'string', description: 'Start time in HH:MM 24-hour format, e.g. "14:00". Required when allDay is false.' },
         endTime:      { type: 'string', description: 'End time in HH:MM 24-hour format, e.g. "14:30". Required when allDay is false.' },
         recurrFreq:      { type: 'string', enum: ['daily', 'weekly', 'monthly', 'yearly'], description: 'Repeat frequency if the event recurs' },
+        recurrInterval:  { type: 'number', description: 'For custom repeats like "every 2 weeks": recurrFreq is the unit (weekly) and this is N (2). Omit for simple repeats.' },
         reminderMinutes: { type: 'number', description: 'Alert before event: 0=at event time, 15, 30, 60, 120, 1440 (1 day), 2880 (2 days). Omit for no alert.' },
         phone:           { type: 'string', description: 'Business phone number (for appointments)' },
       },
@@ -184,6 +186,8 @@ async function executeTool(name, input, ctx) {
             fromDate, toDate,
             selfId: String(userId),
             groceryShoppingDay: (household || user)?.groceryShoppingDay ?? 6,
+            groceryFrequency: (household || user)?.groceryFrequency ?? 'weekly',
+            groceryAnchor: (household || user)?.groceryAnchor ?? null,
           })
         : await collectCalendarRecords({ scopeIds, fromDate, toDate, user, household });
 
@@ -238,6 +242,7 @@ async function executeTool(name, input, ctx) {
       if (input.startTime)            params.set('prefill_startTime', input.startTime);
       if (input.endTime)              params.set('prefill_endTime', input.endTime);
       if (input.recurrFreq)                params.set('prefill_recurrFreq', input.recurrFreq);
+      if (input.recurrInterval)            params.set('prefill_recurrInterval', String(input.recurrInterval));
       if (input.reminderMinutes !== undefined) params.set('prefill_reminderMinutes', String(input.reminderMinutes));
       if (input.description)               params.set('prefill_description', input.description);
       if (input.phone)                params.set('prefill_phone', input.phone);
@@ -272,19 +277,19 @@ async function executeTool(name, input, ctx) {
       let systemPrompt, firstMessage;
 
       if (input.action === 'cancel') {
-        firstMessage = `Hi, I'm calling to cancel an appointment${nameClause} — the ${event.title} scheduled for ${dateLabel}.`;
+        firstMessage = `Hi, this is ${ASSISTANT_NAME}, an AI assistant calling to cancel an appointment${nameClause} — the ${event.title} scheduled for ${dateLabel}.`;
         systemPrompt =
-          `You are an AI assistant making a phone call on behalf of a household client${nameClause} to cancel an appointment.\n` +
+          `You are ${ASSISTANT_NAME}, an AI assistant making a phone call on behalf of a household client${nameClause} to cancel an appointment. If asked who's calling, say you're ${ASSISTANT_NAME}, an AI assistant calling on the client's behalf.\n` +
           `Appointment: "${event.title}" on ${dateLabel}.\n` +
           `Goal: cancel this appointment and confirm the cancellation before ending the call.\n` +
-          `If you reach voicemail, leave this message: "Hi, calling to cancel the ${event.title} appointment scheduled for ${dateLabel}${nameClause}. Please confirm this cancellation. Thank you." Then hang up.\n` +
+          `If you reach voicemail, leave this message: "Hi, this is ${ASSISTANT_NAME}, an AI assistant calling to cancel the ${event.title} appointment scheduled for ${dateLabel}${nameClause}. Please confirm this cancellation. Thank you." Then hang up.\n` +
           `Be polite, patient, and professional. Navigate any IVR menus calmly.` +
           (input.additionalInstructions ? `\nAdditional context: ${input.additionalInstructions}` : '');
       } else {
         const newTime = input.newDateTime || 'the earliest available time';
-        firstMessage = `Hi, I'm calling to reschedule an appointment${nameClause} — the ${event.title} that's currently scheduled for ${dateLabel}.`;
+        firstMessage = `Hi, this is ${ASSISTANT_NAME}, an AI assistant calling to reschedule an appointment${nameClause} — the ${event.title} that's currently scheduled for ${dateLabel}.`;
         systemPrompt =
-          `You are an AI assistant making a phone call on behalf of a household client${nameClause} to reschedule an appointment.\n` +
+          `You are ${ASSISTANT_NAME}, an AI assistant making a phone call on behalf of a household client${nameClause} to reschedule an appointment. If asked who's calling, say you're ${ASSISTANT_NAME}, an AI assistant calling on the client's behalf.\n` +
           `Current appointment: "${event.title}" on ${dateLabel}.\n` +
           `Requested new time: ${newTime}.\n` +
           `Goal: reschedule to the requested time (or nearest available) and confirm the new date and time before ending the call.\n` +
@@ -422,7 +427,8 @@ function buildSystemPrompt(req, people) {
   const familySection = buildPeopleSection(people.filter(p => p.type === 'family'));
   const friendsSection = buildPeopleSection(people.filter(p => p.type === 'friend'));
 
-  return `You are a helpful household calendar assistant managing a family's home calendar. Today is ${today}. You are assisting ${userName}.
+  return `You are ${ASSISTANT_NAME}, the friendly assistant in the Household Calendar app, managing a family's home calendar. Today is ${today}. You are assisting ${userName}.
+If asked who you are, say you're ${ASSISTANT_NAME} and that in this chat you can see the household calendar and household members (each area of the app has its own ${ASSISTANT_NAME} chat with its own context — this one doesn't see trips, maintenance items, or recipes).
 
 ## Household Members
 ${familySection}

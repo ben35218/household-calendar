@@ -1,39 +1,38 @@
-import { colors } from '../../theme';
-
-export const INVENTORY_CATEGORIES = [
-  { label: 'Produce', value: 'produce' },
-  { label: 'Dairy', value: 'dairy' },
-  { label: 'Meat', value: 'meat' },
-  { label: 'Seafood', value: 'seafood' },
-  { label: 'Deli', value: 'deli' },
-  { label: 'Bakery', value: 'bakery' },
-  { label: 'Frozen', value: 'frozen' },
-  { label: 'Pantry', value: 'pantry' },
-  { label: 'Beverages', value: 'beverages' },
-  { label: 'Other', value: 'other' },
-];
-
-export function daysUntilExpiry(date?: string): number | null {
-  if (!date) return null;
-  const now = new Date();
-  now.setHours(0, 0, 0, 0);
-  const exp = new Date(date);
-  exp.setHours(0, 0, 0, 0);
-  return Math.round((exp.getTime() - now.getTime()) / 86400000);
+// Start the week on the grocery shopping day (0=Sun..6=Sat): the most recent
+// occurrence of that weekday on or before `d`. The Planner and Grocery panes
+// both key their data to this week start.
+export function startOfWeek(d: Date, weekStartDay: number): Date {
+  const x = new Date(d);
+  x.setHours(0, 0, 0, 0);
+  const diff = (x.getDay() - weekStartDay + 7) % 7;
+  x.setDate(x.getDate() - diff);
+  return x;
 }
 
-export function expiryColor(days: number | null): string {
-  if (days === null) return colors.textMuted;
-  if (days < 0) return colors.error;
-  if (days <= 2) return '#FF7043';
-  if (days <= 7) return colors.warning;
-  return colors.success;
+export const iso = (d: Date) => d.toISOString().slice(0, 10);
+
+export type GroceryFrequency = 'weekly' | 'biweekly';
+
+export const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+export const DAY_NAMES_FULL = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+
+// One-line summary of the schedule for cards/badges: "Every week on Saturday".
+export function scheduleSummary(day: number, frequency: GroceryFrequency): string {
+  return `${frequency === 'biweekly' ? 'Every 2 weeks' : 'Every week'} on ${DAY_NAMES_FULL[day]}`;
 }
 
-export function expiryLabel(days: number | null): string {
-  if (days === null) return 'No expiry';
-  if (days < 0) return `Expired ${Math.abs(days)}d ago`;
-  if (days === 0) return 'Expires today';
-  if (days === 1) return 'Tomorrow';
-  return `${days}d left`;
+// Days covered by one shopping trip: the planner/grocery "week" is really
+// this period.
+export const periodDaysOf = (frequency: GroceryFrequency) => (frequency === 'biweekly' ? 14 : 7);
+
+// Start of the shopping period containing `d` — weekly this is startOfWeek;
+// biweekly it also snaps back to the anchor's parity (anchor = any known
+// shopping day, YYYY-MM-DD) so off-weeks fold into the period that bought them.
+export function periodStartOf(d: Date, weekStartDay: number, frequency: GroceryFrequency, anchor?: string | null): Date {
+  const w = startOfWeek(d, weekStartDay);
+  if (frequency !== 'biweekly' || !anchor) return w;
+  const a = startOfWeek(new Date(`${anchor}T00:00:00`), weekStartDay);
+  const weeks = Math.round((w.getTime() - a.getTime()) / 604800000);
+  if (((weeks % 2) + 2) % 2 === 1) w.setDate(w.getDate() - 7);
+  return w;
 }

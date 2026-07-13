@@ -35,7 +35,6 @@ const taskSchema = new mongoose.Schema({
   alertAudience: { type: String, enum: ['everyone', 'owner'], default: 'everyone' },
   active: { type: Boolean, default: true },
   templateId: String,
-  weatherSensitive: { type: Boolean, default: false },
   // Mileage-based tracking
   intervalKm:    Number,   // e.g. 50000 — service every 50,000 km
   lastServiceKm: Number,   // odometer reading at last completion

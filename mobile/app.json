@@ -11,8 +11,11 @@
       "supportsTablet": true,
       "bundleIdentifier": "app.householdcalendar.mobile",
       "infoPlist": {
+        "CFBundleDisplayName": "Calendar",
         "ITSAppUsesNonExemptEncryption": false,
-        "UIBackgroundModes": ["fetch"],
+        "UIBackgroundModes": [
+          "fetch"
+        ],
         "NSCameraUsageDescription": "Take photos of items, receipts, recipes, and booking confirmations to add them automatically.",
         "NSPhotoLibraryUsageDescription": "Attach photos of items, receipts, and confirmations from your library.",
         "NSContactsUsageDescription": "Import family and friends from your contacts so the assistant can suggest activities and remember birthdays."
@@ -52,7 +55,7 @@
     "android": {
       "package": "app.householdcalendar.mobile",
       "adaptiveIcon": {
-        "backgroundColor": "#1976D2",
+        "backgroundColor": "#4F9DF5",
         "foregroundImage": "./assets/android-icon-foreground.png",
         "backgroundImage": "./assets/android-icon-background.png",
         "monochromeImage": "./assets/android-icon-monochrome.png"
@@ -74,7 +77,7 @@
         {
           "image": "./assets/splash-icon.png",
           "resizeMode": "contain",
-          "backgroundColor": "#1976D2"
+          "backgroundColor": "#4F9DF5"
         }
       ],
       "expo-secure-store",
@@ -87,7 +90,7 @@
       [
         "expo-notifications",
         {
-          "color": "#1976D2"
+          "color": "#4F9DF5"
         }
       ],
       "expo-font",
@@ -98,7 +101,8 @@
           "contactsPermission": "Import family and friends from your contacts so the assistant can suggest activities and remember birthdays."
         }
       ],
-      "expo-sqlite"
+      "expo-sqlite",
+      "expo-sharing"
     ],
     "extra": {
       "apiBaseUrl": "http://localhost:3001",

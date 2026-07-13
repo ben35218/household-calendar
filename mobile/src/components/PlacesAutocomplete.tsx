@@ -1,7 +1,8 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, StyleProp, TextStyle, ViewStyle } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { placesApi, PlacePrediction } from '../api';
+import { getPlaceBias } from '../lib/placeBias';
 import { Input } from './ui';
 import { colors, spacing } from '../theme';
 
@@ -17,6 +18,8 @@ export default function PlacesAutocomplete({
   placeholder,
   type,
   highlight,
+  inputStyle,
+  containerStyle,
 }: {
   label?: string;
   value: string;
@@ -25,6 +28,8 @@ export default function PlacesAutocomplete({
   placeholder?: string;
   type?: string;
   highlight?: boolean;
+  inputStyle?: StyleProp<TextStyle>;
+  containerStyle?: StyleProp<ViewStyle>;
 }) {
   const [suggestions, setSuggestions] = useState<PlacePrediction[]>([]);
   const [loading, setLoading] = useState(false);
@@ -45,7 +50,8 @@ export default function PlacesAutocomplete({
     timer.current = setTimeout(async () => {
       setLoading(true);
       try {
-        const { data } = await placesApi.autocomplete(q, type);
+        const bias = await getPlaceBias();
+        const { data } = await placesApi.autocomplete(q, type, bias);
         setSuggestions(data.predictions ?? []);
         setOpen(true);
       } catch {
@@ -79,6 +85,8 @@ export default function PlacesAutocomplete({
         placeholder={placeholder}
         autoCapitalize="none"
         highlight={highlight}
+        style={inputStyle}
+        containerStyle={containerStyle}
       />
       {loading ? <ActivityIndicator size="small" color={colors.primary} style={styles.spinner} /> : null}
       {open && suggestions.length > 0 ? (

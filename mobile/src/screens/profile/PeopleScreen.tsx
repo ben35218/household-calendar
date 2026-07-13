@@ -1,5 +1,5 @@
-import React from 'react';
-import { View, Text, ScrollView, StyleSheet, TouchableOpacity, ActivityIndicator } from 'react-native';
+import React, { useCallback, useLayoutEffect, useState } from 'react';
+import { View, Text, ScrollView, StyleSheet, TouchableOpacity, ActivityIndicator, ActionSheetIOS, Platform, Alert } from 'react-native';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -8,11 +8,19 @@ import { useAuth } from '../../store/auth';
 import { peopleApi, householdApi, Person } from '../../api';
 import { openRecord, getHDK, sealNew } from '../../lib/e2ee';
 import * as replica from '../../lib/replica';
-import { Card, Chip } from '../../components/ui';
+import { Card, Chip, RoundIconButton } from '../../components/ui';
 import { colors, spacing } from '../../theme';
 import type { ProfileStackParamList } from '../../navigation/ProfileNavigator';
 
 type Nav = NativeStackNavigationProp<ProfileStackParamList>;
+
+// Tabs map onto the plaintext Person.type used for roster grouping.
+type TabKey = 'family' | 'friend' | 'service';
+const TABS: { key: TabKey; label: string }[] = [
+  { key: 'family', label: 'Family' },
+  { key: 'friend', label: 'Friends' },
+  { key: 'service', label: 'Professionals' },
+];
 
 // Encrypted person content (mirrors PersonFormScreen); type stays plaintext for
 // roster grouping. birthday is encrypted now (§9.1 P6).
@@ -22,13 +30,39 @@ const PERSON_ENC = (p: Record<string, unknown>) => ({
   birthday: p.birthday,
 });
 
-// Mirrors client/src/views/PeopleView.vue: a "You" card, Family Members, and
-// Friends, each tappable to edit. (Contacts/VCF import is tracked as a
-// native-contacts follow-up for this wave.)
+// Contacts roster split across Family / Friends / Professionals tabs. The "You"
+// card lives under Family; the header "+" adds into the active tab.
 export default function PeopleScreen() {
   const nav = useNavigation<Nav>();
   const { user } = useAuth();
   const selfId = String(user?._id ?? '');
+  const [tab, setTab] = useState<TabKey>('family');
+
+  // Header "+" opens a menu: add a person manually (into the active tab) or
+  // import from the device address book.
+  const openAddMenu = useCallback(() => {
+    const addManually = () => nav.navigate('PersonForm', { type: tab });
+    const importContacts = () => nav.navigate('ContactImport');
+    if (Platform.OS === 'ios') {
+      ActionSheetIOS.showActionSheetWithOptions(
+        { options: ['Add', 'Import from Contacts', 'Cancel'], cancelButtonIndex: 2 },
+        (i) => {
+          if (i === 0) addManually();
+          else if (i === 1) importContacts();
+        }
+      );
+    } else {
+      Alert.alert('Add contact', undefined, [
+        { text: 'Add', onPress: addManually },
+        { text: 'Import from Contacts', onPress: importContacts },
+        { text: 'Cancel', style: 'cancel' },
+      ]);
+    }
+  }, [nav, tab]);
+
+  useLayoutEffect(() => {
+    nav.setOptions({ headerRight: () => <RoundIconButton icon="add" onPress={openAddMenu} /> });
+  }, [nav, openAddMenu]);
 
   const { data: people, isLoading } = useQuery({
     queryKey: ['people'],
@@ -78,63 +112,44 @@ export default function PeopleScreen() {
   }
 
   const selfPerson = people.find((p) => p.accountId && String(p.accountId) === selfId);
-  const family = people.filter((p) => p.type === 'family' && p !== selfPerson);
-  const friends = people.filter((p) => p.type === 'friend');
-  const providers = people.filter((p) => p.type === 'service');
+  const roster = people.filter((p) => p.type === tab && p !== selfPerson);
+  const showSelf = tab === 'family' && !!selfPerson;
+
+  const emptyLabel = {
+    family: 'No family members yet.',
+    friend: 'No friends added yet.',
+    service: 'No professionals added yet.',
+  }[tab];
 
   return (
-    <ScrollView style={styles.container} contentContainerStyle={styles.content}>
-      <Text style={styles.intro}>
-        This information helps the AI suggest family activities and who to get together with based on
-        your calendar.
-      </Text>
-
-      <TouchableOpacity style={styles.importBtn} onPress={() => nav.navigate('ContactImport')}>
-        <Ionicons name="people-circle-outline" size={18} color={colors.primary} />
-        <Text style={styles.importBtnText}>Import from Contacts</Text>
-      </TouchableOpacity>
-
-      <View style={styles.sectionHeader}>
-        <Text style={styles.sectionTitle}>Family Members</Text>
-        <TouchableOpacity onPress={() => nav.navigate('PersonForm', {})}>
-          <Text style={styles.addBtn}>+ Add Member</Text>
-        </TouchableOpacity>
+    <View style={styles.container}>
+      <View style={styles.tabBar}>
+        {TABS.map((t) => (
+          <TouchableOpacity
+            key={t.key}
+            style={[styles.tab, tab === t.key && styles.tabActive]}
+            onPress={() => setTab(t.key)}
+            activeOpacity={0.7}
+          >
+            <Text style={[styles.tabText, tab === t.key && styles.tabTextActive]}>{t.label}</Text>
+          </TouchableOpacity>
+        ))}
       </View>
 
-      {selfPerson ? (
-        <PersonCard
-          person={selfPerson}
-          self
-          onPress={() => nav.navigate('PersonForm', { id: selfPerson._id, isSelf: true })}
-        />
-      ) : null}
-      {family.map((p) => (
-        <PersonCard key={p._id} person={p} onPress={() => nav.navigate('PersonForm', { id: p._id })} />
-      ))}
-      {family.length === 0 && !selfPerson ? <Empty label="No family members yet." /> : null}
-
-      <View style={[styles.sectionHeader, { marginTop: spacing.lg }]}>
-        <Text style={styles.sectionTitle}>Friends</Text>
-        <TouchableOpacity onPress={() => nav.navigate('PersonForm', {})}>
-          <Text style={styles.addBtn}>+ Add Friend</Text>
-        </TouchableOpacity>
-      </View>
-      {friends.map((p) => (
-        <PersonCard key={p._id} person={p} onPress={() => nav.navigate('PersonForm', { id: p._id })} />
-      ))}
-      {friends.length === 0 ? <Empty label="No friends added yet." /> : null}
-
-      <View style={[styles.sectionHeader, { marginTop: spacing.lg }]}>
-        <Text style={styles.sectionTitle}>Service Providers</Text>
-        <TouchableOpacity onPress={() => nav.navigate('PersonForm', { type: 'service' })}>
-          <Text style={styles.addBtn}>+ Add Provider</Text>
-        </TouchableOpacity>
-      </View>
-      {providers.map((p) => (
-        <PersonCard key={p._id} person={p} onPress={() => nav.navigate('PersonForm', { id: p._id })} />
-      ))}
-      {providers.length === 0 ? <Empty label="No service providers added yet." /> : null}
-    </ScrollView>
+      <ScrollView contentContainerStyle={styles.content}>
+        {showSelf ? (
+          <PersonCard
+            person={selfPerson!}
+            self
+            onPress={() => nav.navigate('PersonForm', { id: selfPerson!._id, isSelf: true })}
+          />
+        ) : null}
+        {roster.map((p) => (
+          <PersonCard key={p._id} person={p} onPress={() => nav.navigate('PersonForm', { id: p._id })} />
+        ))}
+        {roster.length === 0 && !showSelf ? <Empty label={emptyLabel} /> : null}
+      </ScrollView>
+    </View>
   );
 }
 
@@ -156,6 +171,7 @@ function PersonCard({ person, self, onPress }: { person: Person; self?: boolean;
           {self ? <Text style={styles.youChip}>You</Text> : person.accountId ? <Text style={styles.memberChip}>Member</Text> : null}
         </View>
         {person.relationship ? <Text style={styles.personMeta}>{person.relationship}</Text> : null}
+        {isService && person.businessName ? <Text style={styles.personMeta}>🏢 {person.businessName}</Text> : null}
         {person.address ? <Text style={styles.personMeta}>📍 {person.address}</Text> : null}
         {person.interests && person.interests.length > 0 ? (
           <View style={styles.tags}>
@@ -185,16 +201,18 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.background },
   content: { padding: spacing.md },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.background },
-  intro: { fontSize: 13, color: colors.textMuted, marginBottom: spacing.md, lineHeight: 18 },
-  importBtn: {
-    flexDirection: 'row', alignItems: 'center', gap: 6, alignSelf: 'flex-start',
-    borderWidth: 1, borderColor: colors.primary, borderRadius: 8,
-    paddingHorizontal: 12, paddingVertical: 6, marginBottom: spacing.lg,
+  tabBar: {
+    flexDirection: 'row', gap: spacing.sm,
+    paddingHorizontal: spacing.md, paddingTop: spacing.sm, paddingBottom: spacing.xs,
+    backgroundColor: colors.background,
   },
-  importBtnText: { color: colors.primary, fontWeight: '600', fontSize: 13 },
-  sectionHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: spacing.sm },
-  sectionTitle: { fontSize: 16, fontWeight: '700', color: colors.text },
-  addBtn: { fontSize: 14, fontWeight: '600', color: colors.primary },
+  tab: {
+    flex: 1, alignItems: 'center', paddingVertical: 8, borderRadius: 8,
+    backgroundColor: colors.surface,
+  },
+  tabActive: { backgroundColor: colors.primary },
+  tabText: { fontSize: 13, fontWeight: '600', color: colors.textMuted },
+  tabTextActive: { color: '#fff' },
   personCard: { marginBottom: spacing.sm },
   selfCard: { borderWidth: 1, borderColor: colors.primary, backgroundColor: colors.primary + '0D' },
   personHead: { flexDirection: 'row', alignItems: 'center' },

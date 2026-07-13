@@ -4,17 +4,19 @@ import { Ionicons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useAuth } from '../../store/auth';
+import { passkeysSupported } from '../../lib/passkeys';
 import { Button, Input } from '../../components/ui';
 import { colors, spacing } from '../../theme';
 import type { AuthStackParamList } from '../../navigation/AuthNavigator';
 
 export default function LoginScreen() {
   const nav = useNavigation<NativeStackNavigationProp<AuthStackParamList>>();
-  const { login } = useAuth();
+  const { login, loginWithPasskey } = useAuth();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [passkeyLoading, setPasskeyLoading] = useState(false);
 
   async function handleLogin() {
     setLoading(true);
@@ -25,6 +27,22 @@ export default function LoginScreen() {
       setError(e?.response?.data?.error || 'Login failed');
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function handlePasskey() {
+    if (!email.trim()) {
+      setError('Enter your email, then sign in with your passkey.');
+      return;
+    }
+    setPasskeyLoading(true);
+    setError('');
+    try {
+      await loginWithPasskey(email.trim()); // false = canceled, which needs no message
+    } catch (e: any) {
+      setError(e?.response?.data?.error || 'Passkey sign-in failed');
+    } finally {
+      setPasskeyLoading(false);
     }
   }
 
@@ -59,6 +77,20 @@ export default function LoginScreen() {
         {error ? <Text style={styles.error}>{error}</Text> : null}
 
         <Button title="Sign In" onPress={handleLogin} loading={loading} />
+        {passkeysSupported() ? (
+          <View style={styles.passkeyButton}>
+            <Button
+              title="Sign in with Face ID / passkey"
+              variant="ghost"
+              onPress={handlePasskey}
+              loading={passkeyLoading}
+            />
+          </View>
+        ) : null}
+
+        <Text style={[styles.link, styles.forgot]} onPress={() => nav.navigate('ForgotPassword')}>
+          Forgot password?
+        </Text>
 
         <View style={styles.footer}>
           <Text style={styles.footerText}>Don't have an account? </Text>
@@ -78,6 +110,8 @@ const styles = StyleSheet.create({
   title: { fontSize: 24, fontWeight: '700', color: colors.text, marginTop: spacing.sm },
   subtitle: { fontSize: 14, color: colors.textMuted, marginTop: 4 },
   error: { color: colors.error, marginBottom: spacing.md, textAlign: 'center' },
+  passkeyButton: { marginTop: spacing.sm },
+  forgot: { textAlign: 'center', marginTop: spacing.md },
   footer: { flexDirection: 'row', justifyContent: 'center', marginTop: spacing.lg },
   footerText: { color: colors.textMuted },
   link: { color: colors.primary, fontWeight: '600' },

@@ -29,7 +29,7 @@ test('the whole drop journey: seal → readiness → dry run → commit → post
     .set('Authorization', owner.auth).send({ keyVersion: 1, wrappedHDK: b64u(96) });
   const hh = await request().get('/api/household').set('Authorization', owner.auth);
   const householdId = hh.body._id;
-  await joinHousehold({ joiner: member, approver: owner, joinCode: hh.body.joinCode, keyVersion: 1 });
+  await joinHousehold({ joiner: member, approver: owner, keyVersion: 1 });
 
   // Content: a sealed event (dual-write), a sealed private trip + booking, and a
   // SHARED trip + booking that must stay plaintext for outside collaborators.
@@ -43,7 +43,8 @@ test('the whole drop journey: seal → readiness → dry run → commit → post
   });
   const sharedTrip = await Trip.create({
     userId: owner.user._id, name: 'Cousins camping', destination: 'Algonquin',
-    start: new Date('2026-07-20'), end: new Date('2026-07-22'), shareCode: 'CAMP2026',
+    start: new Date('2026-07-20'), end: new Date('2026-07-22'),
+    sharedWithOutside: [{ email: 'cousin@example.com' }],
   });
   const sharedItem = await TripItem.create({
     userId: owner.user._id, householdId: owner.user.householdId, tripId: sharedTrip._id,
