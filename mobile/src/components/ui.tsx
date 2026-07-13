@@ -15,10 +15,12 @@ import {
   Pressable,
   Switch as RNSwitch,
   Platform,
+  KeyboardAvoidingView,
 } from 'react-native';
 import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
+import Animated, { useSharedValue, useAnimatedStyle, withRepeat, withTiming, withSequence } from 'react-native-reanimated';
 import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
-import { Ionicons } from '@expo/vector-icons';
+import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { colors, radius, spacing } from '../theme';
 
 export function Button({
@@ -143,6 +145,62 @@ export function HeaderCheckButton({
   );
 }
 
+// A header-bar icon action (edit pencil, share, print…). Lives in `headerRight`
+// on detail screens — the general-purpose counterpart to the form-only
+// HeaderCheckButton/HeaderCloseButton. White by default to sit on the tinted
+// nav bar. Takes an Ionicons `icon` or a MaterialCommunity `mdiIcon`.
+export function HeaderIconButton({
+  icon,
+  mdiIcon,
+  onPress,
+  color = '#fff',
+  size = 22,
+  accessibilityLabel,
+}: {
+  icon?: keyof typeof Ionicons.glyphMap;
+  mdiIcon?: string;
+  onPress: () => void;
+  color?: string;
+  size?: number;
+  accessibilityLabel?: string;
+}) {
+  return (
+    <TouchableOpacity onPress={onPress} style={styles.headerIconBtn} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }} accessibilityRole="button" accessibilityLabel={accessibilityLabel}>
+      {mdiIcon ? (
+        <MaterialCommunityIcons name={mdiIcon.replace(/^mdi-/, '') as any} size={size} color={color} />
+      ) : icon ? (
+        <Ionicons name={icon} size={size} color={color} />
+      ) : null}
+    </TouchableOpacity>
+  );
+}
+
+// The floating action button: a 56px accent disc pinned to the bottom-right with
+// a shadow. Use on detail screens to add a sub-item (a list screen's add lives in
+// the header via RoundIconButton instead).
+export function Fab({
+  icon,
+  onPress,
+  bg = colors.primary,
+  color = '#fff',
+  style,
+  children,
+}: {
+  icon?: keyof typeof Ionicons.glyphMap;
+  onPress: () => void;
+  bg?: string;
+  color?: string;
+  style?: StyleProp<ViewStyle>;
+  // Custom glyph in place of `icon` (e.g. the AI assistant icon).
+  children?: React.ReactNode;
+}) {
+  return (
+    <TouchableOpacity onPress={onPress} activeOpacity={0.85} style={[styles.fab, { backgroundColor: bg }, style]}>
+      {children ?? (icon ? <Ionicons name={icon} size={28} color={color} /> : null)}
+    </TouchableOpacity>
+  );
+}
+
 // The plain white X that dismisses a form. Replaces the native back chevron in
 // the header's top-left (`headerLeft`); tapping it goes back like the chevron.
 export function HeaderCloseButton({ onPress }: { onPress: () => void }) {
@@ -191,11 +249,18 @@ export function useHeaderCheckButton(
   }, [navigation, loading, color, disabled, enabled]);
 }
 
-export function Input(props: TextInputProps & { label?: string; highlight?: boolean; containerStyle?: StyleProp<ViewStyle> }) {
-  const { label, style, highlight, containerStyle, ...rest } = props;
+export function Input(
+  props: TextInputProps & {
+    label?: string;
+    highlight?: boolean;
+    containerStyle?: StyleProp<ViewStyle>;
+    labelStyle?: StyleProp<TextStyle>;
+  },
+) {
+  const { label, style, highlight, containerStyle, labelStyle, ...rest } = props;
   return (
     <View style={[styles.inputWrap, containerStyle]}>
-      {label ? <Text style={styles.label}>{label}</Text> : null}
+      {label ? <Text style={[styles.label, labelStyle]}>{label}</Text> : null}
       <TextInput
         placeholderTextColor={colors.textMuted}
         style={[styles.input, highlight && styles.inputHighlight, style]}
@@ -207,6 +272,13 @@ export function Input(props: TextInputProps & { label?: string; highlight?: bool
 
 export function Card({ children, style }: { children: React.ReactNode; style?: StyleProp<ViewStyle> }) {
   return <View style={[styles.card, style]}>{children}</View>;
+}
+
+// A Card whose padding is handed to its rows — the detail-screen info block that
+// wraps a group of ListRows (hairline-divided settings-style rows). Pass margin
+// via `style`.
+export function InfoCard({ children, style }: { children: React.ReactNode; style?: StyleProp<ViewStyle> }) {
+  return <View style={[styles.card, styles.infoCard, style]}>{children}</View>;
 }
 
 export function Screen({
@@ -235,8 +307,299 @@ export function SectionTitle({ children }: { children: React.ReactNode }) {
   return <Text style={styles.sectionTitle}>{children}</Text>;
 }
 
+// The quiet uppercase "eyebrow" that labels a group of rows/cards in a list or
+// detail screen — the iOS grouped-list convention (Settings/Reminders). Sits
+// ABOVE a card and deliberately recedes so the row content is the hierarchy.
+// Distinct from SectionTitle, which is the bold in-form heading used by the
+// add/edit forms; keep the two roles separate rather than merging them.
+export function SectionHeader({ children, style }: { children: React.ReactNode; style?: StyleProp<TextStyle> }) {
+  return <Text style={[styles.sectionHeader, style]}>{children}</Text>;
+}
+
+// The bold in-body header title for a detail screen (the item/chore/recipe name
+// shown at the top of its page). 24/700. Distinct from SectionTitle (in-form
+// heading) and SectionHeader (list eyebrow). Pass `style` for layout tweaks
+// (e.g. `flex: 1` beside an avatar, or a bottom margin).
+export function ScreenTitle({ children, style }: { children: React.ReactNode; style?: StyleProp<TextStyle> }) {
+  return <Text style={[styles.screenTitle, style]}>{children}</Text>;
+}
+
+// A slide-up modal sheet anchored to the bottom of the screen, dimming the
+// backdrop behind it; tapping the backdrop closes it. The canonical chrome for
+// custom pickers/actions (option lists, wheel pickers, confirm sheets). `style`
+// merges into the sheet (e.g. a `gap` between stacked children).
+export function BottomSheet({
+  visible,
+  onClose,
+  title,
+  children,
+  style,
+  // Wrap the sheet so the keyboard pushes it up instead of covering its inputs.
+  // Use for sheets containing text fields.
+  avoidKeyboard,
+}: {
+  visible: boolean;
+  onClose: () => void;
+  title?: string;
+  children: React.ReactNode;
+  style?: StyleProp<ViewStyle>;
+  avoidKeyboard?: boolean;
+}) {
+  const sheet = (
+    <Pressable style={[styles.modalSheet, style]} onPress={(e) => e.stopPropagation()}>
+      {title ? <Text style={styles.modalTitle}>{title}</Text> : null}
+      {children}
+    </Pressable>
+  );
+  return (
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
+      <Pressable style={styles.modalBackdrop} onPress={onClose}>
+        {avoidKeyboard ? (
+          <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined}>{sheet}</KeyboardAvoidingView>
+        ) : (
+          sheet
+        )}
+      </Pressable>
+    </Modal>
+  );
+}
+
 export function Divider() {
   return <View style={styles.divider} />;
+}
+
+// The canonical full-screen loading fallback: a centered spinner tinted with the
+// screen's section accent (falls back to the app primary). Replaces the ~15
+// hand-rolled `center`/`loading` container styles scattered across screens.
+export function CenteredLoader({ color = colors.primary }: { color?: string }) {
+  return (
+    <View style={styles.centeredLoader}>
+      <ActivityIndicator size="large" color={color} />
+    </View>
+  );
+}
+
+// One shared empty-state layout so every list reads the same: optional icon,
+// a bold title, a muted one-liner, and an optional accent-tinted CTA button.
+// `variant="screen"` fills and centers (the only content on screen); `inline`
+// sits at the top of an otherwise-populated scroll view.
+export function EmptyState({
+  icon,
+  mdiIcon,
+  title,
+  message,
+  actionLabel,
+  onAction,
+  accent = colors.primary,
+  variant = 'screen',
+  children,
+}: {
+  icon?: keyof typeof Ionicons.glyphMap;
+  mdiIcon?: string;
+  title?: string;
+  message?: string;
+  actionLabel?: string;
+  onAction?: () => void;
+  accent?: string;
+  variant?: 'screen' | 'inline';
+  // Extra affordances rendered below the CTA (e.g. a "Browse templates" link).
+  children?: React.ReactNode;
+}) {
+  return (
+    <View style={variant === 'screen' ? styles.emptyScreen : styles.emptyInline}>
+      {mdiIcon ? (
+        <MaterialCommunityIcons name={mdiIcon.replace(/^mdi-/, '') as any} size={52} color={accent} />
+      ) : icon ? (
+        <Ionicons name={icon} size={52} color={accent} />
+      ) : null}
+      {title ? <Text style={styles.emptyStateTitle}>{title}</Text> : null}
+      {message ? <Text style={styles.emptyStateMessage}>{message}</Text> : null}
+      {actionLabel && onAction ? (
+        <TouchableOpacity
+          style={[styles.emptyStateAction, { backgroundColor: accent }]}
+          onPress={onAction}
+          activeOpacity={0.8}
+        >
+          <Ionicons name="add" size={18} color="#fff" />
+          <Text style={styles.emptyStateActionText}>{actionLabel}</Text>
+        </TouchableOpacity>
+      ) : null}
+      {children}
+    </View>
+  );
+}
+
+// A shimmering placeholder block. Pulses opacity via Reanimated (already a dep)
+// so we avoid a shimmer library. Compose these into row/card shapes below.
+export function Skeleton({ width, height = 14, radius: r = radius.sm, style }: {
+  width?: number | `${number}%`;
+  height?: number;
+  radius?: number;
+  style?: StyleProp<ViewStyle>;
+}) {
+  const opacity = useSharedValue(0.5);
+  useEffect(() => {
+    opacity.value = withRepeat(withSequence(withTiming(1, { duration: 700 }), withTiming(0.5, { duration: 700 })), -1, false);
+  }, []);
+  const anim = useAnimatedStyle(() => ({ opacity: opacity.value }));
+  return <Animated.View style={[{ width: width as any, height, borderRadius: r, backgroundColor: colors.border }, anim, style]} />;
+}
+
+// A skeleton in the shape of the standard list card: a leading avatar disc and
+// two text lines. `count` renders a full list of them as the loading fallback.
+export function SkeletonList({ count = 6 }: { count?: number }) {
+  return (
+    <View style={styles.skeletonList}>
+      {Array.from({ length: count }).map((_, i) => (
+        <View key={i} style={styles.skeletonRow}>
+          <Skeleton width={44} height={44} radius={22} />
+          <View style={styles.skeletonRowText}>
+            <Skeleton width={'60%'} height={15} />
+            <Skeleton width={'40%'} height={12} style={{ marginTop: 8 }} />
+          </View>
+        </View>
+      ))}
+    </View>
+  );
+}
+
+// The standard inline form/validation error line. Renders nothing when empty so
+// call sites can drop the `{error ? … : null}` conditional. Replaces the ~18
+// hand-rolled `styles.error` definitions.
+export function FormError({ children, style }: { children?: React.ReactNode; style?: StyleProp<TextStyle> }) {
+  if (!children) return null;
+  return <Text style={[styles.formError, style]}>{children}</Text>;
+}
+
+// The muted explainer line that sits above a field/section to describe it.
+// One size (13 / lineHeight 18); replaces the drifting `hint`/`intro` locals.
+export function Hint({ children, style }: { children: React.ReactNode; style?: StyleProp<TextStyle> }) {
+  return <Text style={[styles.hint, style]}>{children}</Text>;
+}
+
+// The standard leading disc for list rows: a solid-fill circle (borderRadius =
+// size/2) holding a white glyph. Takes an Ionicons `icon` or a MaterialCommunity
+// `mdiIcon`. Default size 44 is the list-row standard; pass 40 for denser rows.
+export function IconAvatar({
+  icon,
+  mdiIcon,
+  bg = colors.primary,
+  color = '#fff',
+  size = 44,
+  radius: r,
+  style,
+}: {
+  icon?: keyof typeof Ionicons.glyphMap;
+  mdiIcon?: string;
+  bg?: string;
+  color?: string;
+  size?: number;
+  // Corner radius; defaults to size/2 (a circle). Pass a smaller value for a
+  // rounded-square disc (e.g. detail-header avatars).
+  radius?: number;
+  style?: StyleProp<ViewStyle>;
+}) {
+  return (
+    <View
+      style={[
+        { width: size, height: size, borderRadius: r ?? size / 2, backgroundColor: bg, alignItems: 'center', justifyContent: 'center' },
+        style,
+      ]}
+    >
+      {mdiIcon ? (
+        <MaterialCommunityIcons name={mdiIcon.replace(/^mdi-/, '') as any} size={Math.round(size * 0.5)} color={color} />
+      ) : icon ? (
+        <Ionicons name={icon} size={Math.round(size * 0.5)} color={color} />
+      ) : null}
+    </View>
+  );
+}
+
+// A standalone tappable list card: a Card holding a leading element (IconAvatar /
+// thumbnail / icon), a title (+ optional inline `titleRight` like a status chip),
+// a subtitle (a string, or a node for icon-studded meta rows), and trailing
+// content (`right` — a Switch/Badge…; falls back to a chevron when `onPress` is
+// set). The richer sibling of ListRow (which is a bare row inside a card). For
+// bespoke cards (expandable, swipeable, flush colour-bar) keep a raw Card.
+export function CardRow({
+  leading,
+  title,
+  titleRight,
+  subtitle,
+  right,
+  onPress,
+  style,
+}: {
+  leading?: React.ReactNode;
+  title: string;
+  titleRight?: React.ReactNode;
+  subtitle?: string | React.ReactNode;
+  right?: React.ReactNode;
+  onPress?: () => void;
+  style?: StyleProp<ViewStyle>;
+}) {
+  const body = (
+    <Card style={[styles.cardRow, style]}>
+      {leading}
+      <View style={styles.cardRowText}>
+        <View style={styles.cardRowTitleLine}>
+          <Text style={styles.cardRowTitle} numberOfLines={1}>{title}</Text>
+          {titleRight}
+        </View>
+        {subtitle != null ? (
+          typeof subtitle === 'string' ? (
+            <Text style={styles.cardRowSubtitle} numberOfLines={1}>{subtitle}</Text>
+          ) : (
+            <View style={styles.cardRowSubtitleRow}>{subtitle}</View>
+          )
+        ) : null}
+      </View>
+      {right ?? (onPress ? <Ionicons name="chevron-forward" size={18} color={colors.textMuted} /> : null)}
+    </Card>
+  );
+  return onPress ? (
+    <TouchableOpacity activeOpacity={0.7} onPress={onPress}>{body}</TouchableOpacity>
+  ) : (
+    body
+  );
+}
+
+// A palette grid for picking an accent colour. Each option is a solid disc; the
+// selected one shows a white checkmark (no layout shift). Replaces the four
+// near-identical swatch grids (calendar colour, subscribe, trip colour…).
+export function ColorPicker({
+  value,
+  onChange,
+  options,
+  disabled,
+  size = 36,
+  style,
+}: {
+  value: string;
+  onChange: (c: string) => void;
+  options: string[];
+  disabled?: boolean;
+  size?: number;
+  style?: StyleProp<ViewStyle>;
+}) {
+  return (
+    <View style={[styles.colorPicker, style]}>
+      {options.map((c) => {
+        const selected = c.toLowerCase() === value?.toLowerCase();
+        return (
+          <TouchableOpacity
+            key={c}
+            style={{ width: size, height: size, borderRadius: size / 2, backgroundColor: c, alignItems: 'center', justifyContent: 'center' }}
+            disabled={disabled}
+            activeOpacity={0.8}
+            onPress={() => onChange(c)}
+          >
+            {selected ? <Ionicons name="checkmark" size={Math.round(size * 0.45)} color="#fff" /> : null}
+          </TouchableOpacity>
+        );
+      })}
+    </View>
+  );
 }
 
 export function Chip({
@@ -341,6 +704,7 @@ export function SwitchRow({
 // A tappable detail/list row with optional leading icon and trailing content.
 export function ListRow({
   icon,
+  mdiIcon,
   title,
   subtitle,
   onPress,
@@ -348,6 +712,9 @@ export function ListRow({
   iconColor = colors.textMuted,
 }: {
   icon?: keyof typeof Ionicons.glyphMap;
+  // A Material Design Icons name (with or without the `mdi-` prefix), rendered
+  // instead of `icon` when provided — e.g. item type/category icons.
+  mdiIcon?: string;
   title: string;
   subtitle?: string | null;
   onPress?: () => void;
@@ -357,7 +724,9 @@ export function ListRow({
   const Wrapper: any = onPress ? TouchableOpacity : View;
   return (
     <Wrapper style={styles.listRow} onPress={onPress} activeOpacity={0.7}>
-      {icon ? <Ionicons name={icon} size={20} color={iconColor} style={styles.listRowIcon} /> : null}
+      {mdiIcon ? (
+        <MaterialCommunityIcons name={mdiIcon.replace(/^mdi-/, '') as any} size={20} color={iconColor} style={styles.listRowIcon} />
+      ) : icon ? <Ionicons name={icon} size={20} color={iconColor} style={styles.listRowIcon} /> : null}
       <View style={styles.listRowText}>
         <Text style={styles.listRowTitle}>{title}</Text>
         {subtitle ? <Text style={styles.listRowSubtitle}>{subtitle}</Text> : null}
@@ -485,7 +854,7 @@ export function Select<T extends string | number>({
       <Modal visible={open} transparent animationType="fade" onRequestClose={() => setOpen(false)}>
         <Pressable style={styles.modalBackdrop} onPress={() => setOpen(false)}>
           <Pressable style={styles.modalSheet} onPress={(e) => e.stopPropagation()}>
-            {label || inlineLabel ? <Text style={styles.modalTitle}>{label || inlineLabel}</Text> : null}
+            {label || inlineLabel || placeholder ? <Text style={styles.modalTitle}>{label || inlineLabel || placeholder}</Text> : null}
             <ScrollView style={styles.modalList}>
               {clearable && !multiple ? (
                 <TouchableOpacity
@@ -524,6 +893,50 @@ export function Select<T extends string | number>({
           </Pressable>
         </Pressable>
       </Modal>
+    </View>
+  );
+}
+
+// A Select-shaped row that navigates (or opens a screen) on tap instead of
+// showing an option picker — same inline-label + value + chevron chrome, so it
+// sits flush in a grouped form card next to real Select/DateField rows.
+export function NavField({
+  inlineLabel,
+  value,
+  placeholder,
+  onPress,
+  highlight,
+  disabled,
+  containerStyle,
+  fieldStyle,
+  valueStyle,
+  chevronIcon = 'chevron-forward',
+}: {
+  inlineLabel?: string;
+  value?: string | null;
+  placeholder?: string;
+  onPress: () => void;
+  highlight?: boolean;
+  disabled?: boolean;
+  containerStyle?: StyleProp<ViewStyle>;
+  fieldStyle?: StyleProp<ViewStyle>;
+  valueStyle?: StyleProp<TextStyle>;
+  chevronIcon?: keyof typeof Ionicons.glyphMap;
+}) {
+  return (
+    <View style={[styles.inputWrap, containerStyle]}>
+      <TouchableOpacity
+        style={[styles.input, styles.selectField, fieldStyle, highlight && styles.inputHighlight, disabled && styles.btnDisabled]}
+        onPress={onPress}
+        activeOpacity={0.7}
+        disabled={disabled}
+      >
+        {inlineLabel ? <Text style={styles.inlineLabel}>{inlineLabel}</Text> : null}
+        <Text style={[styles.selectValue, !value && styles.selectPlaceholder, valueStyle]} numberOfLines={1}>
+          {value || placeholder}
+        </Text>
+        <Ionicons name={chevronIcon} size={18} color={colors.textMuted} style={styles.selectChevron} />
+      </TouchableOpacity>
     </View>
   );
 }
@@ -765,6 +1178,22 @@ const styles = StyleSheet.create({
   btnDisabled: { opacity: 0.6 },
   headerCheck: { width: 32, height: 32, borderRadius: 16, alignItems: 'center', justifyContent: 'center' },
   headerClose: { width: 32, height: 32, alignItems: 'center', justifyContent: 'center' },
+  headerIconBtn: { paddingHorizontal: 6 },
+  fab: {
+    position: 'absolute',
+    right: spacing.lg,
+    bottom: spacing.lg,
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 4,
+    elevation: 5,
+  },
   btnText: { color: '#fff', fontSize: 16, fontWeight: '600' },
   btnTextCompact: { fontSize: 14 },
   btnTextGhost: { color: colors.primary },
@@ -801,6 +1230,14 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: colors.border,
   },
+  // Overrides Card's padding so the ListRows inside own their spacing.
+  infoCard: { padding: 0, paddingVertical: spacing.xs },
+  cardRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.md, marginBottom: spacing.sm },
+  cardRowText: { flex: 1, minWidth: 0 },
+  cardRowTitleLine: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, flexWrap: 'wrap' },
+  cardRowTitle: { fontSize: 16, fontWeight: '600', color: colors.text },
+  cardRowSubtitle: { fontSize: 13, color: colors.textMuted, marginTop: 2 },
+  cardRowSubtitleRow: { flexDirection: 'row', alignItems: 'center', gap: 3, marginTop: 4, flexWrap: 'wrap' },
   accordion: { marginBottom: spacing.md },
   accordionHeader: {
     flexDirection: 'row',
@@ -826,7 +1263,35 @@ const styles = StyleSheet.create({
     marginTop: spacing.md,
     marginBottom: spacing.sm,
   },
+  sectionHeader: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: colors.textMuted,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+    marginBottom: spacing.sm,
+  },
+  screenTitle: { fontSize: 24, fontWeight: '700', color: colors.text },
   divider: { height: 1, backgroundColor: colors.border, marginVertical: spacing.sm },
+  centeredLoader: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.background },
+  emptyScreen: {
+    flex: 1, alignItems: 'center', justifyContent: 'center',
+    backgroundColor: colors.background, padding: spacing.lg, gap: spacing.sm,
+  },
+  emptyInline: { alignItems: 'center', marginTop: spacing.xl, padding: spacing.lg, gap: spacing.sm },
+  emptyStateTitle: { fontSize: 18, fontWeight: '700', color: colors.text, textAlign: 'center' },
+  emptyStateMessage: { fontSize: 14, color: colors.textMuted, textAlign: 'center' },
+  emptyStateAction: {
+    flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: spacing.sm,
+    paddingHorizontal: spacing.md, paddingVertical: 10, borderRadius: radius.md,
+  },
+  emptyStateActionText: { color: '#fff', fontWeight: '600', fontSize: 15 },
+  skeletonList: { padding: spacing.md },
+  skeletonRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, marginBottom: spacing.sm },
+  skeletonRowText: { flex: 1, marginLeft: spacing.md },
+  formError: { color: colors.error, marginVertical: spacing.sm, fontSize: 14 },
+  hint: { fontSize: 13, color: colors.textMuted, lineHeight: 18, marginBottom: spacing.md },
+  colorPicker: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
   chip: {
     borderWidth: 1,
     borderRadius: 999,

@@ -3,7 +3,7 @@ import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, ScrollView
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Ionicons } from '@expo/vector-icons';
 import { settingsApi } from '../../api';
-import { Card } from '../../components/ui';
+import { Card, SectionHeader } from '../../components/ui';
 import { useCalendarColors } from '../../lib/calendarPrefs';
 import { colors, spacing } from '../../theme';
 import { DAY_NAMES_FULL, GroceryFrequency, iso, startOfWeek } from './constants';
@@ -83,20 +83,20 @@ export default function GroceryScheduleScreen() {
     <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
       <Text style={styles.hint}>The meal planner and grocery list cover one shopping trip at a time.</Text>
 
-      <Text style={[styles.sectionLabel, { color: accent }]}>How often</Text>
+      <SectionHeader style={[styles.groupHeader, { color: accent }]}>How often</SectionHeader>
       <Card style={styles.card}>
         {checkRow('Every week', frequency === 'weekly', () => setFrequency('weekly'), true)}
         {checkRow('Every 2 weeks', frequency === 'biweekly', () => setFrequency('biweekly'), false)}
       </Card>
 
-      <Text style={[styles.sectionLabel, { color: accent }]}>Shopping day</Text>
+      <SectionHeader style={[styles.groupHeader, { color: accent }]}>Shopping day</SectionHeader>
       <Card style={styles.card}>
         {DAY_NAMES_FULL.map((d, i) => checkRow(d, groceryDay === i, () => setDay(i), i === 0, d))}
       </Card>
 
       {frequency === 'biweekly' ? (
         <>
-          <Text style={[styles.sectionLabel, { color: accent }]}>Next shopping day</Text>
+          <SectionHeader style={[styles.groupHeader, { color: accent }]}>Next shopping day</SectionHeader>
           <Card style={styles.card}>
             {candidates.map((d, i) =>
               checkRow(dateLabel(d), isShoppingWeek(d), () => update.mutate({ groceryAnchor: iso(d) }), i === 0, iso(d))
@@ -112,7 +112,7 @@ const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: colors.background },
   content: { padding: spacing.md, paddingBottom: spacing.xl },
   hint: { fontSize: 13, color: colors.textMuted, marginBottom: spacing.sm },
-  sectionLabel: { fontSize: 12, fontWeight: '700', textTransform: 'uppercase', marginTop: spacing.md, marginBottom: spacing.xs },
+  groupHeader: { marginTop: spacing.md, marginBottom: spacing.xs },
   card: { paddingVertical: 0 },
   row: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 13 },
   rowBorder: { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.border },

@@ -35,19 +35,30 @@ function dateStrMinusDays(isoDateStr, days) {
   return d.toISOString().slice(0, 10);
 }
 
+// Explicit per-member recipient list (tasks). When set, it overrides the
+// coarse alertAudience. Empty/absent → fall back to alertAudience.
+function recipientIds(item) {
+  return Array.isArray(item.alertUserIds) ? item.alertUserIds.map(String) : [];
+}
+
 // Resolve the users an item's alert should reach, given its audience and the
-// household's members. 'owner' → just the creator; 'everyone' → all members.
+// household's members. Explicit recipients win; otherwise 'owner' → just the
+// creator; 'everyone' → all members.
 function audienceUsers(item, members) {
+  const ids = recipientIds(item);
+  if (ids.length) return members.filter(m => ids.includes(String(m._id)));
   if (item.alertAudience === 'owner') {
     return members.filter(m => String(m._id) === String(item.userId));
   }
   return members;
 }
 
-// Should a given user receive this item's alert? 'owner' → only the creator;
-// 'everyone' → any household member. Used by the per-user daily check so each
-// member is evaluated in their own timezone.
+// Should a given user receive this item's alert? Explicit recipients win;
+// otherwise 'owner' → only the creator; 'everyone' → any household member. Used
+// by the per-user daily check so each member is evaluated in their own timezone.
 function inAudience(item, user) {
+  const ids = recipientIds(item);
+  if (ids.length) return ids.includes(String(user._id));
   if (item.alertAudience === 'owner') return String(user._id) === String(item.userId);
   return true;
 }

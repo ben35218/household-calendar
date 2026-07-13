@@ -8,6 +8,9 @@ import { colors } from '../theme';
 import { ASSISTANT_NAME } from '../config';
 import { useCalendarColors } from '../lib/calendarPrefs';
 import { useSyncTimezone } from '../lib/useSyncTimezone';
+import { useQuery } from '@tanstack/react-query';
+import { loadForecast } from '../lib/weather';
+import { weatherCardColors } from '../lib/weatherTheme';
 
 // Calendar
 import CalendarScreen from '../screens/calendar/CalendarScreen';
@@ -24,7 +27,7 @@ import CalendarColorsScreen from '../screens/calendar/CalendarColorsScreen';
 import PrintCalendarScreen from '../screens/calendar/PrintCalendarScreen';
 import HolidaysScreen from '../screens/calendar/HolidaysScreen';
 import BirthdaysScreen from '../screens/calendar/BirthdaysScreen';
-import WeatherScreen, { WEATHER_CARD_BG, WEATHER_CARD_BORDER } from '../screens/calendar/WeatherScreen';
+import WeatherScreen from '../screens/calendar/WeatherScreen';
 import InvitationsScreen from '../screens/calendar/InvitationsScreen';
 import EventInviteesScreen from '../screens/calendar/EventInviteesScreen';
 import EventTravelTimeScreen from '../screens/calendar/EventTravelTimeScreen';
@@ -35,7 +38,7 @@ import MaintenanceScreen from '../screens/maintenance/MaintenanceScreen';
 import TaskDetailScreen from '../screens/maintenance/TaskDetailScreen';
 import TaskFormScreen from '../screens/maintenance/TaskFormScreen';
 import TaskTemplatesScreen from '../screens/maintenance/TaskTemplatesScreen';
-import ItemsListScreen from '../screens/maintenance/ItemsListScreen';
+import TaskTemplateReviewScreen from '../screens/maintenance/TaskTemplateReviewScreen';
 import ItemDetailScreen from '../screens/maintenance/ItemDetailScreen';
 import ItemFormScreen from '../screens/maintenance/ItemFormScreen';
 import MaintenanceChatScreen from '../screens/maintenance/MaintenanceChatScreen';
@@ -69,6 +72,7 @@ import VacationAssistantScreen from '../screens/trips/VacationAssistantScreen';
 import ProfileScreen from '../screens/ProfileScreen';
 import AccountScreen from '../screens/profile/AccountScreen';
 import PeopleScreen from '../screens/profile/PeopleScreen';
+import PersonDetailScreen from '../screens/profile/PersonDetailScreen';
 import PersonFormScreen from '../screens/profile/PersonFormScreen';
 import ContactImportScreen from '../screens/profile/ContactImportScreen';
 import HouseholdScreen from '../screens/profile/HouseholdScreen';
@@ -84,6 +88,24 @@ const Stack = createNativeStackNavigator<RootStackParamList>();
 // calendar-family screens use black.
 const BLACK = '#000';
 const hdr = (bg: string) => ({ headerStyle: { backgroundColor: bg }, headerTintColor: '#fff' as const });
+
+// Weather's floating edit pencil. Reads the cached forecast so its fill tracks
+// the current conditions in step with the forecast cards behind it.
+function WeatherEditButton({ onPress }: { onPress: () => void }) {
+  const weatherQ = useQuery({ queryKey: ['weather'], queryFn: () => loadForecast() });
+  const { bg, border } = weatherCardColors(weatherQ.data?.current?.weatherCode);
+  return (
+    <TouchableOpacity
+      onPress={onPress}
+      style={[styles.weatherEditBtn, { backgroundColor: bg, borderColor: border }]}
+      hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+      accessibilityRole="button"
+      accessibilityLabel="Edit Weather calendar"
+    >
+      <Ionicons name="pencil" size={16} color="#fff" />
+    </TouchableOpacity>
+  );
+}
 
 // Header title with a bare pencil hugging its right edge, opening the
 // calendar's Edit Calendar view. An invisible left spacer mirrors the pencil's
@@ -145,7 +167,7 @@ export default function AppNavigator() {
       {/* Calendar family (black). The grid/agenda toggle lives inside
           CalendarHome (crossfading layers), not as a separate route. */}
       <Stack.Screen name="CalendarHome" component={CalendarScreen} options={{ headerShown: false }} />
-      <Stack.Screen name="CalendarDay" component={CalendarDayScreen} options={{ ...hdr(BLACK), title: 'Day' }} />
+      <Stack.Screen name="CalendarDay" component={CalendarDayScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Day' }} />
       <Stack.Screen name="EventForm" component={EventFormScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Event' }} />
       <Stack.Screen name="CalendarAssistant" component={CalendarAssistantScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: `${ASSISTANT_NAME} · Calendar` }} />
       <Stack.Screen name="CalendarSearch" component={CalendarSearchScreen} options={{ ...hdr(BLACK), title: 'Search' }} />
@@ -204,15 +226,7 @@ export default function AppNavigator() {
           headerTintColor: '#fff',
           title: '',
           headerRight: () => (
-            <TouchableOpacity
-              onPress={() => navigation.navigate('AddCalendar', { calendarId: 'weather' })}
-              style={styles.weatherEditBtn}
-              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-              accessibilityRole="button"
-              accessibilityLabel="Edit Weather calendar"
-            >
-              <Ionicons name="pencil" size={16} color="#fff" />
-            </TouchableOpacity>
+            <WeatherEditButton onPress={() => navigation.navigate('AddCalendar', { calendarId: 'weather' })} />
           ),
         })}
       />
@@ -221,8 +235,8 @@ export default function AppNavigator() {
       <Stack.Screen name="MaintenanceHome" component={MaintenanceScreen} options={editableCalendarHome('Maintenance', 'maintenance')} />
       <Stack.Screen name="TaskDetail" component={TaskDetailScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Task' }} />
       <Stack.Screen name="TaskForm" component={TaskFormScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Task' }} />
-      <Stack.Screen name="TaskTemplates" component={TaskTemplatesScreen} options={{ ...hdr(cal.maintenance), title: 'Task Templates' }} />
-      <Stack.Screen name="ItemsList" component={ItemsListScreen} options={{ ...hdr(cal.maintenance), title: 'Items' }} />
+      <Stack.Screen name="TaskTemplates" component={TaskTemplatesScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Task Templates' }} />
+      <Stack.Screen name="TaskTemplateReview" component={TaskTemplateReviewScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Link Items' }} />
       <Stack.Screen name="ItemDetail" component={ItemDetailScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Item' }} />
       <Stack.Screen name="ItemForm" component={ItemFormScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Item' }} />
       <Stack.Screen name="MaintenanceChat" component={MaintenanceChatScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: `${ASSISTANT_NAME} · Maintenance` }} />
@@ -256,6 +270,7 @@ export default function AppNavigator() {
       <Stack.Screen name="ProfileHome" component={ProfileScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Profile' }} />
       <Stack.Screen name="Account" component={AccountScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Account' }} />
       <Stack.Screen name="People" component={PeopleScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Contacts' }} />
+      <Stack.Screen name="PersonDetail" component={PersonDetailScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Contact' }} />
       <Stack.Screen name="PersonForm" component={PersonFormScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Person' }} />
       <Stack.Screen name="ContactImport" component={ContactImportScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Import Contacts' }} />
       <Stack.Screen name="Household" component={HouseholdScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Household' }} />
@@ -290,15 +305,14 @@ const styles = StyleSheet.create({
   // Matches the native stack header's default title weight/size.
   headerTitleText: { color: '#fff', fontSize: 17, fontWeight: '600' },
   headerEditBtn: { width: EDIT_BTN_W, alignItems: 'flex-end', justifyContent: 'center' },
-  // Weather's floating edit pencil — matches the forecast card's solid fill.
+  // Weather's floating edit pencil — matches the forecast card's solid fill
+  // (backgroundColor/borderColor applied dynamically in WeatherEditButton).
   weatherEditBtn: {
     width: 32,
     height: 32,
     borderRadius: 16,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: WEATHER_CARD_BG,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: WEATHER_CARD_BORDER,
   },
 });

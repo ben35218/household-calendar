@@ -31,13 +31,19 @@ export interface ItemType {
 }
 
 // When a type is selected, auto-pick this category by name (if it exists).
+// `vehicle` maps to the vehicle-only "Vehicles" category (which property items
+// can't be filed under and vehicles can't change away from).
 export const TYPE_CATEGORY_MATCH: Record<string, string> = {
   appliance: 'Appliances',
-  vehicle: 'Vehicles & Equipment',
+  vehicle: 'Vehicles',
   system: 'HVAC & Heating',
   structure: 'Exterior & Structure',
-  equipment: 'Vehicles & Equipment',
+  equipment: 'Equipment',
 };
+
+// The vehicle-only category. Locked for vehicle items; hidden from the
+// category picker for property items.
+export const VEHICLE_CATEGORY = TYPE_CATEGORY_MATCH.vehicle;
 
 const currentYear = new Date().getFullYear();
 const years = Array.from({ length: currentYear - 1949 }, (_, i) => String(currentYear - i));
@@ -69,13 +75,6 @@ export const ITEM_TYPES: ItemType[] = [
           { model: 'serialNumber', label: 'Serial Number' },
         ],
       },
-      {
-        title: 'Purchase & Warranty',
-        fields: [
-          { model: 'purchaseDate', label: 'Purchase Date', type: 'date' },
-          { model: 'warrantyExpiry', label: 'Warranty Expiry', type: 'date' },
-        ],
-      },
     ],
   },
   {
@@ -89,13 +88,10 @@ export const ITEM_TYPES: ItemType[] = [
       {
         title: 'Vehicle Details',
         fields: [
-          { customKey: 'Vehicle Type', label: 'Vehicle Type', type: 'select', options: ['Car / Sedan', 'Pickup Truck', 'SUV / Crossover', 'Van / Minivan', 'Motorcycle', 'Tractor', 'ATV / Quad', 'UTV / Side-by-Side', 'Snowblower', 'Riding Mower / Tractor', 'Walk-Behind Mower', 'Other'] },
-          { customKey: 'Condition', label: 'Condition', type: 'select', options: ['Excellent', 'Good', 'Fair', 'Poor'] },
           { customKey: 'Year', label: 'Year', type: 'autocomplete', options: years },
           { model: 'manufacturer', label: 'Make', type: 'autocomplete', options: vehicleMakes, placeholder: 'Search makes…' },
           { model: 'modelNumber', label: 'Model', placeholder: 'e.g. F-150, CR-V, 1025R' },
           { customKey: 'Trim / Package', label: 'Trim / Package', placeholder: 'e.g. XLT, Sport, Lariat' },
-          { customKey: 'Colour', label: 'Colour', type: 'select', options: ['Black', 'White', 'Silver / Grey', 'Red', 'Blue', 'Dark Blue / Navy', 'Green', 'Yellow', 'Orange', 'Brown / Beige / Tan', 'Gold', 'Other'] },
         ],
       },
     ],
@@ -116,15 +112,6 @@ export const ITEM_TYPES: ItemType[] = [
           { model: 'manufacturer', label: 'Brand / Manufacturer', placeholder: 'e.g. Carrier, Trane' },
           { model: 'modelNumber', label: 'Model Number' },
           { model: 'serialNumber', label: 'Serial Number' },
-        ],
-      },
-      {
-        title: 'Capacity & Installation',
-        fields: [
-          { customKey: 'Capacity / Size', label: 'Capacity / Size', placeholder: 'e.g. 3-ton, 1,000-gal, 200A' },
-          { customKey: 'Age / Condition', label: 'Condition', type: 'select', options: ['New', 'Excellent', 'Good', 'Fair', 'Poor', 'Unknown'] },
-          { model: 'purchaseDate', label: 'Install Date', type: 'date' },
-          { customKey: 'Expected Lifespan (yrs)', label: 'Expected Lifespan (yrs)', placeholder: 'e.g. 20' },
         ],
       },
       {
@@ -156,15 +143,6 @@ export const ITEM_TYPES: ItemType[] = [
           { customKey: 'Condition', label: 'Condition', type: 'select', options: ['Excellent', 'Good', 'Fair', 'Poor', 'Needs Repair'] },
         ],
       },
-      {
-        title: 'Inspection & Permits',
-        fields: [
-          { customKey: 'Last Inspection Date', label: 'Last Inspection Date', type: 'date' },
-          { customKey: 'Next Inspection Due', label: 'Next Inspection Due', type: 'date' },
-          { customKey: 'Inspector / Contractor', label: 'Inspector / Contractor' },
-          { customKey: 'Permit Number', label: 'Permit Number', placeholder: 'If applicable' },
-        ],
-      },
     ],
   },
   {
@@ -188,8 +166,6 @@ export const ITEM_TYPES: ItemType[] = [
       {
         title: 'Usage & Service',
         fields: [
-          { model: 'purchaseDate', label: 'Purchase Date', type: 'date' },
-          { model: 'warrantyExpiry', label: 'Warranty Expiry', type: 'date' },
           { customKey: 'Hours / Cycles Used', label: 'Hours / Cycles Used', placeholder: 'Current meter reading' },
           { customKey: 'Last Service Date', label: 'Last Service Date', type: 'date' },
         ],
@@ -210,8 +186,6 @@ export const ITEM_TYPES: ItemType[] = [
           { model: 'manufacturer', label: 'Manufacturer / Brand' },
           { model: 'modelNumber', label: 'Model Number' },
           { model: 'serialNumber', label: 'Serial Number' },
-          { model: 'purchaseDate', label: 'Purchase Date', type: 'date' },
-          { model: 'warrantyExpiry', label: 'Warranty Expiry', type: 'date' },
         ],
       },
     ],

@@ -1,5 +1,5 @@
 import React, { useLayoutEffect, useMemo, useState } from 'react';
-import { View, Text, StyleSheet, ActivityIndicator, TouchableOpacity, Alert } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, Alert } from 'react-native';
 import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
@@ -7,8 +7,9 @@ import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { loadWeatherForAddress, loadDailyClimate, geocodePlace } from '@household/weather';
 import { tripsApi, Trip, TripItem, TripStatus } from '../../api';
-import { Card, Badge, Divider, RoundIconButton } from '../../components/ui';
+import { Card, Badge, Divider, RoundIconButton, SectionHeader, CenteredLoader, Fab } from '../../components/ui';
 import WeatherIcon from '../../components/WeatherIcon';
+import { weatherCardColors } from '../../lib/weatherTheme';
 import HourlyForecast from '../../components/HourlyForecast';
 import { tripTypeMeta, tripStatusLabel, tripStatusColor } from '../../lib/tripTypes';
 import { outfitSuggestion } from '../../lib/outfit';
@@ -239,11 +240,7 @@ export default function TripDetailScreen() {
   }, [navigation, id, trip?.name, trip?.status, dayIndex, dayList]);
 
   if (tripQ.isLoading || !trip) {
-    return (
-      <View style={styles.center}>
-        <ActivityIndicator size="large" color={accent} />
-      </View>
-    );
+    return <CenteredLoader color={accent} />;
   }
 
   const selectedDate = dayIndex != null ? dayList[dayIndex] : null;
@@ -298,8 +295,10 @@ export default function TripDetailScreen() {
             const i = fc.findIndex((d) => d.date === selectedDate);
             if (i < 0) return null;
             const wd = fc[i];
+            // Card fill tracks the day's conditions (daytime tint — day forecast).
+            const wdColors = weatherCardColors(wd.weatherCode, false);
             return (
-              <Card style={styles.weatherCard}>
+              <Card style={[styles.weatherCard, { backgroundColor: wdColors.bg, borderColor: wdColors.border }]}>
                 <View style={styles.weatherRow}>
                   <WeatherIcon code={wd.weatherCode} size={36} />
                   <View style={{ flex: 1 }}>
@@ -343,13 +342,9 @@ export default function TripDetailScreen() {
           )}
         </KeyboardAwareScrollView>
         {aiEnabled && (
-          <TouchableOpacity
-            style={[styles.fab, { backgroundColor: accent }]}
-            activeOpacity={0.85}
-            onPress={() => navigation.navigate('VacationAssistant', { tripId: id, tripName: trip?.name })}
-          >
+          <Fab bg={accent} onPress={() => navigation.navigate('VacationAssistant', { tripId: id, tripName: trip?.name })}>
             <AssistantIcon size={26} color="#fff" />
-          </TouchableOpacity>
+          </Fab>
         )}
       </View>
     );
@@ -393,7 +388,7 @@ export default function TripDetailScreen() {
 
         {trip.status === 'considering' && trip.candidateRanges?.length ? (
           <View style={styles.optionsWrap}>
-            <Text style={styles.sectionLabel}>Date options</Text>
+            <SectionHeader>Date options</SectionHeader>
             {trip.candidateRanges.map((r, i) => (
               <Card key={i} style={styles.optionCard}>
                 <Text style={styles.optionTitle}>{r.label || `Option ${i + 1}`}</Text>
@@ -405,7 +400,7 @@ export default function TripDetailScreen() {
 
         {dayList.length ? (
           <>
-            <Text style={styles.sectionLabel}>{dayList.length}-day trip — tap a day</Text>
+            <SectionHeader>{dayList.length}-day trip — tap a day</SectionHeader>
             <View style={styles.daysGrid}>
               {dayList.map((dateStr, idx) => {
                 const d = new Date(dateStr + 'T12:00:00');
@@ -542,19 +537,15 @@ export default function TripDetailScreen() {
 
         {trip.notes ? (
           <View style={styles.notesWrap}>
-            <Text style={styles.sectionLabel}>Notes</Text>
+            <SectionHeader>Notes</SectionHeader>
             <Text style={styles.notes}>{trip.notes}</Text>
           </View>
         ) : null}
       </KeyboardAwareScrollView>
       {aiEnabled && (
-        <TouchableOpacity
-          style={[styles.fab, { backgroundColor: accent }]}
-          activeOpacity={0.85}
-          onPress={() => navigation.navigate('VacationAssistant', { tripId: id, tripName: trip?.name })}
-        >
+        <Fab bg={accent} onPress={() => navigation.navigate('VacationAssistant', { tripId: id, tripName: trip?.name })}>
           <AssistantIcon size={26} color="#fff" />
-        </TouchableOpacity>
+        </Fab>
       )}
     </View>
   );
@@ -562,7 +553,6 @@ export default function TripDetailScreen() {
 
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: colors.background },
-  center: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.background },
   content: { padding: spacing.md, paddingBottom: 96 },
   headerBtn: { paddingHorizontal: 5 },
   headerTitleRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10 },
@@ -575,22 +565,6 @@ const styles = StyleSheet.create({
   titleGroup: { flexDirection: 'row', alignItems: 'center', flexShrink: 1 },
   pencilSpacer: { width: 23 },
   pencilBtn: { marginLeft: 6 },
-  fab: {
-    position: 'absolute',
-    right: spacing.lg,
-    bottom: spacing.lg,
-    width: 56,
-    height: 56,
-    borderRadius: 28,
-    alignItems: 'center',
-    justifyContent: 'center',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.25,
-    shadowRadius: 4,
-    elevation: 5,
-  },
-  sectionLabel: { fontSize: 13, fontWeight: '700', color: colors.textMuted, textTransform: 'uppercase', marginBottom: spacing.sm },
   optionsWrap: { marginBottom: spacing.md },
   optionCard: { marginBottom: spacing.sm },
   optionTitle: { fontSize: 15, fontWeight: '700', color: colors.text },

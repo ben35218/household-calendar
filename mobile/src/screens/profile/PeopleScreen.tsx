@@ -1,5 +1,5 @@
 import React, { useCallback, useLayoutEffect, useState } from 'react';
-import { View, Text, ScrollView, StyleSheet, TouchableOpacity, ActivityIndicator, ActionSheetIOS, Platform, Alert } from 'react-native';
+import { View, Text, ScrollView, StyleSheet, TouchableOpacity, ActionSheetIOS, Platform, Alert, RefreshControl } from 'react-native';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -8,7 +8,7 @@ import { useAuth } from '../../store/auth';
 import { peopleApi, householdApi, Person } from '../../api';
 import { openRecord, getHDK, sealNew } from '../../lib/e2ee';
 import * as replica from '../../lib/replica';
-import { Card, Chip, RoundIconButton } from '../../components/ui';
+import { Card, Chip, RoundIconButton, CenteredLoader, EmptyState } from '../../components/ui';
 import { colors, spacing } from '../../theme';
 import type { ProfileStackParamList } from '../../navigation/ProfileNavigator';
 
@@ -64,7 +64,7 @@ export default function PeopleScreen() {
     nav.setOptions({ headerRight: () => <RoundIconButton icon="add" onPress={openAddMenu} /> });
   }, [nav, openAddMenu]);
 
-  const { data: people, isLoading } = useQuery({
+  const { data: people, isLoading, refetch, isRefetching } = useQuery({
     queryKey: ['people'],
     // Offline-first (Phase 4b): fetch + sync the local replica, falling back to
     // the cached copy when the network is unavailable. Decrypt content over
@@ -104,11 +104,7 @@ export default function PeopleScreen() {
   }, [people, household, selfId, user, qc]);
 
   if (isLoading || !people) {
-    return (
-      <View style={styles.center}>
-        <ActivityIndicator color={colors.primary} />
-      </View>
-    );
+    return <CenteredLoader />;
   }
 
   const selfPerson = people.find((p) => p.accountId && String(p.accountId) === selfId);
@@ -136,16 +132,19 @@ export default function PeopleScreen() {
         ))}
       </View>
 
-      <ScrollView contentContainerStyle={styles.content}>
+      <ScrollView
+        contentContainerStyle={styles.content}
+        refreshControl={<RefreshControl refreshing={isRefetching} onRefresh={refetch} />}
+      >
         {showSelf ? (
           <PersonCard
             person={selfPerson!}
             self
-            onPress={() => nav.navigate('PersonForm', { id: selfPerson!._id, isSelf: true })}
+            onPress={() => nav.navigate('Account')}
           />
         ) : null}
         {roster.map((p) => (
-          <PersonCard key={p._id} person={p} onPress={() => nav.navigate('PersonForm', { id: p._id })} />
+          <PersonCard key={p._id} person={p} onPress={() => nav.navigate('PersonDetail', { id: p._id })} />
         ))}
         {roster.length === 0 && !showSelf ? <Empty label={emptyLabel} /> : null}
       </ScrollView>
@@ -173,34 +172,26 @@ function PersonCard({ person, self, onPress }: { person: Person; self?: boolean;
         {person.relationship ? <Text style={styles.personMeta}>{person.relationship}</Text> : null}
         {isService && person.businessName ? <Text style={styles.personMeta}>🏢 {person.businessName}</Text> : null}
         {person.address ? <Text style={styles.personMeta}>📍 {person.address}</Text> : null}
-        {person.interests && person.interests.length > 0 ? (
+        {!self && person.interests && person.interests.length > 0 ? (
           <View style={styles.tags}>
             {person.interests.map((i) => (
               <Chip key={i} label={i} />
             ))}
           </View>
         ) : null}
-        {person.notes ? <Text style={styles.personNotes}>{person.notes}</Text> : null}
-        {self && !person.interests?.length && !person.notes ? (
-          <Text style={styles.personNotes}>Add your interests and notes so the assistant can suggest plans for you.</Text>
-        ) : null}
+        {!self && person.notes ? <Text style={styles.personNotes}>{person.notes}</Text> : null}
       </Card>
     </TouchableOpacity>
   );
 }
 
 function Empty({ label }: { label: string }) {
-  return (
-    <Card style={styles.empty}>
-      <Text style={styles.emptyText}>{label}</Text>
-    </Card>
-  );
+  return <EmptyState variant="inline" message={label} />;
 }
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.background },
   content: { padding: spacing.md },
-  center: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.background },
   tabBar: {
     flexDirection: 'row', gap: spacing.sm,
     paddingHorizontal: spacing.md, paddingTop: spacing.sm, paddingBottom: spacing.xs,
@@ -228,6 +219,4 @@ const styles = StyleSheet.create({
   personMeta: { fontSize: 12, color: colors.textMuted, marginTop: 4 },
   personNotes: { fontSize: 13, color: colors.textMuted, marginTop: 6, lineHeight: 18 },
   tags: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 8 },
-  empty: { alignItems: 'center', paddingVertical: spacing.xl },
-  emptyText: { fontSize: 14, color: colors.textMuted },
 });

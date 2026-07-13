@@ -240,6 +240,30 @@ test('assemble filters, expands, and shapes the full CalendarData', () => {
   assert.equal(data.trips[0].ranges.length, 1);
 });
 
+test('multi-day event starting before the window is kept when it still overlaps', () => {
+  // A refinishing job spanning Jan 5–20; the query window starts Jan 10, after
+  // the event's start. The event still covers the whole window and must survive.
+  const data = assembleCalendarData({
+    fromDate: new Date('2026-01-10'), toDate: new Date('2026-01-24'),
+    events: [
+      { _id: 'span', title: 'Hardwood refinishing', allDay: true,
+        startDate: new Date('2026-01-05T12:00:00Z'), endDate: new Date('2026-01-20T12:00:00Z') },
+    ],
+  });
+  assert.ok(data.events.some(e => e._id === 'span'), 'multi-day event dropped');
+});
+
+test('event ending before the window is excluded', () => {
+  const data = assembleCalendarData({
+    fromDate: new Date('2026-01-10'), toDate: new Date('2026-01-24'),
+    events: [
+      { _id: 'past', title: 'Old', allDay: true,
+        startDate: new Date('2026-01-02T12:00:00Z'), endDate: new Date('2026-01-06T12:00:00Z') },
+    ],
+  });
+  assert.equal(data.events.length, 0);
+});
+
 test('biweekly grocery days follow the anchor parity', () => {
   const base = {
     fromDate: new Date('2026-01-01'), toDate: new Date('2026-01-31'),

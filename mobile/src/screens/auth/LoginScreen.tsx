@@ -1,12 +1,18 @@
 import React, { useState } from 'react';
-import { View, Text, StyleSheet, KeyboardAvoidingView, Platform } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
+import { View, Text, StyleSheet, KeyboardAvoidingView, Image } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useAuth } from '../../store/auth';
 import { passkeysSupported } from '../../lib/passkeys';
 import { Button, Input } from '../../components/ui';
-import { colors, spacing } from '../../theme';
+import { spacing } from '../../theme';
+import {
+  authStyles,
+  authInputProps,
+  AUTH_PRIMARY_BTN_COLOR,
+  AUTH_GHOST_BTN_COLOR,
+  keyboardBehavior,
+} from './authStyles';
 import type { AuthStackParamList } from '../../navigation/AuthNavigator';
 
 export default function LoginScreen() {
@@ -47,15 +53,16 @@ export default function LoginScreen() {
   }
 
   return (
-    <KeyboardAvoidingView
-      style={styles.container}
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-    >
-      <View style={styles.inner}>
-        <View style={styles.header}>
-          <Ionicons name="home" size={56} color={colors.primary} />
-          <Text style={styles.title}>Household Calendar</Text>
-          <Text style={styles.subtitle}>Sign in to your account</Text>
+    <KeyboardAvoidingView style={authStyles.container} behavior={keyboardBehavior}>
+      <View style={authStyles.inner}>
+        <View style={authStyles.header}>
+          <Image
+            source={require('../../../assets/android-icon-monochrome.png')}
+            style={styles.logo}
+            resizeMode="contain"
+          />
+          <Text style={authStyles.title}>Household Calendar</Text>
+          <Text style={authStyles.subtitle}>Sign in to your account</Text>
         </View>
 
         <Input
@@ -65,6 +72,7 @@ export default function LoginScreen() {
           autoCapitalize="none"
           keyboardType="email-address"
           autoComplete="email"
+          {...authInputProps}
         />
         <Input
           label="Password"
@@ -72,11 +80,12 @@ export default function LoginScreen() {
           onChangeText={setPassword}
           secureTextEntry
           autoComplete="password"
+          {...authInputProps}
         />
 
-        {error ? <Text style={styles.error}>{error}</Text> : null}
+        {error ? <Text style={authStyles.error}>{error}</Text> : null}
 
-        <Button title="Sign In" onPress={handleLogin} loading={loading} />
+        <Button title="Sign In" onPress={handleLogin} loading={loading} color={AUTH_PRIMARY_BTN_COLOR} />
         {passkeysSupported() ? (
           <View style={styles.passkeyButton}>
             <Button
@@ -84,17 +93,18 @@ export default function LoginScreen() {
               variant="ghost"
               onPress={handlePasskey}
               loading={passkeyLoading}
+              color={AUTH_GHOST_BTN_COLOR}
             />
           </View>
         ) : null}
 
-        <Text style={[styles.link, styles.forgot]} onPress={() => nav.navigate('ForgotPassword')}>
+        <Text style={[authStyles.link, styles.forgot]} onPress={() => nav.navigate('ForgotPassword')}>
           Forgot password?
         </Text>
 
-        <View style={styles.footer}>
-          <Text style={styles.footerText}>Don't have an account? </Text>
-          <Text style={styles.link} onPress={() => nav.navigate('Register')}>
+        <View style={authStyles.footer}>
+          <Text style={authStyles.footerText}>Don't have an account? </Text>
+          <Text style={authStyles.link} onPress={() => nav.navigate('Register')}>
             Register
           </Text>
         </View>
@@ -104,15 +114,7 @@ export default function LoginScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: colors.background },
-  inner: { flex: 1, justifyContent: 'center', padding: spacing.lg },
-  header: { alignItems: 'center', marginBottom: spacing.xl },
-  title: { fontSize: 24, fontWeight: '700', color: colors.text, marginTop: spacing.sm },
-  subtitle: { fontSize: 14, color: colors.textMuted, marginTop: 4 },
-  error: { color: colors.error, marginBottom: spacing.md, textAlign: 'center' },
+  logo: { width: 96, height: 96 },
   passkeyButton: { marginTop: spacing.sm },
   forgot: { textAlign: 'center', marginTop: spacing.md },
-  footer: { flexDirection: 'row', justifyContent: 'center', marginTop: spacing.lg },
-  footerText: { color: colors.textMuted },
-  link: { color: colors.primary, fontWeight: '600' },
 });

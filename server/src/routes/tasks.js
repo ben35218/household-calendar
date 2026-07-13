@@ -4,11 +4,30 @@ const MaintenanceTask = require('../models/MaintenanceTask');
 const TaskCompletion = require('../models/TaskCompletion');
 const { requireAuth } = require('../middleware/auth');
 const { activity } = require('../middleware/activity');
-const { computeNextDueDate, computeNextDueKm, estimateDateFromKm, avgKmPerDay } = require('../services/recurrence');
+const { computeNextDueDate, anchorRecurrence, computeNextDueKm, estimateDateFromKm, avgKmPerDay } = require('../services/recurrence');
 const OdometerLog = require('../models/OdometerLog');
 
 const router = express.Router();
 router.use(requireAuth);
+
+// Seed the first due date for a task created from a template. Interval templates
+// can carry an ideal `months` anchor (e.g. flush the water heater in September);
+// the calendar engine only honors that anchor for 'years', so here we start any
+// month-anchored interval on the next occurrence of that month. Cadence after
+// completion is unchanged — completions run back through computeNextDueDate, so a
+// "every 3 months" task still repeats quarterly from when it was last done.
+function seedDueDate(recurrence, fromDate) {
+  const r = recurrence;
+  if (r && r.type === 'interval' && Array.isArray(r.months) && r.months.length) {
+    const today = startOfDay(fromDate);
+    const day = r.dayOfMonth || 1;
+    const m = r.months[0] - 1; // stored 1-based
+    let d = new Date(today.getFullYear(), m, day);
+    if (d.getTime() <= today.getTime()) d = new Date(today.getFullYear() + 1, m, day);
+    return d;
+  }
+  return computeNextDueDate({ recurrence: r }, fromDate);
+}
 
 router.get('/', async (req, res) => {
   try {
@@ -28,9 +47,8 @@ router.get('/', async (req, res) => {
     if (status === 'completed') { filter.nextDueDate = null; filter.lastCompletedAt = { $exists: true }; }
 
     const tasks = await MaintenanceTask.find(filter)
-      .populate('itemId', 'name')
+      .populate('itemId', 'name type')
       .populate('categoryId', 'name icon color')
-      .populate('subcategoryId', 'name icon color')
       .sort('nextDueDate');
     res.json(tasks);
   } catch (err) {
@@ -72,9 +90,8 @@ router.get('/completions', async (req, res) => {
 
 router.get('/:id', async (req, res) => {
   const task = await MaintenanceTask.findOne({ _id: req.params.id, userId: { $in: req.scopeIds } })
-    .populate('itemId', 'name')
-    .populate('categoryId', 'name icon color')
-    .populate('subcategoryId', 'name icon color');
+    .populate('itemId', 'name type')
+    .populate('categoryId', 'name icon color');
   if (!task) return res.status(404).json({ error: 'Not found' });
   res.json(task);
 });
@@ -177,28 +194,45 @@ router.post('/:id/resume', async (req, res) => {
 router.post('/from-template', async (req, res) => {
   try {
     const templates = require('../../../shared/seed/taskTemplates.json');
-    const { templateIds, categoryId } = req.body;
-    const toCreate = templates.filter(t => templateIds.includes(t.id));
+    const Category = require('../models/Category');
+    // Two payload shapes:
+    //  - selections: [{ templateId, itemId?, categoryId? }] — bulk flow that links
+    //    each task to a specific item (and optionally a resolved category).
+    //  - templateIds: string[] (+ optional shared categoryId) — legacy single path.
+    const { selections, templateIds, categoryId } = req.body;
+    const requests = Array.isArray(selections)
+      ? selections
+      : (templateIds || []).map(id => ({ templateId: id, categoryId }));
+
+    // Cache category lookups by name so we don't re-query per template.
+    const catByName = new Map();
+    const resolveCategoryByName = async (name) => {
+      if (!name) return null;
+      if (catByName.has(name)) return catByName.get(name);
+      const cat = await Category.findOne({ userId: { $in: req.scopeIds }, name });
+      catByName.set(name, cat ? cat._id : null);
+      return cat ? cat._id : null;
+    };
+
     const created = [];
-    for (const tpl of toCreate) {
+    for (const sel of requests) {
+      const tpl = templates.find(t => t.id === sel.templateId);
+      if (!tpl) continue;
       const data = {
         userId: req.user._id,
         title: tpl.title,
         description: tpl.description,
-        recurrence: tpl.recurrence,
+        recurrence: anchorRecurrence(tpl.recurrence),
         priority: tpl.priority || 'medium',
         estimatedDurationMins: tpl.estimatedDurationMins,
         estimatedCost: tpl.estimatedCost,
         intervalKm: tpl.intervalKm,
         templateId: tpl.id,
       };
-      if (categoryId) data.categoryId = categoryId;
-      else if (tpl.defaultCategoryName) {
-        const Category = require('../models/Category');
-        const cat = await Category.findOne({ userId: { $in: req.scopeIds }, name: tpl.defaultCategoryName });
-        if (cat) data.categoryId = cat._id;
-      }
-      data.nextDueDate = computeNextDueDate({ recurrence: data.recurrence }, new Date());
+      if (sel.itemId) data.itemId = sel.itemId;
+      const cat = sel.categoryId || (await resolveCategoryByName(tpl.defaultCategoryName));
+      if (cat) data.categoryId = cat;
+      data.nextDueDate = seedDueDate(data.recurrence, new Date());
       created.push(await MaintenanceTask.create(data));
     }
     res.status(201).json(created);

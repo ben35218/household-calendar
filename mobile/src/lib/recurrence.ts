@@ -252,6 +252,20 @@ export function dueStatus(nextDueDate?: string | null): { status: DueStatus; lab
   return { status: 'upcoming', label: 'Upcoming' };
 }
 
+// Relative countdown for a chore's next due date: "Due today" or "Due in N
+// days". Chores don't track completion, so nextDueDate always rolls forward —
+// there's no "overdue" state; any past date is treated as due today.
+export function dueInLabel(d?: string | null): string {
+  if (!d) return 'Not set';
+  const due = parseCalendarDate(d);
+  due.setHours(0, 0, 0, 0);
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const days = Math.round((due.getTime() - today.getTime()) / 86400000);
+  if (days <= 0) return 'Due today';
+  return `Due in ${days} day${days === 1 ? '' : 's'}`;
+}
+
 // MongoDB stores date-only inputs as UTC midnight, which shifts to the previous
 // day in negative-offset timezones. Parse the UTC YYYY-MM-DD at local noon.
 export function parseCalendarDate(d: string): Date {

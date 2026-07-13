@@ -91,6 +91,9 @@ export interface Recurrence {
 export interface LinkedRef {
   _id: string;
   name: string;
+  // Present when the ref is populated with extra fields (e.g. an item's type,
+  // used to show the item's category icon).
+  type?: string;
 }
 
 export interface Task {
@@ -100,7 +103,6 @@ export interface Task {
   instructions?: string;
   active?: boolean;
   categoryId?: LinkedRef | string | null;
-  subcategoryId?: LinkedRef | string | null;
   itemId?: LinkedRef | string | null;
   templateId?: string;
   priority?: 'low' | 'medium' | 'high';
@@ -112,6 +114,8 @@ export interface Task {
   reminderDaysBefore?: number | null;
   alert2DaysBefore?: number | null;
   alertAudience?: 'everyone' | 'owner';
+  // Explicit alert recipients; empty/absent = everyone.
+  alertUserIds?: string[];
   // mileage-tracked tasks
   intervalKm?: number;
   lastServiceKm?: number;
@@ -136,8 +140,11 @@ export const tasksApi = {
     api.post<{ task: Task; completion: Completion }>(`/tasks/${id}/complete`, data),
   pause: (id: string) => api.post(`/tasks/${id}/pause`),
   resume: (id: string) => api.post(`/tasks/${id}/resume`),
-  fromTemplate: (data: { templateIds: string[]; categoryId?: string }) =>
-    api.post<Task[]>('/tasks/from-template', data),
+  fromTemplate: (
+    data:
+      | { templateIds: string[]; categoryId?: string }
+      | { selections: Array<{ templateId: string; itemId?: string; categoryId?: string }> }
+  ) => api.post<Task[]>('/tasks/from-template', data),
   templates: (params?: Record<string, unknown>) => api.get<TaskTemplate[]>('/task-templates', { params }),
   template: (id: string) => api.get<TaskTemplate>(`/task-templates/${id}`),
   completions: (params?: Record<string, unknown>) => api.get<Completion[]>('/tasks/completions', { params }),
@@ -216,6 +223,22 @@ export const categoriesApi = {
     api.delete(`/categories/${id}`, { data: { reassignTo } }),
 };
 
+export interface Property {
+  _id: string;
+  name: string;
+  icon?: string;
+  color?: string;
+  sortOrder?: number;
+}
+
+export const propertiesApi = {
+  list: (params?: Record<string, unknown>) => api.get<Property[]>('/properties', { params }),
+  create: (data: Record<string, unknown>) => api.post<Property>('/properties', data),
+  update: (id: string, data: Record<string, unknown>) => api.put<Property>(`/properties/${id}`, data),
+  delete: (id: string, reassignTo?: string) =>
+    api.delete(`/properties/${id}`, { data: { reassignTo } }),
+};
+
 export interface CustomField {
   key: string;
   value: string;
@@ -232,20 +255,40 @@ export interface Manual {
   fileType?: string;          // original mime type (for opening the decrypted file)
 }
 
+export interface Receipt {
+  _id: string;
+  title: string;
+  fileSizeBytes?: number;
+  fileType?: string;         // original mime type (for opening the decrypted file)
+  createdAt?: string;
+  encrypted?: boolean;       // E2EE (Phase 4c): opaque ciphertext, decrypted on-device
+  wrappedFileKey?: string;   // HDK-wrapped per-file key (JSON), needed to decrypt
+  keyVersion?: number;       // which HDK version wrapped the file key
+}
+
+export const receiptsApi = {
+  // upload is handled via lib/upload (multipart, field 'file'); endpoint:
+  //   POST /receipts/items/:itemId/upload
+  // download is a token-query URL / Bearer download built in the screen:
+  //   GET /receipts/:id/download
+  delete: (id: string) => api.delete(`/receipts/${id}`),
+};
+
 export interface Item {
   _id: string;
   name: string;
   type?: string;
   location?: string;
   categoryId?: LinkedRef | string | null;
+  propertyId?: LinkedRef | string | null;
+  serviceProId?: LinkedRef | string | null;
   manufacturer?: string;
   modelNumber?: string;
   serialNumber?: string;
-  purchaseDate?: string;
-  warrantyExpiry?: string;
   notes?: string;
   customFields?: CustomField[];
   manuals?: Manual[];
+  receipts?: Receipt[];
   autoLookupManual?: boolean;
 }
 

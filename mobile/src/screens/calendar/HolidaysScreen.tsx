@@ -5,7 +5,7 @@ import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { getHolidays, getHolidayDefs, regionalHolidaysLabel, HolidayDef } from '../../lib/holidays';
 import { useHolidayCalendars, useCustomCalendars } from '../../lib/calendarPrefs';
-import { Card, Button } from '../../components/ui';
+import { Card, Button, Hint } from '../../components/ui';
 import { colors, spacing } from '../../theme';
 import type { CalendarStackParamList } from '../../navigation/CalendarNavigator';
 
@@ -151,7 +151,7 @@ export default function HolidaysScreen() {
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
-      <Text style={styles.intro}>Choose which of {cal.name} to display on your calendar.</Text>
+      <Hint>Choose which of {cal.name} to display on your calendar.</Hint>
 
       {national.length > 0 ? (
         <Card style={styles.card}>
@@ -216,7 +216,6 @@ export default function HolidaysScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.background },
   content: { padding: spacing.md },
-  intro: { fontSize: 13, color: colors.textMuted, marginBottom: spacing.md, lineHeight: 18 },
   card: { marginBottom: spacing.md },
   cardHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: spacing.sm },
   groupLabel: { fontSize: 15, fontWeight: '700', color: colors.text, flex: 1 },

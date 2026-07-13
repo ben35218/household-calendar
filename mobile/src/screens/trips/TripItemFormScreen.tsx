@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { View, Text, StyleSheet, ActivityIndicator, TouchableOpacity, Alert, Linking, Share } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, Alert, Linking, Share } from 'react-native';
 import { cacheDirectory, downloadAsync } from 'expo-file-system/legacy';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
@@ -17,7 +17,7 @@ import { getCachedToken } from '../../lib/secureToken';
 const TRIP_ITEM_ENC = (p: Record<string, unknown>) => ({
   title: p.title, location: p.location, url: p.url, phone: p.phone, notes: p.notes, details: p.details,
 });
-import { Button, Input, Screen, SwitchRow, SectionTitle, DateField, TimeField, Select, useHeaderCheckButton } from '../../components/ui';
+import { Button, Input, Screen, SwitchRow, SectionTitle, DateField, TimeField, Select, useHeaderCheckButton, CenteredLoader, FormError } from '../../components/ui';
 import { form as fs, GroupCard, CardDivider } from '../../components/formStyles';
 import FormAssist from '../../components/FormAssist';
 import { useFormAssist } from '../../hooks/useFormAssist';
@@ -384,11 +384,7 @@ export default function TripItemFormScreen() {
   useHeaderCheckButton(navigation, { onPress: onSave, loading: save.isPending, color: accent });
 
   if (isEdit && tripQ.isLoading) {
-    return (
-      <View style={styles.center}>
-        <ActivityIndicator size="large" color={accent} />
-      </View>
-    );
+    return <CenteredLoader color={accent} />;
   }
 
   const costLabel = PRIVATE_BILL.includes(form.sharing) && multiFamily ? 'Your cost' : 'Cost';
@@ -822,7 +818,7 @@ export default function TripItemFormScreen() {
       />
 
       {tz ? <Text style={styles.tzNote}>Standard bookings are local to {tz}</Text> : null}
-      {error ? <Text style={styles.error}>{error}</Text> : null}
+      <FormError>{error}</FormError>
 
       {isEdit ? (
         <>
@@ -893,7 +889,6 @@ export default function TripItemFormScreen() {
 }
 
 const styles = StyleSheet.create({
-  center: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.background },
   typeGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm, marginBottom: spacing.md },
   typeChip: { flexDirection: 'row', alignItems: 'center', gap: 6, borderWidth: 1, borderColor: colors.border, borderRadius: 999, paddingHorizontal: 12, paddingVertical: 8 },
   typeLabel: { fontSize: 13, fontWeight: '600', color: colors.text },
@@ -910,7 +905,6 @@ const styles = StyleSheet.create({
   attachMain: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
   attachName: { flex: 1, fontSize: 14, color: colors.text },
   attachAdd: { fontSize: 16, fontWeight: '500' },
-  error: { color: colors.error, marginVertical: spacing.sm },
   endModeToggle: { flexDirection: 'row', backgroundColor: '#2A2A2A', borderRadius: 8, padding: 2, marginBottom: spacing.md, marginTop: -spacing.sm },
   endModeBtn: { flex: 1, paddingVertical: 6, alignItems: 'center', borderRadius: 6 },
   endModeBtnActive: { backgroundColor: colors.primary },

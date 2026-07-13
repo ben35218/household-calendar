@@ -5,12 +5,14 @@ const itemSchema = new mongoose.Schema({
   userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
   name: { type: String, required: true },
   categoryId: { type: mongoose.Schema.Types.ObjectId, ref: 'Category' },
+  propertyId: { type: mongoose.Schema.Types.ObjectId, ref: 'Property' },
+  // The service professional (a type:'service' Person in the user's contacts)
+  // who maintains this item. A plaintext ref, like categoryId/propertyId.
+  serviceProId: { type: mongoose.Schema.Types.ObjectId, ref: 'Person' },
   type: { type: String, enum: ['appliance', 'vehicle', 'system', 'structure', 'equipment', 'other'], default: 'other' },
   manufacturer: String,
   modelNumber: String,
   serialNumber: String,
-  purchaseDate: Date,
-  warrantyExpiry: Date,
   location: String,
   notes: String,
   customFields: [{ key: String, value: String }],

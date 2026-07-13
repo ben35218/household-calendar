@@ -67,9 +67,15 @@ export type RootStackParamList = {
   // ----- Maintenance (item-centric) -----
   MaintenanceHome: undefined;
   TaskDetail: { id: string };
-  TaskForm: { id?: string };
-  TaskTemplates: undefined;
-  ItemsList: undefined;
+  TaskForm: { id?: string; itemId?: string; categoryId?: string };
+  // `mode: 'multi'` = bulk multi-select flow (→ TaskTemplateReview); default is
+  // single tap-to-create. `categoryName` filters the list to one category when
+  // browsing templates for a known item. `itemId` links the single-tap task to
+  // that item and scopes the "in use" block to the item's property.
+  TaskTemplates: { mode?: 'multi'; categoryName?: string; itemId?: string } | undefined;
+  // Review step for the bulk flow: link each selected template to an item
+  // (existing or auto-created), grouped by category.
+  TaskTemplateReview: { templateIds: string[] };
   ItemDetail: { id: string };
   ItemForm: { id?: string; prefill?: Partial<Item> };
   MaintenanceChat: { itemId: string; itemName?: string };
@@ -114,6 +120,7 @@ export type RootStackParamList = {
   ProfileHome: undefined;
   Account: undefined;
   People: undefined;
+  PersonDetail: { id: string };
   PersonForm: {
     id?: string;
     isSelf?: boolean;

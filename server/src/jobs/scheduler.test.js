@@ -143,3 +143,14 @@ test('inAudience predicate: owner vs everyone', () => {
   assert.strictEqual(inAudience({ alertAudience: 'everyone', userId: 'a' }, userB), true);
   assert.strictEqual(inAudience({ userId: 'a' }, userB), true, 'defaults to everyone');
 });
+
+test('inAudience predicate: explicit alertUserIds override the audience', () => {
+  // Only listed members receive the alert, regardless of alertAudience.
+  assert.strictEqual(inAudience({ alertUserIds: ['a'], userId: 'a' }, userA), true);
+  assert.strictEqual(inAudience({ alertUserIds: ['a'], userId: 'a' }, userB), false);
+  assert.strictEqual(inAudience({ alertUserIds: ['a', 'b'] }, userB), true);
+  // Explicit list wins over a coarse 'everyone'.
+  assert.strictEqual(inAudience({ alertAudience: 'everyone', alertUserIds: ['a'] }, userB), false);
+  // Empty list falls back to alertAudience.
+  assert.strictEqual(inAudience({ alertUserIds: [], alertAudience: 'owner', userId: 'a' }, userB), false);
+});

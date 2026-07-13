@@ -13,7 +13,7 @@ const RECIPE_ENC = (p: Record<string, unknown>) => ({
   instructions: p.instructions, tags: p.tags,
   servings: p.servings, prepTimeMins: p.prepTimeMins, cookTimeMins: p.cookTimeMins,
 });
-import { Button, Input, Screen, SectionTitle, useHeaderCheckButton } from '../../components/ui';
+import { Button, Input, Screen, SectionTitle, useHeaderCheckButton, FormError, CenteredLoader } from '../../components/ui';
 import { form as fs, GroupCard, CardDivider } from '../../components/formStyles';
 import StepIngredientLinker from '../../components/StepIngredientLinker';
 import AssistantIcon from '../../components/AssistantIcon';
@@ -347,9 +347,7 @@ export default function RecipeFormScreen() {
 
   if (isEdit && recipeQ.isLoading) {
     return (
-      <View style={styles.center}>
-        <ActivityIndicator size="large" color={colors.primary} />
-      </View>
+      <CenteredLoader color={accent} />
     );
   }
 
@@ -624,7 +622,7 @@ export default function RecipeFormScreen() {
         </TouchableOpacity>
       </GroupCard>
 
-      {error ? <Text style={styles.error}>{error}</Text> : null}
+      <FormError>{error}</FormError>
 
       {isEdit ? (
         <View style={fs.footer}>
@@ -636,7 +634,6 @@ export default function RecipeFormScreen() {
 }
 
 const styles = StyleSheet.create({
-  center: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.background },
   aiCard: {
     backgroundColor: colors.primary + '14',
     borderRadius: radius.lg,
@@ -682,5 +679,4 @@ const styles = StyleSheet.create({
   linkerPad: { paddingHorizontal: 14, paddingVertical: spacing.sm },
   stepNum: { fontSize: 15, fontWeight: '700', color: colors.primary, paddingTop: 12 },
   removeBtn: { paddingTop: 12 },
-  error: { color: colors.error, marginVertical: spacing.sm },
 });

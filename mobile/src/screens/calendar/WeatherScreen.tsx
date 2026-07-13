@@ -9,13 +9,10 @@ import { Card } from '../../components/ui';
 import HourlyForecast from '../../components/HourlyForecast';
 import SkyBackground from '../../components/SkyBackground';
 import WeatherIcon from '../../components/WeatherIcon';
+import { weatherCardColors } from '../../lib/weatherTheme';
 import { colors, spacing } from '../../theme';
 
 const BLUE = '#0288D1';
-// Solid mid-sky blue used by the forecast cards (≈ the clear-day gradient at
-// this scroll position). Exported so the header's edit button can match it.
-export const WEATHER_CARD_BG = '#5089D2';
-export const WEATHER_CARD_BORDER = 'rgba(255,255,255,0.22)';
 
 // Temperature → bar colour (Apple's cold-cyan → green → yellow → orange → red ramp).
 function tempColor(t: number): string {
@@ -55,6 +52,10 @@ export default function WeatherScreen() {
   }, [outlookQ.data]);
 
   const w = weatherQ.data;
+  // Solid card fill/border tracks the current conditions so the panels read as
+  // part of the same sky as the gradient behind them.
+  const cardTheme = weatherCardColors(w?.current?.weatherCode);
+  const solidCard = { backgroundColor: cardTheme.bg, borderColor: cardTheme.border };
   const todayStr = `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}-${String(new Date().getDate()).padStart(2, '0')}`;
   const hourlyDay = w?.forecast?.find((d) => d.date === todayStr) ?? w?.forecast?.[0];
 
@@ -93,12 +94,12 @@ export default function WeatherScreen() {
           </View>
 
           {hourlyDay?.hours?.length ? (
-            <Card style={[styles.card, styles.solidCard]}>
+            <Card style={[styles.card, solidCard]}>
               <HourlyForecast days={w.forecast} />
             </Card>
           ) : null}
 
-          <Card style={[styles.card, styles.solidCard]}>
+          <Card style={[styles.card, solidCard]}>
             <View style={styles.weekHeader}>
               <MaterialCommunityIcons name="calendar-month-outline" size={14} color="rgba(255,255,255,0.7)" />
               <Text style={styles.weekHeaderText}>7-DAY FORECAST</Text>
@@ -135,7 +136,7 @@ export default function WeatherScreen() {
         </>
       )}
 
-      <Card style={[styles.card, styles.solidCard]}>
+      <Card style={[styles.card, solidCard]}>
         <Text style={styles.outlookTitle}>90-Day Seasonal Outlook</Text>
         <View style={styles.outlookDivider} />
         {outlookQ.isLoading ? (
@@ -176,8 +177,6 @@ const styles = StyleSheet.create({
   content: { padding: spacing.md },
   // Translucent panels so the sky gradient shows through (Apple Weather style).
   card: { marginBottom: spacing.md, backgroundColor: 'rgba(10,22,40,0.45)', borderColor: 'rgba(255,255,255,0.14)' },
-  // Solid mid-sky blue (≈ the clear-day gradient at this scroll position).
-  solidCard: { backgroundColor: WEATHER_CARD_BG, borderColor: WEATHER_CARD_BORDER },
   muted: { color: colors.textMuted, fontSize: 13, paddingVertical: spacing.sm },
   // Hero: current conditions floating over the sky, Apple Weather style.
   hero: { alignItems: 'center', paddingTop: spacing.md, paddingBottom: spacing.lg },

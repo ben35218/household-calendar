@@ -4,6 +4,38 @@ const { addDays, differenceInDays } = require('date-fns');
 // The km-based estimation helpers below stay server-only.
 const { computeNextDueDate } = require('@household/calendar');
 
+// Give a Calvin-generated recurrence (from a template, a manual, or Ask Calvin) a
+// clean anchor day so it doesn't land on an arbitrary date:
+//   • monthly or longer (months/years intervals, or calendar) → the 1st of the
+//     month it occurs in.
+//   • weekly → the same weekday it's created on.
+//   • daily → left alone (it just fires every N days).
+// User-authored recurrences (the Repeat screen) are never routed through here.
+function anchorRecurrence(recurrence, fromDate = new Date()) {
+  if (!recurrence || !recurrence.type) return recurrence;
+  const r = { ...recurrence };
+
+  if (r.type === 'calendar') {
+    r.dayOfMonth = 1;
+    return r;
+  }
+
+  if (r.type === 'interval') {
+    if (r.intervalUnit === 'months' || r.intervalUnit === 'years') {
+      r.dayOfMonth = 1;
+      // Anchor by calendar day, not an nth-weekday rule.
+      delete r.weekOfMonth;
+      delete r.dayOfWeek;
+    } else if (r.intervalUnit === 'weeks') {
+      r.dayOfWeek = new Date(fromDate).getDay();
+      delete r.weekOfMonth;
+      delete r.dayOfMonth;
+    }
+  }
+
+  return r;
+}
+
 // Calculate average km/day from an array of odometer log entries.
 function avgKmPerDay(logs) {
   if (!logs || logs.length < 2) return null;
@@ -27,4 +59,4 @@ function computeNextDueKm(task, serviceKm) {
   return serviceKm + task.intervalKm;
 }
 
-module.exports = { computeNextDueDate, avgKmPerDay, estimateDateFromKm, computeNextDueKm };
+module.exports = { computeNextDueDate, anchorRecurrence, avgKmPerDay, estimateDateFromKm, computeNextDueKm };

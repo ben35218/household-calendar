@@ -5,6 +5,7 @@ import {
   StyleSheet,
   ActivityIndicator,
   TouchableOpacity,
+  RefreshControl,
 } from 'react-native';
 import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
@@ -12,7 +13,7 @@ import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { choresApi, ChoreTemplate } from '../../api';
-import { Input, SegmentedControl, Badge } from '../../components/ui';
+import { Input, SegmentedControl, Badge, SectionHeader, CenteredLoader } from '../../components/ui';
 import { recurrenceLabelShort, mdiName } from '../../lib/recurrence';
 import { useCalendarColors } from '../../lib/calendarPrefs';
 import { MaintenanceStackParamList } from '../../navigation/MaintenanceNavigator';
@@ -67,15 +68,13 @@ export default function ChoreTemplatesScreen() {
   }, [templatesQ.data, usedIds, filter, search]);
 
   if (templatesQ.isLoading) {
-    return (
-      <View style={styles.center}>
-        <ActivityIndicator size="large" color={colors.primary} />
-      </View>
-    );
+    return <CenteredLoader color={accent} />;
   }
 
   return (
-    <KeyboardAwareScrollView bottomOffset={24} keyboardShouldPersistTaps="handled" style={styles.screen} contentContainerStyle={styles.content}>
+    <KeyboardAwareScrollView bottomOffset={24} keyboardShouldPersistTaps="handled" style={styles.screen} contentContainerStyle={styles.content}
+      refreshControl={<RefreshControl refreshing={templatesQ.isRefetching} onRefresh={templatesQ.refetch} />}
+    >
       <View style={styles.toolbar}>
         <SegmentedControl<Filter>
           value={filter}
@@ -90,9 +89,9 @@ export default function ChoreTemplatesScreen() {
 
       {Object.entries(grouped).map(([cat, items]) => (
         <View key={cat} style={styles.group}>
-          <Text style={styles.groupTitle}>
+          <SectionHeader>
             {cat} <Text style={styles.groupCount}>{items.length}</Text>
-          </Text>
+          </SectionHeader>
           {items.map((tpl) => {
             const used = usedIds.has(tpl.id);
             const busy = create.isPending && create.variables === tpl.id;
@@ -133,10 +132,8 @@ export default function ChoreTemplatesScreen() {
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: colors.background },
   content: { padding: spacing.md },
-  center: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.background },
   toolbar: { marginBottom: spacing.md },
   group: { marginBottom: spacing.lg },
-  groupTitle: { fontSize: 15, fontWeight: '700', color: colors.text, marginBottom: spacing.sm },
   groupCount: { color: colors.textMuted, fontWeight: '600' },
   card: {
     flexDirection: 'row',

@@ -18,7 +18,7 @@ import {
 } from '../../lib/calendarPrefs';
 import type { CountryCode } from '../../lib/holidays';
 import { refreshFeed, getFeedMeta, dropFeedCache, FeedError } from '../../lib/calendarFeeds';
-import { Screen, Input, SectionTitle, Button, SwitchRow, useHeaderCheckButton } from '../../components/ui';
+import { Screen, Input, SectionTitle, Button, SwitchRow, useHeaderCheckButton, ColorPicker } from '../../components/ui';
 import { form as fs, GroupCard, CardDivider } from '../../components/formStyles';
 import { colors, spacing } from '../../theme';
 import type { CalendarStackParamList } from '../../navigation/CalendarNavigator';
@@ -549,21 +549,7 @@ export default function AddCalendarScreen() {
 
       <SectionTitle>Colour</SectionTitle>
       <GroupCard style={styles.paletteCard}>
-        <View style={styles.palette}>
-          {COLOR_PRESETS.map((c) => {
-            const selected = c.toLowerCase() === color.toLowerCase();
-            return (
-              <TouchableOpacity
-                key={c}
-                style={[styles.paletteSwatch, { backgroundColor: c }]}
-                disabled={readOnly}
-                onPress={() => setColor(c)}
-              >
-                {selected ? <Ionicons name="checkmark" size={16} color="#fff" /> : null}
-              </TouchableOpacity>
-            );
-          })}
-        </View>
+        <ColorPicker value={color} onChange={setColor} options={COLOR_PRESETS} disabled={readOnly} />
       </GroupCard>
 
       {!isSubscription ? (
@@ -610,8 +596,6 @@ const styles = StyleSheet.create({
   emailInput: { flex: 1, marginBottom: 0 },
   emailError: { fontSize: 13, color: colors.error, paddingBottom: 8, paddingHorizontal: 14 },
   paletteCard: { padding: 14 },
-  palette: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
-  paletteSwatch: { width: 36, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center' },
   hint: { fontSize: 13, color: colors.textMuted, marginTop: -4, marginBottom: spacing.lg, paddingHorizontal: 2 },
   subscribeRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, paddingVertical: 12, paddingHorizontal: 14, backgroundColor: colors.surface, borderRadius: 12, borderWidth: 1, borderColor: colors.border, marginBottom: spacing.lg },
   subscribeText: { fontSize: 15, fontWeight: '600', color: colors.primary },

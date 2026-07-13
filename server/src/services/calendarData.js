@@ -47,9 +47,21 @@ async function fetchCalendarSources({ scopeIds, requesterId, fromDate, toDate, a
   // via the shared engine. Pre-drop it keeps the efficient bounded queries.
   // (Outside-shared calendar events are exempt from the drop, so their dates
   // stay filterable either way.)
+  // Overlap test, not start-only: a multi-day event that began before `fromDate`
+  // still touches the window through its endDate, so a tight window (e.g. the day
+  // view's ±7 days) must not drop it. Wrapped in $and so it composes with any
+  // $or in eventScope. Events with no endDate fall back to their startDate.
   const regularEventQuery = allDates
     ? { ...eventScope, 'recurrence.freq': { $exists: false } }
-    : { ...eventScope, 'recurrence.freq': { $exists: false }, startDate: { $gte: fromDate, $lte: toDate } };
+    : {
+        ...eventScope,
+        'recurrence.freq': { $exists: false },
+        startDate: { $lte: toDate },
+        $and: [{ $or: [
+          { endDate: { $gte: fromDate } },
+          { endDate: null, startDate: { $gte: fromDate } },
+        ] }],
+      };
   const recurringEventQuery = allDates
     ? { ...eventScope, 'recurrence.freq': { $exists: true } }
     : { ...eventScope, 'recurrence.freq': { $exists: true }, startDate: { $lte: toDate } };

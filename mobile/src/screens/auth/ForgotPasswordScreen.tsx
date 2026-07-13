@@ -1,12 +1,19 @@
 import React, { useState } from 'react';
-import { View, Text, StyleSheet, KeyboardAvoidingView, Platform, Alert } from 'react-native';
+import { View, Text, StyleSheet, KeyboardAvoidingView, Alert } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { authApi } from '../../api';
 import { useAuth } from '../../store/auth';
 import { Button, Input } from '../../components/ui';
-import { colors, spacing } from '../../theme';
+import { spacing } from '../../theme';
+import {
+  authStyles,
+  authInputProps,
+  AUTH_PRIMARY_BTN_COLOR,
+  AUTH_GHOST_BTN_COLOR,
+  keyboardBehavior,
+} from './authStyles';
 import type { AuthStackParamList } from '../../navigation/AuthNavigator';
 
 // Two-step reset: request an emailed 6-digit code, then set a new password.
@@ -61,15 +68,12 @@ export default function ForgotPasswordScreen() {
   }
 
   return (
-    <KeyboardAvoidingView
-      style={styles.container}
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-    >
-      <View style={styles.inner}>
-        <View style={styles.header}>
-          <Ionicons name="key" size={56} color={colors.primary} />
-          <Text style={styles.title}>Reset password</Text>
-          <Text style={styles.subtitle}>
+    <KeyboardAvoidingView style={authStyles.container} behavior={keyboardBehavior}>
+      <View style={authStyles.inner}>
+        <View style={authStyles.header}>
+          <Ionicons name="key" size={56} color="#fff" />
+          <Text style={authStyles.title}>Reset password</Text>
+          <Text style={authStyles.subtitle}>
             {codeSent
               ? `Enter the 6-digit code we emailed to ${email.trim()}`
               : "We'll email you a 6-digit reset code"}
@@ -84,6 +88,7 @@ export default function ForgotPasswordScreen() {
           keyboardType="email-address"
           autoComplete="email"
           editable={!codeSent}
+          {...authInputProps}
         />
 
         {codeSent ? (
@@ -95,6 +100,7 @@ export default function ForgotPasswordScreen() {
               keyboardType="number-pad"
               autoComplete="one-time-code"
               maxLength={6}
+              {...authInputProps}
             />
             <Input
               label="New password"
@@ -102,24 +108,25 @@ export default function ForgotPasswordScreen() {
               onChangeText={setNewPassword}
               secureTextEntry
               autoComplete="new-password"
+              {...authInputProps}
             />
           </>
         ) : null}
 
-        {error ? <Text style={styles.error}>{error}</Text> : null}
+        {error ? <Text style={authStyles.error}>{error}</Text> : null}
 
         {codeSent ? (
           <>
-            <Button title="Set New Password" onPress={handleReset} loading={loading} />
+            <Button title="Set New Password" onPress={handleReset} loading={loading} color={AUTH_PRIMARY_BTN_COLOR} />
             <View style={styles.resend}>
-              <Button title="Resend code" variant="ghost" onPress={handleSendCode} />
+              <Button title="Resend code" variant="ghost" onPress={handleSendCode} color={AUTH_GHOST_BTN_COLOR} />
             </View>
           </>
         ) : (
-          <Button title="Email Me a Code" onPress={handleSendCode} loading={loading} />
+          <Button title="Email Me a Code" onPress={handleSendCode} loading={loading} color={AUTH_PRIMARY_BTN_COLOR} />
         )}
 
-        <Text style={styles.link} onPress={() => nav.goBack()}>
+        <Text style={[authStyles.link, styles.link]} onPress={() => nav.goBack()}>
           Back to sign in
         </Text>
       </View>
@@ -128,12 +135,6 @@ export default function ForgotPasswordScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: colors.background },
-  inner: { flex: 1, justifyContent: 'center', padding: spacing.lg },
-  header: { alignItems: 'center', marginBottom: spacing.xl },
-  title: { fontSize: 24, fontWeight: '700', color: colors.text, marginTop: spacing.sm },
-  subtitle: { fontSize: 14, color: colors.textMuted, marginTop: 4, textAlign: 'center' },
-  error: { color: colors.error, marginBottom: spacing.md, textAlign: 'center' },
   resend: { marginTop: spacing.sm },
-  link: { color: colors.primary, fontWeight: '600', textAlign: 'center', marginTop: spacing.lg },
+  link: { textAlign: 'center', marginTop: spacing.lg },
 });

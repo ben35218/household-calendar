@@ -48,7 +48,7 @@ export default function MaintenanceChatScreen() {
             const payload = {
               itemId, title: p.title, description: p.description,
               recurrence: p.recurrence, nextDueDate: p.nextDueDate,
-              priority: p.priority, categoryId: p.categoryId, subcategoryId: p.subcategoryId,
+              priority: p.priority, categoryId: p.categoryId,
             };
             const { data: t } = await tasksApi.create(await sealNew('MaintenanceTask', payload, TASK_ENC(payload)));
             created.push({ id: t._id, title: String(p.title) });

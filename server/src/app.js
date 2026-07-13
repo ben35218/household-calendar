@@ -8,8 +8,10 @@ const path = require('path');
 
 const authRoutes = require('./routes/auth');
 const categoryRoutes = require('./routes/categories');
+const propertyRoutes = require('./routes/properties');
 const itemRoutes = require('./routes/items');
 const manualRoutes = require('./routes/manuals');
+const receiptRoutes = require('./routes/receipts');
 const taskRoutes = require('./routes/tasks');
 const taskTemplateRoutes = require('./routes/taskTemplates');
 const choreRoutes = require('./routes/chores');
@@ -85,8 +87,10 @@ app.use('/uploads', express.static(path.resolve(process.env.UPLOAD_DIR || './upl
 
 app.use('/api/auth', authRoutes);
 app.use('/api/categories', categoryRoutes);
+app.use('/api/properties', propertyRoutes);
 app.use('/api/items', itemRoutes);
 app.use('/api/manuals', manualRoutes);
+app.use('/api/receipts', receiptRoutes);
 app.use('/api/tasks', taskRoutes);
 app.use('/api/task-templates', taskTemplateRoutes);
 app.use('/api/chores', choreRoutes);

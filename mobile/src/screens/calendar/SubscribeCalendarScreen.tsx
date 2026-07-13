@@ -8,7 +8,7 @@ import { householdApi, HouseholdMember } from '../../api';
 import { useAuth } from '../../store/auth';
 import { COLOR_PRESETS, useCustomCalendars } from '../../lib/calendarPrefs';
 import { previewFeed, refreshFeed, FeedError } from '../../lib/calendarFeeds';
-import { Screen, Input, SectionTitle, useHeaderCheckButton } from '../../components/ui';
+import { Screen, Input, SectionTitle, useHeaderCheckButton, ColorPicker } from '../../components/ui';
 import { form as fs, GroupCard, CardDivider } from '../../components/formStyles';
 import { colors, spacing } from '../../theme';
 import type { CalendarStackParamList } from '../../navigation/CalendarNavigator';
@@ -247,20 +247,7 @@ export default function SubscribeCalendarScreen() {
 
           <SectionTitle>Colour</SectionTitle>
           <GroupCard style={styles.paletteCard}>
-            <View style={styles.palette}>
-              {COLOR_PRESETS.map((c) => {
-                const selected = c.toLowerCase() === color.toLowerCase();
-                return (
-                  <TouchableOpacity
-                    key={c}
-                    style={[styles.paletteSwatch, { backgroundColor: c }]}
-                    onPress={() => setColor(c)}
-                  >
-                    {selected ? <Ionicons name="checkmark" size={16} color="#fff" /> : null}
-                  </TouchableOpacity>
-                );
-              })}
-            </View>
+            <ColorPicker value={color} onChange={setColor} options={COLOR_PRESETS} />
           </GroupCard>
         </>
       )}
@@ -288,6 +275,4 @@ const styles = StyleSheet.create({
   memberName: { fontSize: 16, color: colors.text, flexShrink: 1 },
   memberNameFlex: { flex: 1 },
   paletteCard: { padding: 14 },
-  palette: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
-  paletteSwatch: { width: 36, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center' },
 });

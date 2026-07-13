@@ -1,24 +1,27 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import { View, Text, StyleSheet, ActivityIndicator, TouchableOpacity } from 'react-native';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { View, Text, StyleSheet, ActivityIndicator, TouchableOpacity, Alert, Platform, ActionSheetIOS } from 'react-native';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { MaterialCommunityIcons, Ionicons } from '@expo/vector-icons';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import { itemsApi, categoriesApi, Item, CustomField, FormAssistField } from '../../api';
+import { itemsApi, categoriesApi, propertiesApi, peopleApi, Item, Property, Person, CustomField, FormAssistField } from '../../api';
 import { sealNew, sealUpdate, openRecord } from '../../lib/e2ee';
+import { useAiEnabled } from '../../lib/privacyPrefs';
+import { takePhoto, pickImage } from '../../lib/media';
+import { uploadFile } from '../../lib/upload';
 
 // Encrypted item content (categoryId/type/dates stay plaintext).
 const ITEM_ENC = (p: Record<string, unknown>) => ({
   name: p.name, manufacturer: p.manufacturer, modelNumber: p.modelNumber,
   serialNumber: p.serialNumber, location: p.location, notes: p.notes, customFields: p.customFields,
 });
-import { Input, Select, Screen, SectionTitle, SwitchRow, DateField, useHeaderCheckButton } from '../../components/ui';
+import { Input, Select, Screen, SectionTitle, SwitchRow, DateField, useHeaderCheckButton, FormError, CenteredLoader } from '../../components/ui';
 import { form as fs, GroupCard, CardDivider } from '../../components/formStyles';
 import { useCalendarColors } from '../../lib/calendarPrefs';
 import FormAssist from '../../components/FormAssist';
 import { useFormAssist } from '../../hooks/useFormAssist';
 import { mdiName } from '../../lib/recurrence';
-import { ITEM_TYPES, itemTypeConfig, TYPE_CATEGORY_MATCH, ItemField } from '../../lib/itemTypes';
+import { ITEM_TYPES, itemTypeConfig, TYPE_CATEGORY_MATCH, VEHICLE_CATEGORY, ItemField } from '../../lib/itemTypes';
 import { MaintenanceStackParamList } from '../../navigation/MaintenanceNavigator';
 import { colors, spacing } from '../../theme';
 
@@ -30,12 +33,12 @@ interface CoreForm {
   name: string;
   type: string;
   categoryId: string | null;
+  propertyId: string | null;
+  serviceProId: string | null;
   location: string;
   manufacturer: string;
   modelNumber: string;
   serialNumber: string;
-  purchaseDate: string;
-  warrantyExpiry: string;
   notes: string;
   autoLookupManual: boolean;
 }
@@ -44,12 +47,12 @@ const EMPTY: CoreForm = {
   name: '',
   type: 'other',
   categoryId: null,
+  propertyId: null,
+  serviceProId: null,
   location: 'Home',
   manufacturer: '',
   modelNumber: '',
   serialNumber: '',
-  purchaseDate: '',
-  warrantyExpiry: '',
   notes: '',
   autoLookupManual: true,
 };
@@ -60,8 +63,16 @@ export default function ItemFormScreen() {
   const isEdit = !!id;
   const qc = useQueryClient();
   const accent = useCalendarColors().colors.maintenance;
+  const aiEnabled = useAiEnabled();
 
-  const [step, setStep] = useState<1 | 2>(isEdit || prefill ? 2 : 1);
+  // Staged add wizard: scope → mode → branch → (property → category) → form.
+  // Editing or a photo prefill jumps straight to the form. The scope step lets
+  // the user pick single-item vs. the bulk task-template flow; "single" then
+  // continues to the photo/manual choice (or branch, when AI is off).
+  type Step = 'scope' | 'mode' | 'branch' | 'property' | 'category' | 'form';
+  const initialStep: Step = isEdit || prefill ? 'form' : 'scope';
+  const [step, setStep] = useState<Step>(initialStep);
+  const [scanning, setScanning] = useState(false);
   const [form, setForm] = useState<CoreForm>(EMPTY);
   const [customMap, setCustomMap] = useState<Record<string, string>>({});
   const [userFields, setUserFields] = useState<CustomField[]>([]);
@@ -80,22 +91,52 @@ export default function ItemFormScreen() {
     [cfg]
   );
 
-  const categoriesQ = useQuery({ queryKey: ['categories', 'all'], queryFn: async () => (await categoriesApi.list()).data });
+  const categoriesQ = useQuery({ queryKey: ['categories', 'topLevel'], queryFn: async () => (await categoriesApi.list({ topLevel: 'true' })).data });
+  const propertiesQ = useQuery({ queryKey: ['properties'], queryFn: async () => (await propertiesApi.list()).data });
+  // Item counts per property (propertyId is plaintext, so no decryption needed).
+  // Drives the "delete empty property" affordance in the picker.
+  const itemsCountQ = useQuery({ queryKey: ['items', 'list'], queryFn: async () => (await itemsApi.list()).data });
+  const propItemCount = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const it of itemsCountQ.data ?? []) {
+      const pid = it.propertyId && typeof it.propertyId === 'object' ? it.propertyId._id : (it.propertyId as string) || null;
+      if (pid) counts.set(pid, (counts.get(pid) ?? 0) + 1);
+    }
+    return counts;
+  }, [itemsCountQ.data]);
+  const selectedProperty = useMemo(
+    () => propertiesQ.data?.find((p) => p._id === form.propertyId),
+    [propertiesQ.data, form.propertyId]
+  );
+
+  // Category options: vehicles are locked to the "Vehicles" category (so keep it
+  // available to render the value); property items can't be filed under it.
+  const isVehicle = form.type === 'vehicle';
+  const categoryOptions = useMemo(() => {
+    const cats = categoriesQ.data ?? [];
+    return (isVehicle ? cats : cats.filter((c) => c.name !== VEHICLE_CATEGORY)).map((c) => ({
+      label: c.name,
+      value: c._id,
+    }));
+  }, [categoriesQ.data, isVehicle]);
 
   const assistFields: FormAssistField[] = useMemo(
     () => [
       { name: 'name', type: 'text', label: 'Item name' },
       { name: 'type', type: 'select', label: 'Type', options: ITEM_TYPES.map((t) => ({ label: t.label, value: t.value })) },
-      { name: 'categoryId', type: 'select', label: 'Category', options: (categoriesQ.data ?? []).map((c) => ({ label: c.name, value: c._id })) },
-      { name: 'location', type: 'text', label: 'Location' },
+      // Vehicles are locked to their category; only property items can change it
+      // (and never to the vehicle-only category).
+      ...(isVehicle
+        ? []
+        : [{ name: 'categoryId', type: 'select' as const, label: 'Category', options: categoryOptions }]),
+      // Vehicles stand alone (no location); only property items carry one.
+      ...(isVehicle ? [] : [{ name: 'location', type: 'text' as const, label: 'Location' }]),
       { name: 'manufacturer', type: 'text', label: 'Manufacturer / brand' },
       { name: 'modelNumber', type: 'text', label: 'Model number' },
       { name: 'serialNumber', type: 'text', label: 'Serial number' },
-      { name: 'purchaseDate', type: 'date', label: 'Purchase date' },
-      { name: 'warrantyExpiry', type: 'date', label: 'Warranty expiry' },
       { name: 'notes', type: 'text', label: 'Notes' },
     ],
-    [categoriesQ.data]
+    [categoryOptions, isVehicle]
   );
 
   const applyPatch = (patch: Record<string, unknown>) => {
@@ -122,26 +163,187 @@ export default function ItemFormScreen() {
     setUserFields(extra);
   };
 
-  // Prefill from a photo scan (route param) — review-and-save flow.
-  useEffect(() => {
-    if (!prefill) return;
-    const typeValue = ITEM_TYPES.some((t) => t.value === prefill.type) ? prefill.type! : 'other';
-    set({
-      name: prefill.name ?? '',
+  // Apply photo-scan (or route-param) extracted fields, infer the branch from the
+  // detected type, match a property by location name, and drop the user on the form.
+  const applyPrefill = (data: Partial<Item>) => {
+    const typeValue = ITEM_TYPES.some((t) => t.value === data.type) ? data.type! : 'other';
+    const patch: Partial<CoreForm> = {
+      name: data.name ?? '',
       type: typeValue,
-      location: prefill.location || 'Home',
-      manufacturer: prefill.manufacturer ?? '',
-      modelNumber: prefill.modelNumber ?? '',
-      serialNumber: prefill.serialNumber ?? '',
-      purchaseDate: prefill.purchaseDate ?? '',
-      warrantyExpiry: prefill.warrantyExpiry ?? '',
-      notes: prefill.notes ?? '',
-    });
+      location: data.location || 'Home',
+      manufacturer: data.manufacturer ?? '',
+      modelNumber: data.modelNumber ?? '',
+      serialNumber: data.serialNumber ?? '',
+      notes: data.notes ?? '',
+    };
+    // Non-vehicles belong to a property; match the detected location to one.
+    if (typeValue !== 'vehicle') {
+      const match = propertiesQ.data?.find(
+        (p) => p.name.toLowerCase() === (data.location || '').trim().toLowerCase()
+      );
+      if (match) {
+        patch.propertyId = match._id;
+        patch.location = match.name;
+      }
+    }
+    set(patch);
     const keys = new Set(
       itemTypeConfig(typeValue).fieldGroups.flatMap((g) => g.fields.filter((f) => f.customKey).map((f) => f.customKey!))
     );
-    applyCustomFields(prefill.customFields, keys);
+    applyCustomFields(data.customFields, keys);
+    setStep('form');
+  };
+
+  // Prefill from a photo scan handed in via route param — review-and-save flow.
+  useEffect(() => {
+    if (prefill) applyPrefill(prefill);
   }, [prefill]);
+
+  // Editing an existing item: fold detected fields into the current form rather
+  // than resetting it — fill non-empty values, don't touch type/property, and
+  // merge custom fields into empty slots. Highlights what changed for review.
+  const applyScan = (data: Partial<Item>) => {
+    const patch: Partial<CoreForm> = {};
+    for (const k of ['name', 'manufacturer', 'modelNumber', 'serialNumber', 'notes', 'location'] as const) {
+      const v = data[k];
+      if (v != null && v !== '') (patch as any)[k] = v;
+    }
+    applyPatch(patch);
+    if (data.customFields?.length) {
+      setCustomMap((m) => {
+        const next = { ...m };
+        for (const cf of data.customFields!) if (presetKeys.has(cf.key) && !next[cf.key]) next[cf.key] = cf.value;
+        return next;
+      });
+      setUserFields((arr) => {
+        const have = new Set(arr.map((f) => f.key));
+        const add = data.customFields!.filter((cf) => !presetKeys.has(cf.key) && cf.value && !have.has(cf.key));
+        return add.length ? [...arr, ...add] : arr;
+      });
+    }
+  };
+
+  const scan = async (mode: 'camera' | 'library') => {
+    const file = mode === 'camera' ? await takePhoto() : await pickImage();
+    if (!file) return;
+    setScanning(true);
+    try {
+      const data = await uploadFile<Item>('/items/from-photo', file, 'photo');
+      isEdit ? applyScan(data) : applyPrefill(data);
+    } catch (e: any) {
+      Alert.alert('Scan failed', e.response?.data?.error || 'Could not extract details from that photo.');
+    } finally {
+      setScanning(false);
+    }
+  };
+
+  const onAddPhoto = () =>
+    Alert.alert('Add from Photo', 'Take a photo of a label or nameplate — AI fills in the details.', [
+      { text: 'Take Photo', onPress: () => scan('camera') },
+      { text: 'Choose from Library', onPress: () => scan('library') },
+      { text: 'Cancel', style: 'cancel' },
+    ]);
+
+  // Select a property and keep `location` in sync (so the items-list grouping
+  // stays meaningful). Callers decide whether to also advance the wizard.
+  const applyProperty = (prop: Property) => set({ propertyId: prop._id, location: prop.name });
+
+  const addProperty = (onDone?: () => void) => {
+    Alert.prompt?.('New property', 'Name this property (e.g. Cabin, Rental)', async (name?: string) => {
+      const trimmed = (name || '').trim();
+      if (!trimmed) return;
+      try {
+        const { data } = await propertiesApi.create({ name: trimmed });
+        qc.invalidateQueries({ queryKey: ['properties'] });
+        applyProperty(data);
+        onDone?.();
+      } catch (e: any) {
+        Alert.alert('Could not add property', e.response?.data?.error || 'Please try again.');
+      }
+    });
+  };
+
+  // Delete a property. When it has items the server cascades — items and their
+  // maintenance tasks go too — so warn accordingly. Clears the form's selection
+  // if it pointed at the deleted property.
+  const deleteProperty = (prop: Property) => {
+    const n = propItemCount.get(prop._id) ?? 0;
+    const msg =
+      n > 0
+        ? `Delete “${prop.name}” and its ${n} item${n === 1 ? '' : 's'}, including their maintenance tasks? This can’t be undone.`
+        : `Delete “${prop.name}”?`;
+    Alert.alert('Delete property', msg, [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Delete',
+        style: 'destructive',
+        onPress: async () => {
+          try {
+            await propertiesApi.delete(prop._id);
+            qc.invalidateQueries({ queryKey: ['properties'] });
+            qc.invalidateQueries({ queryKey: ['items'] });
+            qc.invalidateQueries({ queryKey: ['tasks'] });
+            qc.invalidateQueries({ queryKey: ['maintenance'] });
+            if (form.propertyId === prop._id) set({ propertyId: null, location: '' });
+          } catch (e: any) {
+            Alert.alert('Could not delete property', e.response?.data?.error || 'Please try again.');
+          }
+        },
+      },
+    ]);
+  };
+
+  // Sentinel option that turns "Add property…" into a create action inside the
+  // in-form property Select (keeps creation in the same sheet as the choices).
+  const ADD_PROPERTY = '__add_property__';
+
+  // Service professionals are type:'service' people from the user's contacts.
+  // Decrypt over plaintext (dual-write); the roster refreshes automatically when
+  // PersonForm/ContactImport invalidate ['people'] after an add/import.
+  const peopleQ = useQuery({
+    queryKey: ['people'],
+    queryFn: async () => {
+      const rows = (await peopleApi.list()).data;
+      return Promise.all(rows.map((p) => openRecord('Person', p))) as Promise<Person[]>;
+    },
+  });
+  const servicePeople = useMemo(
+    () => (peopleQ.data ?? []).filter((p) => p.type === 'service'),
+    [peopleQ.data]
+  );
+
+  // After launching the add/import flow, auto-select the one new service pro that
+  // appears in the roster on return (so "add from the form" actually links it).
+  const awaitingNewPro = useRef(false);
+  const preAddServiceIds = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    if (!awaitingNewPro.current) return;
+    const newIds = servicePeople.map((p) => p._id).filter((pid) => !preAddServiceIds.current.has(pid));
+    if (newIds.length === 1) set({ serviceProId: newIds[0] });
+    if (newIds.length >= 1) awaitingNewPro.current = false; // ambiguous (>1): let the user pick
+  }, [servicePeople]);
+
+  const openAddServicePro = () => {
+    awaitingNewPro.current = true;
+    preAddServiceIds.current = new Set(servicePeople.map((p) => p._id));
+    const addManually = () => navigation.navigate('PersonForm', { type: 'service' });
+    const importContacts = () => navigation.navigate('ContactImport');
+    if (Platform.OS === 'ios') {
+      ActionSheetIOS.showActionSheetWithOptions(
+        { options: ['Add', 'Import from Contacts', 'Cancel'], cancelButtonIndex: 2 },
+        (i) => {
+          if (i === 0) addManually();
+          else if (i === 1) importContacts();
+        }
+      );
+    } else {
+      Alert.alert('Service professional', undefined, [
+        { text: 'Add', onPress: addManually },
+        { text: 'Import from Contacts', onPress: importContacts },
+        { text: 'Cancel', style: 'cancel' },
+      ]);
+    }
+  };
 
   const itemQ = useQuery({
     queryKey: ['items', id],
@@ -156,16 +358,18 @@ export default function ItemFormScreen() {
     const it = await openRecord('Item', itemQ.data); // decrypt content over plaintext
     if (cancelled) return;
     const catId = it.categoryId && typeof it.categoryId === 'object' ? it.categoryId._id : (it.categoryId as string) || null;
+    const propId = it.propertyId && typeof it.propertyId === 'object' ? it.propertyId._id : (it.propertyId as string) || null;
+    const proId = it.serviceProId && typeof it.serviceProId === 'object' ? it.serviceProId._id : (it.serviceProId as string) || null;
     set({
       name: it.name ?? '',
       type: it.type ?? 'other',
       categoryId: catId,
+      propertyId: propId,
+      serviceProId: proId,
       location: it.location ?? 'Home',
       manufacturer: it.manufacturer ?? '',
       modelNumber: it.modelNumber ?? '',
       serialNumber: it.serialNumber ?? '',
-      purchaseDate: it.purchaseDate ? it.purchaseDate.slice(0, 10) : '',
-      warrantyExpiry: it.warrantyExpiry ? it.warrantyExpiry.slice(0, 10) : '',
       notes: it.notes ?? '',
     });
     const keys = new Set(
@@ -187,7 +391,17 @@ export default function ItemFormScreen() {
       const cat = categoriesQ.data?.find((c) => c.name === catName);
       if (cat) set({ type: typeValue, categoryId: cat._id });
     }
-    setStep(2);
+    setStep('form');
+  };
+
+  // Branch picker: Vehicle stands alone; Property continues to the property picker.
+  const selectBranch = (branch: 'vehicle' | 'property') => {
+    if (branch === 'vehicle') {
+      set({ propertyId: null });
+      selectType('vehicle');
+    } else {
+      setStep('property');
+    }
   };
 
   const save = useMutation({
@@ -199,17 +413,22 @@ export default function ItemFormScreen() {
       const payload: Record<string, unknown> = {
         name: form.name,
         type: form.type,
-        location: form.location,
         notes: form.notes,
         autoLookupManual: form.autoLookupManual,
         customFields: [...presetFields, ...extra],
       };
       if (form.categoryId) payload.categoryId = form.categoryId;
+      // Vehicles stand alone (no location/property); only property items carry
+      // a location (kept in sync with the chosen property) and a propertyId.
+      if (form.type !== 'vehicle') {
+        payload.location = form.location;
+        if (form.propertyId) payload.propertyId = form.propertyId;
+      }
+      // Null (rather than omit) so clearing the service pro persists on edit.
+      payload.serviceProId = form.serviceProId || null;
       if (form.manufacturer) payload.manufacturer = form.manufacturer;
       if (form.modelNumber) payload.modelNumber = form.modelNumber;
       if (form.serialNumber) payload.serialNumber = form.serialNumber;
-      if (form.purchaseDate) payload.purchaseDate = form.purchaseDate;
-      if (form.warrantyExpiry) payload.warrantyExpiry = form.warrantyExpiry;
       return isEdit
         ? itemsApi.update(id!, await sealUpdate('Item', id!, payload, ITEM_ENC(payload)))
         : itemsApi.create(await sealNew('Item', payload, ITEM_ENC(payload)));
@@ -232,24 +451,161 @@ export default function ItemFormScreen() {
     save.mutate();
   };
 
-  // No save on the step-1 type picker (new items) — only once the form is shown.
-  useHeaderCheckButton(navigation, { onPress: onSave, loading: save.isPending, color: accent, enabled: step === 2 });
+  // No save during the add wizard — only once the form itself is shown.
+  useHeaderCheckButton(navigation, { onPress: onSave, loading: save.isPending, color: accent, enabled: step === 'form' });
 
   if (isEdit && itemQ.isLoading) {
     return (
-      <View style={styles.center}>
-        <ActivityIndicator size="large" color={colors.primary} />
-      </View>
+      <CenteredLoader color={accent} />
     );
   }
 
-  // Step 1: type picker (new items only)
-  if (step === 1) {
+  // Wizard step 0: one item, or many maintenance tasks at once?
+  if (step === 'scope') {
     return (
       <Screen>
-        <Text style={styles.intro}>Choose a type to add an item:</Text>
+        <Text style={styles.intro}>What would you like to add?</Text>
         <GroupCard>
-          {ITEM_TYPES.map((t, i) => (
+          <TouchableOpacity style={styles.typeRow} activeOpacity={0.7} onPress={() => setStep(aiEnabled ? 'mode' : 'branch')}>
+            <View style={[styles.typeAvatar, { backgroundColor: accent }]}>
+              <MaterialCommunityIcons name="package-variant" size={24} color="#fff" />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.typeLabel}>Add a single item</Text>
+              <Text style={styles.typeDesc}>Add one appliance, vehicle, system, or structure.</Text>
+            </View>
+          </TouchableOpacity>
+          <CardDivider />
+          <TouchableOpacity style={styles.typeRow} activeOpacity={0.7} onPress={() => navigation.navigate('TaskTemplates', { mode: 'multi' })}>
+            <View style={[styles.typeAvatar, { backgroundColor: '#FF9800' }]}>
+              <MaterialCommunityIcons name="clipboard-list-outline" size={24} color="#fff" />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.typeLabel}>Add multiple tasks</Text>
+              <Text style={styles.typeDesc}>Pick maintenance tasks from templates — items are created for you.</Text>
+            </View>
+          </TouchableOpacity>
+        </GroupCard>
+      </Screen>
+    );
+  }
+
+  // Wizard step 1: how do you want to add this item?
+  if (step === 'mode') {
+    return (
+      <Screen>
+        <Text style={styles.intro}>How would you like to add this item?</Text>
+        <GroupCard>
+          <TouchableOpacity style={styles.typeRow} activeOpacity={0.7} onPress={onAddPhoto} disabled={scanning}>
+            <View style={[styles.typeAvatar, { backgroundColor: accent }]}>
+              {scanning ? (
+                <ActivityIndicator color="#fff" />
+              ) : (
+                <Ionicons name="camera-outline" size={24} color="#fff" />
+              )}
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.typeLabel}>Add from photo</Text>
+              <Text style={styles.typeDesc}>Snap a label or nameplate — AI fills in the details.</Text>
+            </View>
+          </TouchableOpacity>
+          <CardDivider />
+          <TouchableOpacity style={styles.typeRow} activeOpacity={0.7} onPress={() => setStep('branch')} disabled={scanning}>
+            <View style={[styles.typeAvatar, { backgroundColor: colors.textMuted }]}>
+              <MaterialCommunityIcons name="pencil" size={24} color="#fff" />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.typeLabel}>Enter manually</Text>
+              <Text style={styles.typeDesc}>Fill in the details yourself.</Text>
+            </View>
+          </TouchableOpacity>
+        </GroupCard>
+      </Screen>
+    );
+  }
+
+  // Wizard step 2: Vehicle or Property?
+  if (step === 'branch') {
+    return (
+      <Screen>
+        <Text style={styles.intro}>What kind of item is this?</Text>
+        <GroupCard>
+          <TouchableOpacity style={styles.typeRow} activeOpacity={0.7} onPress={() => selectBranch('vehicle')}>
+            <View style={[styles.typeAvatar, { backgroundColor: '#607D8B' }]}>
+              <MaterialCommunityIcons name="car" size={24} color="#fff" />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.typeLabel}>Vehicle</Text>
+              <Text style={styles.typeDesc}>Car, truck, tractor, ATV, snowblower…</Text>
+            </View>
+          </TouchableOpacity>
+          <CardDivider />
+          <TouchableOpacity style={styles.typeRow} activeOpacity={0.7} onPress={() => selectBranch('property')}>
+            <View style={[styles.typeAvatar, { backgroundColor: '#4CAF50' }]}>
+              <MaterialCommunityIcons name="home" size={24} color="#fff" />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.typeLabel}>Property item</Text>
+              <Text style={styles.typeDesc}>Appliance, system, structure, or equipment.</Text>
+            </View>
+          </TouchableOpacity>
+        </GroupCard>
+      </Screen>
+    );
+  }
+
+  // Wizard step 3 (property branch): which property is this item at?
+  if (step === 'property') {
+    return (
+      <Screen>
+        <Text style={styles.intro}>Which property is this item at?</Text>
+        {propertiesQ.isLoading ? (
+          <ActivityIndicator color={colors.primary} style={{ marginTop: spacing.lg }} />
+        ) : (
+          <GroupCard>
+            {(propertiesQ.data ?? []).map((p, i) => (
+              <React.Fragment key={p._id}>
+                {i > 0 ? <CardDivider /> : null}
+                <TouchableOpacity
+                  style={styles.typeRow}
+                  activeOpacity={0.7}
+                  onPress={() => { applyProperty(p); setStep('category'); }}
+                  onLongPress={() => deleteProperty(p)}
+                >
+                  <View style={[styles.typeAvatar, { backgroundColor: p.color || '#4CAF50' }]}>
+                    <MaterialCommunityIcons name={mdiName(p.icon || 'mdi-home') as any} size={24} color="#fff" />
+                  </View>
+                  <Text style={[styles.typeLabel, { flex: 1 }]}>{p.name}</Text>
+                  {form.propertyId === p._id ? (
+                    <Ionicons name="checkmark" size={20} color={accent} />
+                  ) : (
+                    <TouchableOpacity onPress={() => deleteProperty(p)} hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}>
+                      <Ionicons name="trash-outline" size={18} color={colors.textMuted} />
+                    </TouchableOpacity>
+                  )}
+                </TouchableOpacity>
+              </React.Fragment>
+            ))}
+            <CardDivider />
+            <TouchableOpacity style={styles.typeRow} activeOpacity={0.7} onPress={() => addProperty(() => setStep('category'))}>
+              <View style={[styles.typeAvatar, { backgroundColor: colors.border }]}>
+                <Ionicons name="add" size={24} color={colors.textMuted} />
+              </View>
+              <Text style={[styles.typeLabel, { flex: 1, color: colors.primary }]}>Add a property</Text>
+            </TouchableOpacity>
+          </GroupCard>
+        )}
+      </Screen>
+    );
+  }
+
+  // Wizard step 4 (property branch): pick a category. Vehicle is its own branch.
+  if (step === 'category') {
+    return (
+      <Screen>
+        <Text style={styles.intro}>What type of item is it?</Text>
+        <GroupCard>
+          {ITEM_TYPES.filter((t) => t.value !== 'vehicle').map((t, i) => (
             <React.Fragment key={t.value}>
               {i > 0 ? <CardDivider /> : null}
               <TouchableOpacity style={styles.typeRow} activeOpacity={0.7} onPress={() => selectType(t.value)}>
@@ -268,7 +624,7 @@ export default function ItemFormScreen() {
     );
   }
 
-  // Step 2: type-specific form
+  // Final step: type-specific form
   return (
     <Screen>
       {!isEdit ? (
@@ -277,9 +633,12 @@ export default function ItemFormScreen() {
             <MaterialCommunityIcons name={mdiName(cfg.icon) as any} size={16} color="#fff" />
             <Text style={styles.typeChipText}>{cfg.label}</Text>
           </View>
-          <TouchableOpacity onPress={() => setStep(1)}>
-            <Text style={styles.changeType}>Change type</Text>
-          </TouchableOpacity>
+          {!isVehicle && selectedProperty ? (
+            <View style={[styles.typeChip, { backgroundColor: selectedProperty.color || '#4CAF50' }]}>
+              <MaterialCommunityIcons name={mdiName(selectedProperty.icon || 'mdi-home') as any} size={16} color="#fff" />
+              <Text style={styles.typeChipText}>{selectedProperty.name}</Text>
+            </View>
+          ) : null}
         </View>
       ) : null}
 
@@ -287,7 +646,14 @@ export default function ItemFormScreen() {
         formType={`${cfg.label.toLowerCase()} (home item)`}
         placeholder={'Describe the item, e.g. "Samsung fridge, model RF28R, bought last March, 2-year warranty"'}
         fields={assistFields}
-        current={{ ...form }}
+        // Custom/preset fields and user-added fields live outside `form`; fold
+        // their filled values in so Calvin sees them (context only — applyPatch
+        // ignores keys not in the core form, so these can't be overwritten).
+        current={{
+          ...form,
+          ...Object.fromEntries(Object.entries(customMap).filter(([, v]) => v)),
+          ...Object.fromEntries(userFields.filter((f) => f.key.trim() && f.value).map((f) => [f.key, f.value])),
+        }}
         onApply={applyPatch}
       />
 
@@ -300,24 +666,39 @@ export default function ItemFormScreen() {
           containerStyle={fs.headField}
           style={[fs.headInput, assist.changed.has('name') && fs.headInputHighlight]}
         />
+        {/* Vehicles stand alone (no location); property items pick a property. */}
+        {!isVehicle ? (
+          <>
+            <CardDivider />
+            <Select
+              inlineLabel="Property"
+              placeholder="Select…"
+              value={form.propertyId ?? undefined}
+              options={[
+                ...(propertiesQ.data ?? []).map((p) => ({ label: p.name, value: p._id })),
+                { label: '＋ Add property…', value: ADD_PROPERTY },
+              ]}
+              onChange={(v) => {
+                if (v === ADD_PROPERTY) return addProperty();
+                const p = propertiesQ.data?.find((x) => x._id === v);
+                if (p) applyProperty(p);
+              }}
+              containerStyle={fs.dtFieldWrap}
+              fieldStyle={fs.rowField}
+              valueStyle={fs.dtValue}
+              chevronIcon="chevron-expand"
+            />
+          </>
+        ) : null}
         <CardDivider />
-        <View style={fs.dtRow}>
-          <Text style={fs.dtLabel}>Location</Text>
-          <Input
-            value={form.location}
-            onChangeText={(v) => set({ location: v })}
-            placeholder="e.g. Home, Garage"
-            containerStyle={[fs.headField, fs.rowInputWrap]}
-            style={[fs.headInput, fs.rowInput, assist.changed.has('location') && fs.headInputHighlight]}
-          />
-        </View>
-        <CardDivider />
+        {/* Vehicles are locked to the "Vehicles" category; property items pick
+            any category except the vehicle-only one. */}
         <Select
-          inlineLabel="Category"
-          clearable
-          placeholder="None"
+          clearable={!isVehicle}
+          disabled={isVehicle}
+          placeholder="Category"
           value={form.categoryId ?? undefined}
-          options={(categoriesQ.data ?? []).map((c) => ({ label: c.name, value: c._id }))}
+          options={categoryOptions}
           onChange={(v) => set({ categoryId: (v as string) ?? null })}
           highlight={assist.changed.has('categoryId')}
           containerStyle={fs.dtFieldWrap}
@@ -325,6 +706,21 @@ export default function ItemFormScreen() {
           valueStyle={fs.dtValue}
           chevronIcon="chevron-expand"
         />
+        {/* Photo-scan enrichment for an existing item (e.g. a placeholder created
+            by the bulk task flow): AI fills the details from a label/nameplate. */}
+        {isEdit && aiEnabled ? (
+          <>
+            <CardDivider />
+            <TouchableOpacity style={styles.addProRow} activeOpacity={0.7} onPress={onAddPhoto} disabled={scanning}>
+              {scanning ? (
+                <ActivityIndicator color={accent} size="small" />
+              ) : (
+                <Ionicons name="camera-outline" size={18} color={accent} />
+              )}
+              <Text style={[styles.addProText, { color: accent }]}>Scan a photo to fill details</Text>
+            </TouchableOpacity>
+          </>
+        ) : null}
       </GroupCard>
 
       {cfg.fieldGroups.map((group) => (
@@ -348,7 +744,33 @@ export default function ItemFormScreen() {
         </View>
       ))}
 
-      <SectionTitle>Notes & Additional Fields</SectionTitle>
+      <SectionTitle>Service Professional</SectionTitle>
+      <GroupCard>
+        <Select
+          inlineLabel="Contact"
+          clearable
+          placeholder="None"
+          value={form.serviceProId ?? undefined}
+          options={servicePeople.map((p) => ({
+            label: p.businessName ? `${p.name} · ${p.businessName}` : p.name,
+            value: p._id,
+          }))}
+          onChange={(v) => set({ serviceProId: (v as string) ?? null })}
+          containerStyle={fs.dtFieldWrap}
+          fieldStyle={fs.rowField}
+          valueStyle={fs.dtValue}
+          chevronIcon="chevron-expand"
+        />
+        <CardDivider />
+        {/* Separate row (not a Select option) so the action sheet / navigation
+            isn't fired from inside the Select's dismissing modal. */}
+        <TouchableOpacity style={styles.addProRow} activeOpacity={0.7} onPress={openAddServicePro}>
+          <Ionicons name="person-add-outline" size={18} color={accent} />
+          <Text style={[styles.addProText, { color: accent }]}>Add or import from Contacts</Text>
+        </TouchableOpacity>
+      </GroupCard>
+
+      <SectionTitle>Notes</SectionTitle>
       <Input
         value={form.notes}
         onChangeText={(v) => set({ notes: v })}
@@ -402,7 +824,7 @@ export default function ItemFormScreen() {
         </GroupCard>
       ) : null}
 
-      {error ? <Text style={styles.error}>{error}</Text> : null}
+      <FormError>{error}</FormError>
     </Screen>
   );
 }
@@ -486,8 +908,9 @@ function FieldRenderer({
 }
 
 const styles = StyleSheet.create({
-  center: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.background },
   intro: { fontSize: 15, color: colors.textMuted, marginBottom: spacing.md },
+  addProRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, paddingHorizontal: 14, paddingVertical: 12 },
+  addProText: { fontSize: 15, fontWeight: '600' },
   typeRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.md, paddingHorizontal: 14, paddingVertical: 10 },
   typeAvatar: { width: 44, height: 44, borderRadius: 22, alignItems: 'center', justifyContent: 'center' },
   typeLabel: { fontSize: 16, fontWeight: '700', color: colors.text },
@@ -495,9 +918,7 @@ const styles = StyleSheet.create({
   typeChipRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.md, marginBottom: spacing.sm },
   typeChip: { flexDirection: 'row', alignItems: 'center', gap: 6, borderRadius: 999, paddingHorizontal: 12, paddingVertical: 6 },
   typeChipText: { color: '#fff', fontWeight: '600' },
-  changeType: { color: colors.primary, fontWeight: '600' },
   customRow: { flexDirection: 'row', alignItems: 'center', paddingRight: 14 },
   customCol: { flex: 1 },
   removeBtn: { marginLeft: spacing.sm },
-  error: { color: colors.error, marginVertical: spacing.sm },
 });

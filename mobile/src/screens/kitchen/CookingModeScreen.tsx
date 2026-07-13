@@ -1,10 +1,10 @@
 import React, { useEffect, useLayoutEffect, useState } from 'react';
-import { View, Text, StyleSheet, ActivityIndicator, ScrollView, TouchableOpacity, Vibration } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Vibration } from 'react-native';
 import { useQuery } from '@tanstack/react-query';
 import { Ionicons } from '@expo/vector-icons';
 import { useRoute, RouteProp, useNavigation } from '@react-navigation/native';
 import { recipesApi, Ingredient } from '../../api';
-import { Button } from '../../components/ui';
+import { Button, CenteredLoader } from '../../components/ui';
 import { KitchenStackParamList } from '../../navigation/KitchenNavigator';
 import { useCalendarColors } from '../../lib/calendarPrefs';
 import { colors, spacing, radius } from '../../theme';
@@ -59,9 +59,7 @@ export default function CookingModeScreen() {
 
   if (recipeQ.isLoading || !recipe) {
     return (
-      <View style={styles.center}>
-        <ActivityIndicator size="large" color={accent} />
-      </View>
+      <CenteredLoader color={accent} />
     );
   }
 
@@ -190,7 +188,6 @@ export default function CookingModeScreen() {
 
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: colors.background },
-  center: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.background },
   progressRow: { padding: spacing.md },
   progress: { fontSize: 14, color: colors.textMuted, marginBottom: spacing.sm },
   bar: { height: 4, backgroundColor: colors.border, borderRadius: 2 },

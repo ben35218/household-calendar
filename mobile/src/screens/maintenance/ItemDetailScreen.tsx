@@ -8,23 +8,27 @@ import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import {
   itemsApi,
   manualsApi,
+  receiptsApi,
   tasksApi,
   odometerApi,
+  peopleApi,
   Manual,
   ManualCandidate,
+  Receipt,
   ExtractedTask,
   Task,
+  Person,
 } from '../../api';
-import { Button, Card, Screen, Divider, ListRow, Input, RoundIconButton } from '../../components/ui';
+import { Button, Card, Screen, Divider, ListRow, Input, RoundIconButton, CenteredLoader, IconAvatar, ScreenTitle, HeaderIconButton, Fab } from '../../components/ui';
 import AssistantIcon from '../../components/AssistantIcon';
 import QuotaBlockedNotice from '../../components/QuotaBlockedNotice';
 import { useAiEnabled } from '../../lib/privacyPrefs';
 import { recurrenceLabel, formatCalendarDate, mdiName } from '../../lib/recurrence';
 import { itemTypeConfig } from '../../lib/itemTypes';
 import { useCalendarColors } from '../../lib/calendarPrefs';
-import { pickDocument } from '../../lib/media';
+import { pickDocument, takePhoto, pickImage, PickedFile } from '../../lib/media';
 import { uploadFile } from '../../lib/upload';
-import { getHDK, newObjectId } from '../../lib/e2ee';
+import { getHDK, newObjectId, openRecord } from '../../lib/e2ee';
 import { encryptFileForUpload, decryptDownloadedFile } from '../../lib/attachments';
 import { API_URL } from '../../config';
 import { getCachedToken } from '../../lib/secureToken';
@@ -34,8 +38,43 @@ import { colors, spacing } from '../../theme';
 type Nav = NativeStackNavigationProp<MaintenanceStackParamList, 'ItemDetail'>;
 type Rt = RouteProp<MaintenanceStackParamList, 'ItemDetail'>;
 
+// Item type → icon/color, mirroring MaintenanceScreen's TYPE_ICONS / TYPE_COLORS
+// so the item's avatar here matches the one shown next to its name in the list.
+const TYPE_ICONS: Record<string, string> = {
+  vehicle: 'car',
+  equipment: 'tools',
+  appliance: 'washing-machine',
+  system: 'cog',
+  structure: 'home',
+  other: 'package-variant',
+};
+const TYPE_COLORS: Record<string, string> = {
+  vehicle: '#607D8B',
+  equipment: '#795548',
+  appliance: '#9C27B0',
+  system: '#FF9800',
+  structure: '#4CAF50',
+  other: '#9E9E9E',
+};
+
+// The related-tasks list collapses to this many rows until the user expands it.
+const TASKS_COLLAPSED_COUNT = 4;
+
 function manualDownloadUrl(id: string) {
   return `${API_URL}/manuals/${id}/download?token=${getCachedToken()}`;
+}
+
+function receiptDownloadUrl(id: string) {
+  return `${API_URL}/receipts/${id}/download?token=${getCachedToken()}`;
+}
+
+// Best-effort extension for the decrypted temp file, from the stored mime type.
+function extForType(fileType?: string): string {
+  if (fileType?.includes('png')) return 'png';
+  if (fileType?.includes('pdf')) return 'pdf';
+  if (fileType?.includes('heic')) return 'heic';
+  if (fileType?.includes('webp')) return 'webp';
+  return 'jpg';
 }
 
 export default function ItemDetailScreen() {
@@ -55,12 +94,31 @@ export default function ItemDetailScreen() {
   const [extract, setExtract] = useState<{ manualId: string; title: string; tasks: ExtractedTask[]; selected: Set<number> } | null>(null);
   // Manual lookup shows only Claude's top pick by default; "See more options" reveals the rest.
   const [showAllManuals, setShowAllManuals] = useState(false);
+  // Related-tasks list collapses to the first few until "Show all" is tapped.
+  const [showAllTasks, setShowAllTasks] = useState(false);
 
   const itemQ = useQuery({ queryKey: ['items', id], queryFn: async () => (await itemsApi.get(id)).data });
   const item = itemQ.data;
   const isVehicle = item?.type === 'vehicle';
 
   const tasksQ = useQuery({ queryKey: ['tasks', 'forItem', id], queryFn: async () => (await tasksApi.list({ item: id })).data });
+
+  // Resolve the linked service professional's (decrypted) name from the roster —
+  // the item only stores its ref id (Person names live in the E2EE blob).
+  const proId = item?.serviceProId
+    ? typeof item.serviceProId === 'object'
+      ? item.serviceProId._id
+      : item.serviceProId
+    : null;
+  const peopleQ = useQuery({
+    queryKey: ['people'],
+    queryFn: async () => {
+      const rows = (await peopleApi.list()).data;
+      return Promise.all(rows.map((p) => openRecord('Person', p))) as Promise<Person[]>;
+    },
+    enabled: !!proId,
+  });
+  const servicePro = proId ? peopleQ.data?.find((p) => p._id === proId) : undefined;
   const odoQ = useQuery({
     queryKey: ['odometer', id],
     queryFn: async () => (await odometerApi.get(id)).data,
@@ -195,6 +253,67 @@ export default function ItemDetailScreen() {
     onSuccess: refreshItem,
   });
 
+  // ---- Receipts (proof-of-purchase images, for the owner's records) --------
+  const addReceipt = useMutation({
+    mutationFn: async (file: PickedFile) => {
+      // Same E2EE path as manuals: encrypt on-device when unlocked, else plaintext.
+      if (getHDK()) {
+        const receiptId = await newObjectId();
+        const sealed = await encryptFileForUpload('Receipt', receiptId, file.uri);
+        if (sealed) {
+          return uploadFile('/receipts/items/' + id + '/upload', { uri: sealed.uri, name: `${receiptId}.bin`, type: 'application/octet-stream' }, 'file', {
+            encrypted: true,
+            _id: receiptId,
+            wrappedFileKey: sealed.wrappedFileKey,
+            keyVersion: sealed.keyVersion,
+            fileType: file.type || 'image/jpeg',
+            title: file.name,
+          });
+        }
+      }
+      return uploadFile('/receipts/items/' + id + '/upload', file, 'file');
+    },
+    onSuccess: (res) => { if (res) refreshItem(); },
+    onError: (e: any) => Alert.alert('Upload failed', e.response?.data?.error || 'Could not upload that image.'),
+  });
+
+  const openReceiptsMenu = () => {
+    const cam = async () => { const f = await takePhoto(); if (f) addReceipt.mutate(f); };
+    const lib = async () => { const f = await pickImage(); if (f) addReceipt.mutate(f); };
+    if (Platform.OS === 'ios') {
+      ActionSheetIOS.showActionSheetWithOptions(
+        { options: ['Take Photo', 'Choose from Library', 'Cancel'], cancelButtonIndex: 2 },
+        (i) => { if (i === 0) cam(); else if (i === 1) lib(); }
+      );
+    } else {
+      Alert.alert('Add receipt', undefined, [
+        { text: 'Take Photo', onPress: cam },
+        { text: 'Choose from Library', onPress: lib },
+        { text: 'Cancel', style: 'cancel' },
+      ]);
+    }
+  };
+
+  const openReceipt = useMutation({
+    mutationFn: async (r: Receipt) => {
+      if (!r.encrypted) { await Linking.openURL(receiptDownloadUrl(r._id)); return; }
+      if (!getHDK() || !r.wrappedFileKey) throw new Error('Unlock your account to open this encrypted receipt.');
+      const cipherUri = `${cacheDirectory}dl-${r._id}.bin`;
+      const dl = await downloadAsync(`${API_URL}/receipts/${r._id}/download`, cipherUri, {
+        headers: { Authorization: `Bearer ${getCachedToken()}` },
+      });
+      const plainUri = await decryptDownloadedFile('Receipt', r._id, r.keyVersion, r.wrappedFileKey, dl.uri, `${r.title || 'receipt'}.${extForType(r.fileType)}`);
+      if (!plainUri) throw new Error('Could not decrypt this receipt.');
+      await Share.share({ url: plainUri });
+    },
+    onError: (e: any) => Alert.alert('Could not open receipt', e?.message || 'Please try again.'),
+  });
+
+  const delReceipt = useMutation({
+    mutationFn: (rid: string) => receiptsApi.delete(rid),
+    onSuccess: refreshItem,
+  });
+
   const runExtract = useMutation({
     mutationFn: (m: Manual) => manualsApi.extractTasks(m._id),
     onSuccess: (res, m) =>
@@ -223,53 +342,67 @@ export default function ItemDetailScreen() {
   });
 
   const confirmDelete = () =>
-    Alert.alert('Delete item?', `Permanently delete "${item?.name}" and its manuals?`, [
+    Alert.alert('Delete item?', `Permanently delete "${item?.name}" and its manuals and receipts?`, [
       { text: 'Cancel', style: 'cancel' },
       { text: 'Delete', style: 'destructive', onPress: () => del.mutate() },
     ]);
 
   useLayoutEffect(() => {
     navigation.setOptions({
-      title: item?.name || 'Item',
-      headerTitle: () => (
-        <View style={styles.headerTitleRow}>
-          <View style={styles.titleSpacer} />
-          <Text style={styles.headerTitleText} numberOfLines={1}>{item?.name || 'Item'}</Text>
-          <View style={styles.titleActions}>
-            <TouchableOpacity onPress={() => navigation.navigate('ItemForm', { id })} hitSlop={8}>
-              <Ionicons name="pencil" size={17} color="#fff" />
-            </TouchableOpacity>
-          </View>
-        </View>
+      title: 'Item',
+      headerRight: () => (
+        <HeaderIconButton icon="pencil" accessibilityLabel="Edit item" onPress={() => navigation.navigate('ItemForm', { id })} />
       ),
     });
-  }, [navigation, id, item?.name]);
+  }, [navigation, id]);
 
   if (itemQ.isLoading || !item) {
-    return (
-      <View style={styles.center}>
-        <ActivityIndicator size="large" color={colors.primary} />
-      </View>
-    );
+    return <CenteredLoader color={accent} />;
   }
 
   const cfg = itemTypeConfig(item.type);
+  const hasManuals = !!item.manuals?.length;
+  // The manuals card also shows the divider while an AI lookup/extract is active.
+  const hasManualContent = hasManuals || !!extract || lookup.state !== 'idle';
+  const hasReceipts = !!item.receipts?.length;
 
   return (
     <View style={styles.root}>
     <Screen>
+      <View style={styles.titleRow}>
+        <IconAvatar
+          mdiIcon={TYPE_ICONS[item.type || 'other'] || 'package-variant'}
+          bg={TYPE_COLORS[item.type || 'other'] || '#9E9E9E'}
+        />
+        <ScreenTitle style={styles.itemTitleFlex}>{item.name}</ScreenTitle>
+      </View>
+
       {/* Specs — hidden for vehicles (vehicle detail info is not shown here) */}
       {!isVehicle ? (
         <Card style={styles.infoCard}>
-          {item.location ? <ListRow icon="location-outline" title="Location" subtitle={item.location} /> : null}
+          {item.propertyId && typeof item.propertyId === 'object' ? (
+            <ListRow icon="home-outline" title="Property" subtitle={item.propertyId.name} />
+          ) : item.location ? (
+            <ListRow icon="home-outline" title="Property" subtitle={item.location} />
+          ) : null}
           {item.manufacturer ? <ListRow icon="business-outline" title="Manufacturer" subtitle={item.manufacturer} /> : null}
           {item.modelNumber ? <ListRow icon="barcode-outline" title="Model" subtitle={item.modelNumber} /> : null}
           {item.serialNumber ? <ListRow icon="finger-print-outline" title="Serial" subtitle={item.serialNumber} /> : null}
-          {item.purchaseDate ? <ListRow icon="calendar-outline" title="Purchased" subtitle={formatCalendarDate(item.purchaseDate)} /> : null}
-          {item.warrantyExpiry ? <ListRow icon="shield-outline" title="Warranty until" subtitle={formatCalendarDate(item.warrantyExpiry)} /> : null}
           {(item.customFields ?? []).filter((f) => f.value).map((f) => (
             <ListRow key={f.key} icon="ellipse-outline" title={f.key} subtitle={f.value} />
           ))}
+        </Card>
+      ) : null}
+
+      {/* Service professional — a linked contact who maintains this item */}
+      {servicePro ? (
+        <Card style={styles.infoCard}>
+          <ListRow
+            icon="briefcase-outline"
+            title="Service Professional"
+            subtitle={servicePro.businessName ? `${servicePro.name} · ${servicePro.businessName}` : servicePro.name}
+            onPress={() => navigation.navigate('PersonDetail', { id: servicePro._id })}
+          />
         </Card>
       ) : null}
 
@@ -360,7 +493,7 @@ export default function ItemDetailScreen() {
             )}
           </View>
         </View>
-        <Divider />
+        {hasManualContent ? <Divider /> : null}
         {item.manuals?.map((m) => (
           <View key={m._id} style={styles.manualRow}>
             <View style={{ flex: 1 }}>
@@ -487,28 +620,84 @@ export default function ItemDetailScreen() {
         {lookup.state === 'error' && !lookup.quota ? <Text style={[styles.body, styles.pad]}>{lookup.error}</Text> : null}
       </Card>
 
+      {/* Receipts */}
+      <Card style={styles.sectionCard}>
+        <View style={styles.cardTitleRow}>
+          <Text style={styles.cardTitle}>Receipts</Text>
+          {addReceipt.isPending ? (
+            <ActivityIndicator size="small" color={accent} />
+          ) : (
+            <TouchableOpacity onPress={openReceiptsMenu} accessibilityLabel="Add receipt">
+              <Ionicons name="add-circle-outline" size={24} color={accent} />
+            </TouchableOpacity>
+          )}
+        </View>
+        {hasReceipts ? <Divider /> : null}
+        {hasReceipts ? (
+          item.receipts!.map((r) => (
+            <View key={r._id} style={styles.manualRow}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.manualTitle}>{r.encrypted ? '🔒 ' : ''}{r.title}</Text>
+                <Text style={styles.manualSub}>
+                  {r.fileSizeBytes ? `${(r.fileSizeBytes / 1024 / 1024).toFixed(1)} MB` : ''}
+                  {r.createdAt ? `${r.fileSizeBytes ? ' · ' : ''}${formatCalendarDate(r.createdAt)}` : ''}
+                </Text>
+              </View>
+              <TouchableOpacity onPress={() => openReceipt.mutate(r)} style={styles.iconBtn}>
+                {openReceipt.isPending && openReceipt.variables?._id === r._id ? (
+                  <ActivityIndicator size="small" color="#fff" />
+                ) : (
+                  <Ionicons name={r.encrypted ? 'lock-open-outline' : 'eye-outline'} size={20} color="#fff" />
+                )}
+              </TouchableOpacity>
+              <TouchableOpacity onPress={() => delReceipt.mutate(r._id)} style={styles.iconBtn}>
+                <Ionicons name="trash-outline" size={20} color={colors.error} />
+              </TouchableOpacity>
+            </View>
+          ))
+        ) : null}
+      </Card>
+
       {/* Related tasks */}
       <Card style={styles.sectionCard}>
         <View style={styles.cardTitleRow}>
           <Text style={styles.cardTitle}>Maintenance Tasks</Text>
-          <TouchableOpacity onPress={() => navigation.navigate('TaskForm', {})}>
+          <TouchableOpacity
+            onPress={() =>
+              navigation.navigate('TaskForm', {
+                itemId: id,
+                categoryId:
+                  item.categoryId && typeof item.categoryId === 'object'
+                    ? item.categoryId._id
+                    : (item.categoryId as string) || undefined,
+              })
+            }
+          >
             <Ionicons name="add-circle-outline" size={24} color={accent} />
           </TouchableOpacity>
         </View>
-        <Divider />
         {tasksQ.data?.length ? (
-          tasksQ.data.map((t: Task) => (
-            <ListRow
-              key={t._id}
-              icon="construct-outline"
-              title={t.title}
-              subtitle={recurrenceLabel(t.recurrence)}
-              onPress={() => navigation.navigate('TaskDetail', { id: t._id })}
-            />
-          ))
-        ) : (
-          <Text style={[styles.body, styles.pad]}>No tasks linked</Text>
-        )}
+          <>
+            <Divider />
+            {(showAllTasks ? tasksQ.data : tasksQ.data.slice(0, TASKS_COLLAPSED_COUNT)).map((t: Task) => (
+              <ListRow
+                key={t._id}
+                icon="construct-outline"
+                title={t.title}
+                subtitle={recurrenceLabel(t.recurrence)}
+                onPress={() => navigation.navigate('TaskDetail', { id: t._id })}
+              />
+            ))}
+            {tasksQ.data.length > TASKS_COLLAPSED_COUNT ? (
+              <TouchableOpacity style={styles.showAllRow} onPress={() => setShowAllTasks((v) => !v)}>
+                <Text style={[styles.showAllText, { color: accent }]}>
+                  {showAllTasks ? 'Show less' : `Show all ${tasksQ.data.length} tasks`}
+                </Text>
+                <Ionicons name={showAllTasks ? 'chevron-up' : 'chevron-down'} size={16} color={accent} />
+              </TouchableOpacity>
+            ) : null}
+          </>
+        ) : null}
       </Card>
 
       <View style={styles.deleteWrap}>
@@ -516,13 +705,9 @@ export default function ItemDetailScreen() {
       </View>
     </Screen>
     {aiEnabled && (
-      <TouchableOpacity
-        style={[styles.fab, { backgroundColor: accent }]}
-        activeOpacity={0.85}
-        onPress={() => navigation.navigate('MaintenanceChat', { itemId: id, itemName: item?.name })}
-      >
+      <Fab bg={accent} onPress={() => navigation.navigate('MaintenanceChat', { itemId: id, itemName: item?.name })}>
         <AssistantIcon size={26} color="#fff" />
-      </TouchableOpacity>
+      </Fab>
     )}
     </View>
   );
@@ -530,34 +715,14 @@ export default function ItemDetailScreen() {
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: colors.background },
-  center: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.background },
-  headerTitleRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8 },
-  headerTitleText: { color: '#fff', fontSize: 17, fontWeight: '600', flexShrink: 1 },
-  // Left spacer mirrors the icon block's width so the title text stays centered on
-  // screen while the pencil sits tight to its right.
-  titleSpacer: { width: 25 },
-  titleActions: { flexDirection: 'row', alignItems: 'center', width: 25 },
-  fab: {
-    position: 'absolute',
-    right: spacing.lg,
-    bottom: spacing.lg,
-    width: 56,
-    height: 56,
-    borderRadius: 28,
-    alignItems: 'center',
-    justifyContent: 'center',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.25,
-    shadowRadius: 4,
-    elevation: 5,
-  },
+  titleRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.md, marginBottom: spacing.md, paddingLeft: spacing.md },
+  itemTitleFlex: { flex: 1 },
   deleteWrap: { marginTop: spacing.sm, marginBottom: 96 },
   infoCard: { padding: 0, paddingVertical: spacing.xs, marginBottom: spacing.md },
   textCard: { marginBottom: spacing.md },
-  sectionCard: { padding: 0, paddingTop: spacing.md, marginBottom: spacing.md },
-  cardTitle: { fontSize: 16, fontWeight: '700', color: colors.text, paddingHorizontal: spacing.md, marginBottom: spacing.sm },
-  cardTitleRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingRight: spacing.md },
+  sectionCard: { padding: 0, marginBottom: spacing.md },
+  cardTitle: { fontSize: 16, fontWeight: '700', color: colors.text, paddingHorizontal: spacing.md },
+  cardTitleRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingRight: spacing.md, paddingVertical: spacing.md },
   overline: { fontSize: 12, fontWeight: '700', color: colors.textMuted, textTransform: 'uppercase', marginBottom: spacing.sm },
   body: { fontSize: 15, color: colors.text, lineHeight: 21 },
   pad: { padding: spacing.md, gap: spacing.sm },
@@ -578,8 +743,9 @@ const styles = StyleSheet.create({
   manualSub: { fontSize: 12, color: colors.textMuted, marginTop: 2 },
   recommendedTag: { fontSize: 11, fontWeight: '700', color: colors.primary, textTransform: 'uppercase', marginTop: 2 },
   candidateActions: { flexDirection: 'row', alignItems: 'center', gap: spacing.xs },
-  // Match cardTitle's marginBottom so the buttons baseline-align with the title.
-  manualActions: { flexDirection: 'row', gap: spacing.sm, alignItems: 'center', marginBottom: spacing.sm },
+  manualActions: { flexDirection: 'row', gap: spacing.sm, alignItems: 'center' },
+  showAllRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 4, paddingVertical: spacing.md },
+  showAllText: { fontSize: 14, fontWeight: '600' },
   iconBtn: { padding: 6 },
   extractRow: { flexDirection: 'row', alignItems: 'flex-start', paddingVertical: spacing.sm },
   row: { flexDirection: 'row', gap: spacing.sm, alignItems: 'center', marginTop: spacing.sm },

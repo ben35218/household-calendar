@@ -22,9 +22,9 @@ import type { ProfileStackParamList } from '../../navigation/ProfileNavigator';
 
 type R = RouteProp<ProfileStackParamList, 'PersonForm'>;
 
-// Mirrors the add/edit dialog in client/src/views/PeopleView.vue. For the "You"
-// card, name/birthday/address are managed in Account, so only interests + notes
-// are editable here.
+// Mirrors the add/edit dialog in client/src/views/PeopleView.vue. The "You" card
+// is edited entirely in Account now; the only remaining isSelf entry point is the
+// Birthdays list, where the form just points back to Account (nothing editable).
 export default function PersonFormScreen() {
   const nav = useNavigation();
   const qc = useQueryClient();
@@ -278,7 +278,7 @@ export default function PersonFormScreen() {
         <Text style={styles.hint}>Your name, birthday and home address are managed in Account.</Text>
       ) : null}
 
-      {!isService ? (
+      {!isService && !isSelf ? (
         <>
           <SectionTitle>Interests / hobbies</SectionTitle>
           <GroupCard>
@@ -317,16 +317,20 @@ export default function PersonFormScreen() {
         </>
       ) : null}
 
-      <SectionTitle>Notes for AI</SectionTitle>
-      <Input
-        value={form.notes}
-        onChangeText={set('notes')}
-        multiline
-        numberOfLines={3}
-        placeholder="Anything the assistant should know about them…"
-        style={styles.notes}
-        highlight={assist.changed.has('notes')}
-      />
+      {!isSelf ? (
+        <>
+          <SectionTitle>Notes for AI</SectionTitle>
+          <Input
+            value={form.notes}
+            onChangeText={set('notes')}
+            multiline
+            numberOfLines={3}
+            placeholder="Anything the assistant should know about them…"
+            style={styles.notes}
+            highlight={assist.changed.has('notes')}
+          />
+        </>
+      ) : null}
 
       {!isSelf ? (
         <GroupCard>

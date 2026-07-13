@@ -9,6 +9,7 @@ import {
   useHolidayCalendars,
   sortByCalendarOrder,
 } from '../../lib/calendarPrefs';
+import { Hint } from '../../components/ui';
 import { colors, spacing, radius } from '../../theme';
 
 // Lets the user recolour and reorder each calendar; both persist and flow
@@ -65,9 +66,7 @@ export default function CalendarColorsScreen() {
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
-      <Text style={styles.intro}>
-        Tap a calendar to recolour it; use the arrows to reorder. Changes apply everywhere.
-      </Text>
+      <Hint>Tap a calendar to recolour it; use the arrows to reorder. Changes apply everywhere.</Hint>
 
       {items.map((cal, index) => {
         const current = draft[cal.id] ?? calColors[cal.id] ?? cal.color;
@@ -146,7 +145,6 @@ export default function CalendarColorsScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.background },
   content: { padding: spacing.md },
-  intro: { fontSize: 13, color: colors.textMuted, marginBottom: spacing.md },
   card: { backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border, marginBottom: spacing.sm, overflow: 'hidden' },
   row: { flexDirection: 'row', alignItems: 'center', gap: spacing.md, padding: spacing.md },
   swatch: { width: 28, height: 28, borderRadius: 6 },

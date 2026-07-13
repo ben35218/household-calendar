@@ -1,5 +1,5 @@
 import React, { useLayoutEffect, useMemo, useState, useRef, useCallback } from 'react';
-import { View, Text, StyleSheet, ActivityIndicator, ScrollView, TouchableOpacity, Animated, Dimensions } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Animated, Dimensions } from 'react-native';
 import { useQuery } from '@tanstack/react-query';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
@@ -7,12 +7,13 @@ import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { WeatherData, CalendarEvent } from '../../api';
 import { loadCalendarData } from '../../lib/calendarData';
 import { loadForecast } from '../../lib/weather';
-import { Card } from '../../components/ui';
+import { Card, CenteredLoader, CardRow } from '../../components/ui';
 import HourlyForecast from '../../components/HourlyForecast';
 import { itemsForDate, eventColor, CALENDAR_COLORS } from '../../lib/calendar';
 import { getHolidays } from '../../lib/holidays';
 import { useCalendarVisibility, useHolidayCalendars, holidayEnabledIds, useCalendarColors } from '../../lib/calendarPrefs';
 import WeatherIcon from '../../components/WeatherIcon';
+import { weatherCardColors } from '../../lib/weatherTheme';
 import { zonedTimeLabel } from '../../lib/tz';
 import { useHorizontalSwipe } from '../../lib/useHorizontalSwipe';
 import { mdiName } from '../../lib/recurrence';
@@ -36,18 +37,14 @@ function windowFor(dateStr: string) {
 }
 
 function Row({ icon, color, title, subtitle, onPress }: { icon: string; color: string; title: string; subtitle?: string; onPress?: () => void }) {
-  const Wrapper: any = onPress ? TouchableOpacity : View;
   return (
-    <Wrapper onPress={onPress} activeOpacity={0.7}>
-      <Card style={[styles.row, { borderLeftColor: color, borderLeftWidth: 4 }]}>
-        <MaterialCommunityIcons name={icon as any} size={20} color={color} />
-        <View style={{ flex: 1 }}>
-          <Text style={styles.rowTitle}>{title}</Text>
-          {subtitle ? <Text style={styles.rowSub}>{subtitle}</Text> : null}
-        </View>
-        {onPress ? <Ionicons name="chevron-forward" size={16} color={colors.textMuted} /> : null}
-      </Card>
-    </Wrapper>
+    <CardRow
+      onPress={onPress}
+      leading={<MaterialCommunityIcons name={icon as any} size={20} color={color} />}
+      title={title}
+      subtitle={subtitle}
+      style={{ borderLeftColor: color, borderLeftWidth: 4 }}
+    />
   );
 }
 
@@ -111,6 +108,8 @@ export default function CalendarDayScreen() {
     () => weatherQ.data?.forecast?.find((d) => d.date === date) ?? null,
     [weatherQ.data, date]
   );
+  // Card fill tracks the day's conditions (daytime tint — it's a day forecast).
+  const wxColors = weatherCardColors(wx?.weatherCode, false);
   // This day onward, so the hourly strip can roll past midnight into the next day.
   const wxDays = useMemo(() => {
     const f = weatherQ.data?.forecast ?? [];
@@ -135,7 +134,7 @@ export default function CalendarDayScreen() {
 
   useLayoutEffect(() => {
     navigation.setOptions({
-      title: new Date(date + 'T12:00:00').toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' }),
+      title: new Date(date + 'T12:00:00').toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' }),
       // Disable the native swipe-back so a horizontal swipe navigates between
       // days (right → previous, left → next) instead of popping to the calendar.
       // The header back button still returns to the calendar view.
@@ -150,9 +149,7 @@ export default function CalendarDayScreen() {
 
   if (calQ.isLoading) {
     return (
-      <View style={styles.center}>
-        <ActivityIndicator size="large" color={colors.primary} />
-      </View>
+      <CenteredLoader />
     );
   }
 
@@ -175,7 +172,7 @@ export default function CalendarDayScreen() {
           onTouchEnd={() => { swipeBlocked.current = false; }}
           onTouchCancel={() => { swipeBlocked.current = false; }}
         >
-        <Card style={styles.weatherCard}>
+        <Card style={[styles.weatherCard, { backgroundColor: wxColors.bg, borderColor: wxColors.border }]}>
           <View style={styles.weatherRow}>
             <WeatherIcon code={wx.weatherCode} size={40} />
             <View style={{ flex: 1 }}>
@@ -249,11 +246,7 @@ const styles = StyleSheet.create({
   scroll: { flex: 1, backgroundColor: 'transparent' },
   footerNav: { position: 'absolute', left: 0, right: 0, bottom: 0, flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: spacing.md, paddingBottom: spacing.xl },
   footerBtn: { padding: spacing.xs },
-  center: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.background },
   content: { padding: spacing.md },
-  row: { flexDirection: 'row', alignItems: 'center', gap: spacing.md, marginBottom: spacing.sm },
-  rowTitle: { fontSize: 16, fontWeight: '600', color: colors.text },
-  rowSub: { fontSize: 13, color: colors.textMuted, marginTop: 2 },
   empty: { textAlign: 'center', color: colors.textMuted, marginTop: spacing.xl },
   // Solid sky blue matching the weather screen's hourly card.
   weatherCard: { marginBottom: spacing.md, backgroundColor: '#5089D2', borderColor: 'rgba(255,255,255,0.22)' },

@@ -1,5 +1,5 @@
 import React from 'react';
-import { View, Text, ScrollView, StyleSheet, TouchableOpacity, ActivityIndicator } from 'react-native';
+import { View, Text, ScrollView, StyleSheet, TouchableOpacity, RefreshControl } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -9,7 +9,7 @@ import { peopleApi, Person } from '../../api';
 import { openRecord } from '../../lib/e2ee';
 import * as replica from '../../lib/replica';
 import { CALENDAR_COLORS } from '../../lib/calendar';
-import { Card } from '../../components/ui';
+import { Card, CenteredLoader, EmptyState, Hint } from '../../components/ui';
 import { colors, spacing } from '../../theme';
 import type { CalendarStackParamList } from '../../navigation/CalendarNavigator';
 
@@ -67,7 +67,7 @@ export default function BirthdaysScreen() {
 
   // Same offline-first fetch as PeopleScreen (shared query key, so the roster
   // cache is reused): sync the replica, decrypt content over plaintext.
-  const { data: people, isLoading } = useQuery({
+  const { data: people, isLoading, refetch, isRefetching } = useQuery({
     queryKey: ['people'],
     queryFn: async () => {
       try {
@@ -83,20 +83,18 @@ export default function BirthdaysScreen() {
   });
 
   if (isLoading || !people) {
-    return (
-      <View style={styles.center}>
-        <ActivityIndicator color={colors.primary} />
-      </View>
-    );
+    return <CenteredLoader color={CALENDAR_COLORS.birthdays} />;
   }
 
   const upcoming = upcomingBirthdays(people);
 
   return (
-    <ScrollView style={styles.container} contentContainerStyle={styles.content}>
-      <Text style={styles.intro}>
-        Birthdays come from your People. Add or edit a birthday on the person&apos;s card.
-      </Text>
+    <ScrollView
+      style={styles.container}
+      contentContainerStyle={styles.content}
+      refreshControl={<RefreshControl refreshing={isRefetching} onRefresh={refetch} />}
+    >
+      <Hint>Birthdays come from your People. Add or edit a birthday on the person&apos;s card.</Hint>
 
       {upcoming.map(({ person, month, day, daysUntil, turns }) => {
         const isSelf = Boolean(person.accountId && String(person.accountId) === selfId);
@@ -127,13 +125,17 @@ export default function BirthdaysScreen() {
       })}
 
       {upcoming.length === 0 ? (
-        <Card style={styles.empty}>
-          <Text style={styles.emptyText}>No birthdays yet.</Text>
+        <EmptyState
+          variant="inline"
+          mdiIcon="cake-variant"
+          title="No birthdays yet"
+          accent={CALENDAR_COLORS.birthdays}
+        >
           <TouchableOpacity style={styles.emptyBtn} onPress={() => nav.navigate('People')}>
             <Ionicons name="people-outline" size={16} color={colors.primary} />
             <Text style={styles.emptyBtnText}>Add birthdays in People</Text>
           </TouchableOpacity>
-        </Card>
+        </EmptyState>
       ) : null}
     </ScrollView>
   );
@@ -142,8 +144,6 @@ export default function BirthdaysScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.background },
   content: { padding: spacing.md },
-  center: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.background },
-  intro: { fontSize: 13, color: colors.textMuted, marginBottom: spacing.md, lineHeight: 18 },
   row: { flexDirection: 'row', alignItems: 'center', gap: spacing.md, marginBottom: spacing.sm },
   todayRow: { borderWidth: 1, borderColor: CALENDAR_COLORS.birthdays },
   accent: { width: 4, height: 36, borderRadius: 2 },
@@ -152,8 +152,6 @@ const styles = StyleSheet.create({
   date: { fontSize: 13, color: colors.textMuted, marginTop: 2 },
   when: { fontSize: 13, fontWeight: '600', color: colors.textMuted },
   whenToday: { color: CALENDAR_COLORS.birthdays },
-  empty: { alignItems: 'center', paddingVertical: spacing.xl },
-  emptyText: { fontSize: 14, color: colors.textMuted },
   emptyBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: spacing.md },
   emptyBtnText: { color: colors.primary, fontWeight: '600', fontSize: 14 },
 });

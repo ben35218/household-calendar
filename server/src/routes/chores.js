@@ -3,7 +3,7 @@ const { startOfDay, addDays } = require('date-fns');
 const Chore = require('../models/Chore');
 const { requireAuth } = require('../middleware/auth');
 const { activity } = require('../middleware/activity');
-const { computeNextDueDate } = require('../services/recurrence');
+const { computeNextDueDate, anchorRecurrence } = require('../services/recurrence');
 
 const router = express.Router();
 router.use(requireAuth);
@@ -103,7 +103,7 @@ router.post('/from-template', async (req, res) => {
         title: tpl.title,
         instructions: tpl.description,
         icon: tpl.icon || 'mdi-broom',
-        recurrence: tpl.recurrence,
+        recurrence: anchorRecurrence(tpl.recurrence),
         templateId: tpl.id,
       };
       data.nextDueDate = computeNextDueDate({ recurrence: data.recurrence }, new Date());

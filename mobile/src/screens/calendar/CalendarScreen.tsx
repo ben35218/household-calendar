@@ -337,9 +337,16 @@ const CalendarGrid = forwardRef<TodayHandle>(function CalendarGrid(_props, ref) 
       {week.bars.map((bar) => (
         <TouchableOpacity
           key={bar.key}
-          disabled={!bar.tripId}
           activeOpacity={0.7}
-          onPress={() => bar.tripId && navigation.navigate('TripDetail', { id: bar.tripId })}
+          onPress={(e) => {
+            if (bar.tripId) { navigation.navigate('TripDetail', { id: bar.tripId }); return; }
+            // Multi-day event: figure out which day column the tap landed on
+            // (each column is cellSize wide, starting at the bar's startCol) and
+            // open that specific day in the daily view.
+            const offset = Math.floor(e.nativeEvent.locationX / cellSize);
+            const col = Math.min(bar.endCol, bar.startCol + Math.max(0, offset));
+            navigation.navigate('CalendarDay', { date: week.cells[col].date });
+          }}
           style={[
             styles.spanBar,
             {

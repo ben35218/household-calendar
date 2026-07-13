@@ -1,13 +1,14 @@
 const defaultCategories = [
   { name: 'HVAC & Heating',      icon: 'mdi-air-filter',     color: '#FF5722', sortOrder: 1 },
   { name: 'Water, Well & Septic',icon: 'mdi-water-pump',     color: '#2196F3', sortOrder: 2 },
-  { name: 'Vehicles & Equipment',icon: 'mdi-car',             color: '#607D8B', sortOrder: 3 },
-  { name: 'Exterior & Structure',icon: 'mdi-home-roof',       color: '#795548', sortOrder: 4 },
-  { name: 'Land & Grounds',      icon: 'mdi-tree',            color: '#4CAF50', sortOrder: 5 },
-  { name: 'Plumbing',            icon: 'mdi-pipe',            color: '#00BCD4', sortOrder: 6 },
-  { name: 'Electrical & Safety', icon: 'mdi-lightning-bolt',  color: '#FFC107', sortOrder: 7 },
-  { name: 'Appliances',          icon: 'mdi-washing-machine', color: '#9C27B0', sortOrder: 8 },
-  { name: 'Pest & Seasonal',     icon: 'mdi-bug',             color: '#8BC34A', sortOrder: 9 },
+  { name: 'Vehicles',            icon: 'mdi-car',             color: '#607D8B', sortOrder: 3 },
+  { name: 'Equipment',           icon: 'mdi-engine',          color: '#FF9800', sortOrder: 4 },
+  { name: 'Exterior & Structure',icon: 'mdi-home-roof',       color: '#795548', sortOrder: 5 },
+  { name: 'Land & Grounds',      icon: 'mdi-tree',            color: '#4CAF50', sortOrder: 6 },
+  { name: 'Plumbing',            icon: 'mdi-pipe',            color: '#00BCD4', sortOrder: 7 },
+  { name: 'Electrical & Safety', icon: 'mdi-lightning-bolt',  color: '#FFC107', sortOrder: 8 },
+  { name: 'Appliances',          icon: 'mdi-washing-machine', color: '#9C27B0', sortOrder: 9 },
+  { name: 'Pest & Seasonal',     icon: 'mdi-bug',             color: '#8BC34A', sortOrder: 10 },
 ];
 
 // Subcategories keyed by parent category name
@@ -60,12 +61,18 @@ const defaultSubcategories = {
     { name: 'Fencing',            sortOrder: 3 },
     { name: 'Trees & Shrubs',     sortOrder: 4 },
   ],
-  'Vehicles & Equipment': [
+  'Vehicles': [
     { name: 'Engine & Drivetrain', sortOrder: 1 },
     { name: 'Tires & Brakes',      sortOrder: 2 },
     { name: 'Fluids',              sortOrder: 3 },
     { name: 'Filters',             sortOrder: 4 },
     { name: 'Exterior',            sortOrder: 5 },
+  ],
+  'Equipment': [
+    { name: 'Engine',              sortOrder: 1 },
+    { name: 'Fuel & Fluids',       sortOrder: 2 },
+    { name: 'Filters',             sortOrder: 3 },
+    { name: 'Blades & Attachments',sortOrder: 4 },
   ],
 };
 

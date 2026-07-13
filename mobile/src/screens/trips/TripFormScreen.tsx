@@ -9,7 +9,7 @@ import { sealNew, sealUpdate, openRecord, getHDK } from '../../lib/e2ee';
 
 // Encrypted trip content (dates/color stay plaintext).
 const TRIP_ENC = (p: Record<string, unknown>) => ({ name: p.name, destination: p.destination, notes: p.notes });
-import { Button, Input, Select, Screen, SectionTitle, DateField, useHeaderCheckButton } from '../../components/ui';
+import { Button, Input, Select, Screen, SectionTitle, DateField, useHeaderCheckButton, FormError, ColorPicker, CenteredLoader } from '../../components/ui';
 import { form as fs, GroupCard, CardDivider } from '../../components/formStyles';
 import FormAssist from '../../components/FormAssist';
 import { useFormAssist } from '../../hooks/useFormAssist';
@@ -308,9 +308,7 @@ export default function TripFormScreen() {
 
   if (isEdit && tripQ.isLoading) {
     return (
-      <View style={styles.center}>
-        <ActivityIndicator size="large" color={accent} />
-      </View>
+      <CenteredLoader color={accent} />
     );
   }
 
@@ -456,15 +454,7 @@ export default function TripFormScreen() {
 
       <SectionTitle>Color</SectionTitle>
       <GroupCard style={styles.swatchCard}>
-        <View style={styles.swatchRow}>
-          {COLORS.map((c) => (
-            <TouchableOpacity
-              key={c}
-              style={[styles.swatch, { backgroundColor: c }, form.color === c && styles.swatchActive]}
-              onPress={() => set({ color: c })}
-            />
-          ))}
-        </View>
+        <ColorPicker value={form.color} onChange={(c) => set({ color: c })} options={COLORS} />
       </GroupCard>
 
       <SectionTitle>Notes</SectionTitle>
@@ -477,7 +467,7 @@ export default function TripFormScreen() {
         highlight={assist.changed.has('notes')}
       />
 
-      {error ? <Text style={styles.error}>{error}</Text> : null}
+      <FormError>{error}</FormError>
 
       {isEdit ? (
         <View style={fs.footer}>
@@ -493,12 +483,7 @@ export default function TripFormScreen() {
 }
 
 const styles = StyleSheet.create({
-  center: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.background },
   swatchCard: { padding: 14 },
-  swatchRow: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
-  swatch: { width: 36, height: 36, borderRadius: 18 },
-  swatchActive: { borderWidth: 3, borderColor: colors.text },
-  error: { color: colors.error, marginVertical: spacing.sm },
   shareCard: { padding: 14, gap: spacing.sm },
   emailAddRow: { position: 'relative', justifyContent: 'center' },
   emailInput: { marginBottom: 0 },

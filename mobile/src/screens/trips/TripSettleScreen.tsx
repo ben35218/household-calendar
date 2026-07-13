@@ -1,12 +1,12 @@
 import React, { useEffect, useLayoutEffect, useState } from 'react';
-import { View, Text, StyleSheet, ActivityIndicator, TouchableOpacity, Alert } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, Alert } from 'react-native';
 import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { tripsApi, SettlementBalance, SettlementLine } from '../../api';
-import { Button, Card, Input, Select } from '../../components/ui';
+import { Button, Card, Input, Select, SectionHeader, CenteredLoader } from '../../components/ui';
 import { form as fs, GroupCard, CardDivider } from '../../components/formStyles';
 import { tripTypeMeta } from '../../lib/tripTypes';
 import { useCalendarColors } from '../../lib/calendarPrefs';
@@ -69,9 +69,7 @@ export default function TripSettleScreen() {
 
   if (settleQ.isLoading || !settleQ.data) {
     return (
-      <View style={styles.center}>
-        <ActivityIndicator size="large" color={accent} />
-      </View>
+      <CenteredLoader color={accent} />
     );
   }
 
@@ -131,7 +129,7 @@ export default function TripSettleScreen() {
     <KeyboardAwareScrollView bottomOffset={24} keyboardShouldPersistTaps="handled" style={styles.screen} contentContainerStyle={styles.content}>
       {/* Balances */}
       <Card style={styles.card}>
-        <Text style={[styles.sectionLabel, { color: accent }]}>Balances</Text>
+        <SectionHeader style={{ color: accent }}>Balances</SectionHeader>
         {balances.length === 0 ? (
           <View style={styles.allSettled}>
             <Ionicons name="checkmark-circle" size={20} color={colors.success} />
@@ -177,7 +175,7 @@ export default function TripSettleScreen() {
       </Card>
 
       {/* Record a payment */}
-      <Text style={[styles.sectionLabel, { color: '#2E7D32' }]}>Record a payment</Text>
+      <SectionHeader style={{ color: '#2E7D32' }}>Record a payment</SectionHeader>
       <GroupCard>
         <Select
           inlineLabel="From"
@@ -242,7 +240,7 @@ export default function TripSettleScreen() {
       {/* History */}
       {payments && payments.length > 0 ? (
         <Card style={styles.card}>
-          <Text style={[styles.sectionLabel, { color: accent }]}>Recorded payments</Text>
+          <SectionHeader style={{ color: accent }}>Recorded payments</SectionHeader>
           {payments.map((p) => (
             <View key={p._id} style={styles.payRow}>
               <View style={styles.flex1}>
@@ -265,10 +263,8 @@ export default function TripSettleScreen() {
 
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: colors.background },
-  center: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.background },
   content: { padding: spacing.md },
   card: { marginBottom: spacing.md },
-  sectionLabel: { fontSize: 11, fontWeight: '700', letterSpacing: 0.5, textTransform: 'uppercase', marginBottom: spacing.sm },
   allSettled: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, paddingVertical: spacing.sm },
   settledText: { fontSize: 14, color: colors.textMuted },
   balanceGroup: { marginBottom: spacing.sm },

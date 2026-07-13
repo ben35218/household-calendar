@@ -15,7 +15,6 @@ const taskSchema = new mongoose.Schema({
   userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
   itemId: { type: mongoose.Schema.Types.ObjectId, ref: 'Item' },
   categoryId:    { type: mongoose.Schema.Types.ObjectId, ref: 'Category' },
-  subcategoryId: { type: mongoose.Schema.Types.ObjectId, ref: 'Category', default: null },
   title: { type: String, required: true },
   description: String,
   instructions: String,
@@ -33,6 +32,9 @@ const taskSchema = new mongoose.Schema({
   // Who the alert goes to in a shared household: 'everyone' or 'owner' (the
   // member who created the task). Only meaningful with >1 member.
   alertAudience: { type: String, enum: ['everyone', 'owner'], default: 'everyone' },
+  // Explicit recipients: when non-empty, the alert reaches only these members
+  // (overrides alertAudience). Empty = fall back to alertAudience ('everyone').
+  alertUserIds: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
   active: { type: Boolean, default: true },
   templateId: String,
   // Mileage-based tracking

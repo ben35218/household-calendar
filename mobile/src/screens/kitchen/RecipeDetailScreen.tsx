@@ -1,12 +1,12 @@
 import React, { useLayoutEffect, useState } from 'react';
-import { View, Text, StyleSheet, ActivityIndicator, Image, TouchableOpacity, Share, Alert, Modal } from 'react-native';
+import { View, Text, StyleSheet, Image, TouchableOpacity, Share, Alert, Modal } from 'react-native';
 import { KeyboardAvoidingView } from 'react-native-keyboard-controller';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { recipesApi, recipeScheduleApi, RecipeSchedule } from '../../api';
-import { Button, Card, Screen, Divider, Badge, DateField, Input } from '../../components/ui';
+import { Button, Card, Screen, Divider, Badge, DateField, Input, CenteredLoader, ScreenTitle, HeaderIconButton } from '../../components/ui';
 import { formatCalendarDate } from '../../lib/recurrence';
 import { KitchenStackParamList } from '../../navigation/KitchenNavigator';
 import { useCalendarColors } from '../../lib/calendarPrefs';
@@ -108,19 +108,13 @@ export default function RecipeDetailScreen() {
         </View>
       ),
       headerRight: () => (
-        <TouchableOpacity onPress={() => navigation.navigate('RecipeForm', { id })} style={{ paddingHorizontal: 4 }} hitSlop={8}>
-          <Ionicons name="pencil" size={22} color="#fff" />
-        </TouchableOpacity>
+        <HeaderIconButton icon="pencil" accessibilityLabel="Edit recipe" onPress={() => navigation.navigate('RecipeForm', { id })} />
       ),
     });
   }, [navigation, id, recipe]);
 
   if (recipeQ.isLoading || !recipe) {
-    return (
-      <View style={styles.center}>
-        <ActivityIndicator size="large" color={accent} />
-      </View>
-    );
+    return <CenteredLoader color={accent} />;
   }
 
   const total = (recipe.prepTimeMins || 0) + (recipe.cookTimeMins || 0);
@@ -131,7 +125,7 @@ export default function RecipeDetailScreen() {
       <Screen>
         {recipe.imageUrl ? <Image source={{ uri: recipe.imageUrl }} style={styles.hero} /> : null}
 
-        <Text style={styles.recipeTitle}>{recipe.title}</Text>
+        <ScreenTitle style={styles.recipeTitle}>{recipe.title}</ScreenTitle>
 
         <View style={styles.metaRow}>
           {total ? <Badge label={`${total} min`} color={accent} /> : null}
@@ -237,14 +231,13 @@ export default function RecipeDetailScreen() {
 }
 
 const styles = StyleSheet.create({
-  center: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.background },
   headerTitleRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8 },
   headerTitleText: { color: '#fff', fontSize: 17, fontWeight: '600', flexShrink: 1 },
   // Left spacer mirrors the share icon's width so the title stays centered.
   titleSpacer: { width: 30 },
   titleActions: { flexDirection: 'row', alignItems: 'center', width: 30 },
   hero: { width: '100%', height: 200, borderRadius: 12, marginBottom: spacing.md },
-  recipeTitle: { fontSize: 22, fontWeight: '700', color: colors.text, marginBottom: spacing.sm },
+  recipeTitle: { marginBottom: spacing.sm },
   metaRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginBottom: spacing.md },
   desc: { fontSize: 15, color: colors.textMuted, marginBottom: spacing.md, lineHeight: 21 },
   scheduleCard: { marginBottom: spacing.md },

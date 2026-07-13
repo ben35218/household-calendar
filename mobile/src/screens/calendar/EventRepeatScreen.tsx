@@ -1,8 +1,8 @@
 import React, { useState } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, Modal, Pressable } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useRoute, RouteProp } from '@react-navigation/native';
-import { Button, Screen, Select, SegmentedControl, SwitchRow } from '../../components/ui';
+import { Button, Screen, Select, SegmentedControl, SwitchRow, BottomSheet } from '../../components/ui';
 import {
   RepeatRule,
   RepeatFreq,
@@ -268,31 +268,27 @@ export default function EventRepeatScreen() {
       <Text style={styles.summary}>{summarySentence}</Text>
 
       {/* "Every" wheel — the time picker's bottom sheet: spin, then Done commits. */}
-      <Modal visible={everyOpen} transparent animationType="fade" onRequestClose={() => setEveryOpen(false)}>
-        <Pressable style={styles.sheetBackdrop} onPress={() => setEveryOpen(false)}>
-          <Pressable style={styles.sheet} onPress={(e) => e.stopPropagation()}>
-            <View style={styles.wheelRow}>
-              {/* Selection band spans the number + unit, like the native spinner's. */}
-              <View pointerEvents="none" style={styles.wheelBand} />
-              <WheelPicker
-                // Remount per open so the wheel re-positions on the current value.
-                key={String(everyOpen)}
-                items={Array.from({ length: EVERY_MAX[freq] }, (_, i) => ({ label: String(i + 1), value: i + 1 }))}
-                value={everyTemp}
-                onChange={setEveryTemp}
-              />
-              <Text style={styles.wheelUnit}>{tempUnitLabel}</Text>
-            </View>
-            <Button
-              title="Done"
-              onPress={() => {
-                sync({ interval: everyTemp });
-                setEveryOpen(false);
-              }}
-            />
-          </Pressable>
-        </Pressable>
-      </Modal>
+      <BottomSheet visible={everyOpen} onClose={() => setEveryOpen(false)} style={styles.everySheet}>
+        <View style={styles.wheelRow}>
+          {/* Selection band spans the number + unit, like the native spinner's. */}
+          <View pointerEvents="none" style={styles.wheelBand} />
+          <WheelPicker
+            // Remount per open so the wheel re-positions on the current value.
+            key={String(everyOpen)}
+            items={Array.from({ length: EVERY_MAX[freq] }, (_, i) => ({ label: String(i + 1), value: i + 1 }))}
+            value={everyTemp}
+            onChange={setEveryTemp}
+          />
+          <Text style={styles.wheelUnit}>{tempUnitLabel}</Text>
+        </View>
+        <Button
+          title="Done"
+          onPress={() => {
+            sync({ interval: everyTemp });
+            setEveryOpen(false);
+          }}
+        />
+      </BottomSheet>
     </Screen>
   );
 }
@@ -315,16 +311,8 @@ const styles = StyleSheet.create({
   gridCellText: { fontSize: 15, color: colors.text },
   gridCellTextSel: { color: '#fff', fontWeight: '600' },
   summary: { fontSize: 13, color: colors.textMuted, marginTop: -spacing.xs, marginBottom: spacing.md },
-  // "Every" wheel — bottom sheet matching the time picker's (ui.tsx modalSheet)
-  sheetBackdrop: {
-    flex: 1, backgroundColor: 'rgba(0,0,0,0.4)',
-    justifyContent: 'flex-end',
-  },
-  sheet: {
-    backgroundColor: colors.surface,
-    borderTopLeftRadius: radius.lg, borderTopRightRadius: radius.lg,
-    padding: spacing.md, gap: spacing.sm,
-  },
+  // "Every" wheel content inside the shared BottomSheet.
+  everySheet: { gap: spacing.sm },
   wheelRow: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
     gap: spacing.md, height: WHEEL_ITEM_H * WHEEL_VISIBLE,

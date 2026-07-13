@@ -42,7 +42,6 @@ async function absorb(dup, survivor, dryRun) {
   if (dryRun) return;
   await Item.updateMany({ categoryId: dupId }, { $set: { categoryId: survId } });
   await MaintenanceTask.updateMany({ categoryId: dupId }, { $set: { categoryId: survId } });
-  await MaintenanceTask.updateMany({ subcategoryId: dupId }, { $set: { subcategoryId: survId } });
   // Reparent any children so subcategory duplicates collapse under one parent.
   await Category.updateMany({ parentId: dupId }, { $set: { parentId: survId } });
   await Category.deleteOne({ _id: dupId });

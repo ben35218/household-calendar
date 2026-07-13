@@ -1,11 +1,11 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { View, Text, StyleSheet, ActivityIndicator, Alert, TouchableOpacity, Modal, Pressable } from 'react-native';
+import { View, Text, StyleSheet, ActivityIndicator, Alert, TouchableOpacity } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { calendarApi, invitationsApi, placesApi, settingsApi, FormAssistField } from '../../api';
-import { Button, Input, Select, Screen, SwitchRow, SectionTitle, DateField, TimeField, useHeaderCheckButton } from '../../components/ui';
+import { Button, Input, Select, Screen, SwitchRow, SectionTitle, DateField, TimeField, useHeaderCheckButton, FormError, CenteredLoader, Hint, ScreenTitle, BottomSheet, Card, ListRow, InfoCard } from '../../components/ui';
 import FormAssist from '../../components/FormAssist';
 import { form as formStyles } from '../../components/formStyles';
 import { useFormAssist } from '../../hooks/useFormAssist';
@@ -98,38 +98,34 @@ function CustomAlertSheet({
   };
 
   return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
-      <Pressable style={styles.sheetBackdrop} onPress={onClose}>
-        <Pressable style={styles.sheet} onPress={(e) => e.stopPropagation()}>
-          <View style={styles.wheelRow}>
-            {/* Selection band spans both wheels, like the native spinner's. */}
-            <View pointerEvents="none" style={styles.wheelBand} />
-            <WheelPicker
-              // Remount per open (fresh position) and per unit (clamped range).
-              key={`amount-${String(visible)}-${unit}`}
-              width={72}
-              items={Array.from({ length: AMOUNT_MAX[unit] }, (_, i) => ({ label: String(i + 1), value: i + 1 }))}
-              value={amount}
-              onChange={setAmount}
-            />
-            <WheelPicker
-              key={`unit-${String(visible)}`}
-              width={120}
-              items={CUSTOM_UNITS}
-              value={unit}
-              onChange={pickUnit}
-            />
-          </View>
-          <Button
-            title="Done"
-            onPress={() => {
-              onSave(amount * unit);
-              onClose();
-            }}
-          />
-        </Pressable>
-      </Pressable>
-    </Modal>
+    <BottomSheet visible={visible} onClose={onClose} style={styles.alertSheet}>
+      <View style={styles.wheelRow}>
+        {/* Selection band spans both wheels, like the native spinner's. */}
+        <View pointerEvents="none" style={styles.wheelBand} />
+        <WheelPicker
+          // Remount per open (fresh position) and per unit (clamped range).
+          key={`amount-${String(visible)}-${unit}`}
+          width={72}
+          items={Array.from({ length: AMOUNT_MAX[unit] }, (_, i) => ({ label: String(i + 1), value: i + 1 }))}
+          value={amount}
+          onChange={setAmount}
+        />
+        <WheelPicker
+          key={`unit-${String(visible)}`}
+          width={120}
+          items={CUSTOM_UNITS}
+          value={unit}
+          onChange={pickUnit}
+        />
+      </View>
+      <Button
+        title="Done"
+        onPress={() => {
+          onSave(amount * unit);
+          onClose();
+        }}
+      />
+    </BottomSheet>
   );
 }
 
@@ -740,11 +736,7 @@ export default function EventFormScreen() {
   });
 
   if (isEdit && eventQ.isLoading) {
-    return (
-      <View style={formStyles.center}>
-        <ActivityIndicator size="large" color={colors.primary} />
-      </View>
-    );
+    return <CenteredLoader color={cal[form.calendarType] || colors.primary} />;
   }
 
   // ── Read-only view (guest invitee or calendar collaborator): event details,
@@ -764,49 +756,33 @@ export default function EventFormScreen() {
 
     return (
       <Screen>
-        <Text style={styles.guestTitle}>{form.title}</Text>
+        <ScreenTitle>{form.title}</ScreenTitle>
         {inviterName ? <Text style={styles.guestInviter}>Invited by {inviterName}</Text> : null}
 
-        <View style={styles.guestCard}>
-          <View style={styles.guestRow}>
-            <Ionicons name="time-outline" size={18} color={colors.textMuted} />
-            <Text style={styles.guestMeta}>{when}</Text>
-          </View>
-          {form.location ? (
-            <View style={styles.guestRow}>
-              <Ionicons name="location-outline" size={18} color={colors.textMuted} />
-              <Text style={styles.guestMeta}>{form.location}</Text>
-            </View>
-          ) : null}
-          {form.phone ? (
-            <View style={styles.guestRow}>
-              <Ionicons name="call-outline" size={18} color={colors.textMuted} />
-              <Text style={styles.guestMeta}>{form.phone}</Text>
-            </View>
-          ) : null}
-        </View>
+        <InfoCard style={styles.infoCard}>
+          <ListRow icon="time-outline" title={when} />
+          {form.location ? <ListRow icon="location-outline" title={form.location} /> : null}
+          {form.phone ? <ListRow icon="call-outline" title={form.phone} /> : null}
+        </InfoCard>
 
         {guestListQ.data?.visible && guestListQ.data.guests.length ? (
           <>
             <SectionTitle>Guests</SectionTitle>
-            <View style={styles.guestCard}>
-              <View style={styles.guestRow}>
-                <Ionicons name="person-circle-outline" size={18} color={colors.textMuted} />
-                <Text style={styles.guestListName} numberOfLines={1}>
-                  {guestListQ.data.organizer?.name || guestListQ.data.organizer?.email}
-                </Text>
-                <Text style={styles.guestListStatus}>Organizer</Text>
-              </View>
+            <InfoCard style={styles.infoCard}>
+              <ListRow
+                icon="person-circle-outline"
+                title={guestListQ.data.organizer?.name || guestListQ.data.organizer?.email || 'Organizer'}
+                right={<Text style={styles.guestStatus}>Organizer</Text>}
+              />
               {guestListQ.data.guests.map((g) => (
-                <View key={g._id} style={styles.guestRow}>
-                  <Ionicons name="person-outline" size={18} color={colors.textMuted} />
-                  <Text style={styles.guestListName} numberOfLines={1}>
-                    {g._id === guestInvitationId ? 'You' : g.toEmail || g.toPhone}
-                  </Text>
-                  <Text style={styles.guestListStatus}>{GUEST_STATUS_LABEL[g.status]}</Text>
-                </View>
+                <ListRow
+                  key={g._id}
+                  icon="person-outline"
+                  title={(g._id === guestInvitationId ? 'You' : g.toEmail || g.toPhone) || ''}
+                  right={<Text style={styles.guestStatus}>{GUEST_STATUS_LABEL[g.status]}</Text>}
+                />
               ))}
-            </View>
+            </InfoCard>
           </>
         ) : null}
 
@@ -817,15 +793,15 @@ export default function EventFormScreen() {
           </>
         ) : null}
 
-        <Text style={styles.guestHint}>
+        <Hint style={styles.guestHint}>
           {collabReadOnly
             ? `You have view-only access to “${
                 customCalendars.find((c) => c.id === form.calendarType)?.name ?? 'this calendar'
               }”, so its events can’t be edited.`
             : 'You’re a guest on this event, so it can’t be edited. Only the organizer can change it.'}
-        </Text>
+        </Hint>
 
-        {error ? <Text style={formStyles.error}>{error}</Text> : null}
+        <FormError>{error}</FormError>
 
         {guestInvitationId ? (
           <View style={formStyles.footer}>
@@ -962,7 +938,7 @@ export default function EventFormScreen() {
           <Ionicons name="chevron-forward" size={18} color={colors.textMuted} style={formStyles.rowChevron} />
         </TouchableOpacity>
       </View>
-      {form.travelEnabled && travelError ? <Text style={formStyles.error}>{travelError}</Text> : null}
+      {form.travelEnabled ? <FormError>{travelError}</FormError> : null}
 
       {/* Repeat / End Repeat grouped card */}
       <View style={formStyles.groupCard}>
@@ -1086,14 +1062,6 @@ export default function EventFormScreen() {
         ) : null}
       </View>
 
-      {/* Attachment card — placeholder row only: calendar events have no
-          attachment storage on the backend yet (trips/maintenance items do). */}
-      <View style={formStyles.groupCard}>
-        <View style={formStyles.dtRow}>
-          <Text style={[formStyles.groupValue, formStyles.groupValueMuted]}>Add attachment...</Text>
-        </View>
-      </View>
-
       <CustomAlertSheet
         visible={customFor !== null}
         initialMinutes={customFor ? form[customFor] : null}
@@ -1113,7 +1081,7 @@ export default function EventFormScreen() {
         highlight={assist.changed.has('description')}
       />
 
-      {error ? <Text style={formStyles.error}>{error}</Text> : null}
+      <FormError>{error}</FormError>
 
       {isEdit ? (
         <View style={formStyles.footer}>
@@ -1137,28 +1105,15 @@ export default function EventFormScreen() {
 // add/edit forms); only screen-specific styles remain here.
 const styles = StyleSheet.create({
   // Guest (read-only invitee) view
-  guestTitle: { fontSize: 24, fontWeight: '700', color: colors.text },
   guestInviter: { fontSize: 13, color: colors.textMuted, marginTop: 4 },
-  guestCard: {
-    backgroundColor: colors.surface, borderRadius: 12,
-    padding: spacing.md, gap: spacing.sm, marginTop: spacing.md,
-  },
-  guestRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
-  guestMeta: { fontSize: 15, color: colors.text, flexShrink: 1 },
-  guestListName: { fontSize: 15, color: colors.text, flex: 1 },
-  guestListStatus: { fontSize: 13, color: colors.textMuted },
+  // Detail info card: the Card supplies chrome, ListRows supply the rows (matches
+  // ChoreDetail's infoCard). padding:0 so the rows own their spacing.
+  infoCard: { marginTop: spacing.md },
+  guestStatus: { fontSize: 13, color: colors.textMuted },
   guestNotes: { fontSize: 14, color: colors.text, lineHeight: 20 },
-  guestHint: { fontSize: 13, color: colors.textMuted, marginTop: spacing.lg },
-  // Custom alert dual wheel — bottom sheet matching the Repeat screen's "Every"
-  sheetBackdrop: {
-    flex: 1, backgroundColor: 'rgba(0,0,0,0.4)',
-    justifyContent: 'flex-end',
-  },
-  sheet: {
-    backgroundColor: colors.surface,
-    borderTopLeftRadius: radius.lg, borderTopRightRadius: radius.lg,
-    padding: spacing.md, gap: spacing.sm,
-  },
+  guestHint: { marginTop: spacing.lg, marginBottom: 0 },
+  // Custom alert dual wheel content inside the shared BottomSheet.
+  alertSheet: { gap: spacing.sm },
   wheelRow: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
     gap: spacing.md, height: WHEEL_ITEM_H * WHEEL_VISIBLE,

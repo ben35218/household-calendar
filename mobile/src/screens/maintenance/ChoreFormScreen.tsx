@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { View, Text, StyleSheet, ActivityIndicator, TouchableOpacity } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
@@ -10,21 +10,19 @@ import { sealNew, sealUpdate, openRecord } from '../../lib/e2ee';
 // Encrypted chore content (assignedTo/icon/dates stay plaintext).
 const CHORE_ENC = (p: Record<string, unknown>) => ({ title: p.title, instructions: p.instructions });
 import { useAuth } from '../../store/auth';
-import { Input, Select, Screen, SectionTitle, DateField, useHeaderCheckButton } from '../../components/ui';
+import { Input, Select, Screen, SectionTitle, DateField, NavField, useHeaderCheckButton, FormError, CenteredLoader } from '../../components/ui';
 import { form as fs, GroupCard, CardDivider } from '../../components/formStyles';
 import FormAssist from '../../components/FormAssist';
 import { useFormAssist } from '../../hooks/useFormAssist';
-import RecurrenceFields from '../../components/RecurrenceFields';
 import {
-  RecurrenceForm,
-  MonthlyMode,
-  makeRecurrenceForm,
-  recurrenceToForm,
-  buildRecurrencePayload,
+  recurrenceToRule,
+  ruleToRecurrence,
   ALERT_DAY_OPTIONS,
   AUDIENCE_OPTIONS,
   mdiName,
 } from '../../lib/recurrence';
+import { RepeatRule, EMPTY_REPEAT, repeatSummary } from '../../lib/eventRepeat';
+import { useRepeatDraft, clearRepeatDraft } from '../../lib/repeatDraft';
 import { useCalendarColors } from '../../lib/calendarPrefs';
 import { MaintenanceStackParamList } from '../../navigation/MaintenanceNavigator';
 import { colors, radius, spacing } from '../../theme';
@@ -72,14 +70,22 @@ export default function ChoreFormScreen() {
   const { user } = useAuth();
 
   const [form, setForm] = useState<ChoreFormState>(EMPTY);
-  const [rec, setRec] = useState<RecurrenceForm>(makeRecurrenceForm({ intervalValue: 1, intervalUnit: 'weeks' }));
-  const [monthlyMode, setMonthlyMode] = useState<MonthlyMode>('day');
+  // Recurrence is edited on the shared calendar Repeat screen; we hold its rule
+  // here and convert to/from the chore recurrence shape on load/save.
+  const [repeatRule, setRepeatRule] = useState<RepeatRule>({ ...EMPTY_REPEAT, freq: 'weekly', interval: 1 });
   const [error, setError] = useState('');
   const assist = useFormAssist();
 
   useEffect(() => {
     navigation.setOptions({ title: isEdit ? 'Edit Chore' : 'Add Chore' });
   }, [navigation, isEdit]);
+
+  // Edits made on the pushed Repeat screen sync back live via the draft store.
+  const repeatDraft = useRepeatDraft();
+  useEffect(() => {
+    if (repeatDraft) setRepeatRule(repeatDraft);
+  }, [repeatDraft]);
+  useEffect(() => () => clearRepeatDraft(), []);
 
   const set = (patch: Partial<ChoreFormState>) => {
     setForm((f) => ({ ...f, ...patch }));
@@ -141,9 +147,7 @@ export default function ChoreFormScreen() {
       alert2DaysBefore: c.alert2DaysBefore ?? null,
       alertAudience: c.alertAudience ?? 'everyone',
     });
-    const { form: rf, monthlyMode: mm } = recurrenceToForm(c.recurrence, { intervalValue: 1, intervalUnit: 'weeks' });
-    setRec(rf);
-    setMonthlyMode(mm);
+    setRepeatRule(recurrenceToRule(c.recurrence));
     })();
     return () => { cancelled = true; };
   }, [choreQ.data]);
@@ -158,7 +162,7 @@ export default function ChoreFormScreen() {
         reminderDaysBefore: form.reminderDaysBefore,
         alert2DaysBefore: form.reminderDaysBefore == null ? null : form.alert2DaysBefore,
         alertAudience: form.alertAudience,
-        recurrence: buildRecurrencePayload(rec, monthlyMode),
+        recurrence: ruleToRecurrence(repeatRule),
       };
       if (form.nextDueDate) payload.nextDueDate = form.nextDueDate;
       return isEdit
@@ -183,11 +187,16 @@ export default function ChoreFormScreen() {
 
   useHeaderCheckButton(navigation, { onPress: onSave, loading: save.isPending, color: accent });
 
+  // Tapping the Repeat field opens the shared Repeat screen directly.
+  const openRepeatScreen = () =>
+    navigation.navigate('EventRepeat', {
+      rule: repeatRule,
+      date: form.nextDueDate || new Date().toISOString().slice(0, 10),
+    });
+
   if (isEdit && choreQ.isLoading) {
     return (
-      <View style={styles.center}>
-        <ActivityIndicator size="large" color={colors.primary} />
-      </View>
+      <CenteredLoader color={accent} />
     );
   }
 
@@ -197,7 +206,7 @@ export default function ChoreFormScreen() {
         formType="household chore"
         placeholder={'Describe the chore, e.g. "take out the recycling every Sunday, assign to Alex"'}
         fields={assistFields}
-        current={{ ...form }}
+        current={{ ...form, recurrence: repeatSummary(repeatRule) }}
         onApply={applyPatch}
       />
 
@@ -259,13 +268,6 @@ export default function ChoreFormScreen() {
         </View>
       </GroupCard>
 
-      <RecurrenceFields
-        form={rec}
-        monthlyMode={monthlyMode}
-        onChange={(patch) => setRec((r) => ({ ...r, ...patch }))}
-        onChangeMonthlyMode={setMonthlyMode}
-      />
-
       <GroupCard>
         <DateField
           inlineLabel="Next Due Date"
@@ -278,6 +280,15 @@ export default function ChoreFormScreen() {
           fieldStyle={fs.rowField}
           valueStyle={fs.dtValue}
           hideIcon
+        />
+        <CardDivider />
+        <NavField
+          inlineLabel="Repeat"
+          value={repeatSummary(repeatRule)}
+          onPress={openRepeatScreen}
+          containerStyle={fs.dtFieldWrap}
+          fieldStyle={fs.rowField}
+          valueStyle={fs.dtValue}
         />
       </GroupCard>
 
@@ -325,14 +336,13 @@ export default function ChoreFormScreen() {
         ) : null}
       </GroupCard>
 
-      {error ? <Text style={styles.error}>{error}</Text> : null}
+      <FormError>{error}</FormError>
     </Screen>
   );
 }
 
 
 const styles = StyleSheet.create({
-  center: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.background },
   iconGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, padding: 14 },
   iconOption: {
     width: 44,
@@ -343,5 +353,4 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  error: { color: colors.error, marginVertical: spacing.sm },
 });

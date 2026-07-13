@@ -87,8 +87,7 @@ export default function PlannerPane({ weekStart }: { weekStart: Date }) {
           onLayout={(e) => { dayOffsets.current[day.date] = e.nativeEvent.layout.y; }}
           onPress={() => navigation.navigate('AddMeal', { date: day.date })}
         >
-          {/* Today's primary outline wins over the shopping-day accent. */}
-          <Card style={[styles.dayCard, day.isGroceryDay && { borderColor: accent }, day.isToday && styles.todayCard]}>
+          <Card style={[styles.dayCard, day.isToday && styles.todayCard]}>
             <View style={styles.dayHeader}>
               <Text style={styles.dayName}>{day.dayName} {day.dayNum}</Text>
               <View style={styles.dayHeaderRight}>
@@ -108,7 +107,7 @@ export default function PlannerPane({ weekStart }: { weekStart: Date }) {
               </TouchableOpacity>
             ))}
             <TouchableOpacity style={styles.addRow} onPress={() => navigation.navigate('AddMeal', { date: day.date })}>
-              <Ionicons name="add" size={16} color={accent} />
+              <Ionicons name="add" size={16} color="#fff" />
               <Text style={styles.addText}>Add recipe</Text>
             </TouchableOpacity>
           </Card>

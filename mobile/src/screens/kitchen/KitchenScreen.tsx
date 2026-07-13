@@ -94,11 +94,11 @@ export default function KitchenScreen() {
         </Card>
       </TouchableOpacity>
       <View style={styles.weekNav}>
-        <TouchableOpacity onPress={() => shiftWeek(-1)} style={styles.navBtn}><Ionicons name="chevron-back" size={22} color={colors.primary} /></TouchableOpacity>
+        <TouchableOpacity onPress={() => shiftWeek(-1)} style={styles.navBtn}><Ionicons name="chevron-back" size={22} color="#fff" /></TouchableOpacity>
         <TouchableOpacity onPress={() => setWeekStart(currentStart)}>
           <Text style={styles.weekLabel}>{weekLabel}</Text>
         </TouchableOpacity>
-        <TouchableOpacity onPress={() => shiftWeek(1)} style={styles.navBtn}><Ionicons name="chevron-forward" size={22} color={colors.primary} /></TouchableOpacity>
+        <TouchableOpacity onPress={() => shiftWeek(1)} style={styles.navBtn}><Ionicons name="chevron-forward" size={22} color="#fff" /></TouchableOpacity>
       </View>
       <View style={styles.segmentWrap}>
         <SegmentedControl<KitchenPane>

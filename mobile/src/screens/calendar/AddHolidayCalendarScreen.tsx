@@ -5,7 +5,7 @@ import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { COUNTRIES } from '../../lib/holidays';
 import { useHolidayCalendars } from '../../lib/calendarPrefs';
-import { Screen, SectionTitle } from '../../components/ui';
+import { Screen, SectionTitle, Hint } from '../../components/ui';
 import { GroupCard, CardDivider } from '../../components/formStyles';
 import { colors, spacing } from '../../theme';
 import type { CalendarStackParamList } from '../../navigation/CalendarNavigator';
@@ -28,10 +28,10 @@ export default function AddHolidayCalendarScreen() {
 
   return (
     <Screen>
-      <Text style={styles.intro}>
+      <Hint>
         Add a country's holidays as their own calendar — national and provincial/state days plus
         cultural and religious ones, each individually toggleable.
-      </Text>
+      </Hint>
       <SectionTitle>Country</SectionTitle>
       <GroupCard>
         {COUNTRIES.map((c, i) => {
@@ -59,7 +59,6 @@ export default function AddHolidayCalendarScreen() {
 }
 
 const styles = StyleSheet.create({
-  intro: { fontSize: 13, color: colors.textMuted, marginBottom: spacing.md, lineHeight: 18 },
   row: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, paddingVertical: 12, paddingHorizontal: 14 },
   name: { flex: 1, fontSize: 16, color: colors.text },
   added: { fontSize: 13, color: colors.textMuted },

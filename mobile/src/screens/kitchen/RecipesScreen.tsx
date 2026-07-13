@@ -3,7 +3,6 @@ import {
   View,
   Text,
   StyleSheet,
-  ActivityIndicator,
   SectionList,
   ScrollView,
   TouchableOpacity,
@@ -11,8 +10,7 @@ import {
   Image,
   Animated,
   PanResponder,
-  Modal,
-  Pressable,
+  Alert,
 } from 'react-native';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
@@ -21,7 +19,7 @@ import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { recipesApi, Recipe } from '../../api';
 import { openRecord } from '../../lib/e2ee';
 import * as replica from '../../lib/replica';
-import { Card, Input, Badge, RoundIconButton } from '../../components/ui';
+import { Card, Input, Badge, Chip, RoundIconButton, SectionHeader, SkeletonList, EmptyState } from '../../components/ui';
 import { KitchenStackParamList } from '../../navigation/KitchenNavigator';
 import { useCalendarColors } from '../../lib/calendarPrefs';
 import { colors, radius, spacing } from '../../theme';
@@ -33,14 +31,6 @@ const UNTAGGED = 'Untagged';
 
 function totalMins(r: Recipe) {
   return (r.prepTimeMins || 0) + (r.cookTimeMins || 0);
-}
-
-function Chip({ label, active, onPress }: { label: string; active: boolean; onPress: () => void }) {
-  return (
-    <TouchableOpacity onPress={onPress} style={[styles.chip, active && styles.chipActive]}>
-      <Text style={[styles.chipText, active && styles.chipTextActive]}>{label}</Text>
-    </TouchableOpacity>
-  );
 }
 
 // Width of the red Delete action revealed when a row is swiped left.
@@ -111,8 +101,12 @@ export default function RecipesScreen() {
   const accent = useCalendarColors().colors.recipes;
   const [search, setSearch] = useState('');
   const [selectedTag, setSelectedTag] = useState<string | null>(null);
-  // The recipe awaiting delete confirmation (drives the confirm modal).
-  const [pendingDelete, setPendingDelete] = useState<Recipe | null>(null);
+
+  const confirmDelete = (recipe: Recipe) =>
+    Alert.alert('Delete recipe?', `"${recipe.title}" will be permanently removed.`, [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Delete', style: 'destructive', onPress: () => del.mutate(recipe._id) },
+    ]);
 
   useLayoutEffect(() => {
     navigation.setOptions({
@@ -179,7 +173,7 @@ export default function RecipesScreen() {
   }, [recipes, search, selectedTag]);
 
   if (recipesQ.isLoading) {
-    return <ActivityIndicator size="large" color={colors.primary} style={{ marginTop: spacing.xl }} />;
+    return <SkeletonList />;
   }
 
   return (
@@ -194,19 +188,27 @@ export default function RecipesScreen() {
             <Input placeholder="Search recipes…" value={search} onChangeText={setSearch} />
             {tags.length > 0 ? (
               <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chips}>
-                <Chip label="All" active={!selectedTag} onPress={() => setSelectedTag(null)} />
+                <Chip label="All" selected={!selectedTag} color={accent} onPress={() => setSelectedTag(null)} />
                 {tags.map((t) => (
-                  <Chip key={t} label={t} active={selectedTag === t} onPress={() => setSelectedTag((cur) => (cur === t ? null : t))} />
+                  <Chip key={t} label={t} selected={selectedTag === t} color={accent} onPress={() => setSelectedTag((cur) => (cur === t ? null : t))} />
                 ))}
               </ScrollView>
             ) : null}
           </View>
         }
-        renderSectionHeader={({ section }) => <Text style={styles.sectionHeader}>{section.title}</Text>}
+        renderSectionHeader={({ section }) => <SectionHeader style={styles.stickyHeader}>{section.title}</SectionHeader>}
         refreshControl={<RefreshControl refreshing={recipesQ.isRefetching} onRefresh={recipesQ.refetch} />}
-        ListEmptyComponent={<Text style={styles.empty}>No recipes yet. Tap + to add one.</Text>}
+        ListEmptyComponent={
+          <EmptyState
+            variant="inline"
+            mdiIcon="silverware-fork-knife"
+            title={search.trim() ? 'No matches' : 'No recipes yet'}
+            message={search.trim() ? 'Try a different search.' : 'Tap + to add your first recipe.'}
+            accent={accent}
+          />
+        }
         renderItem={({ item }) => (
-          <SwipeableRow onDelete={() => setPendingDelete(item)}>
+          <SwipeableRow onDelete={() => confirmDelete(item)}>
             <TouchableOpacity activeOpacity={0.8} onPress={() => navigation.navigate('RecipeDetail', { id: item._id })}>
               <Card style={styles.row}>
                 {item.imageUrl ? (
@@ -229,41 +231,6 @@ export default function RecipesScreen() {
           </SwipeableRow>
         )}
       />
-
-      <Modal
-        visible={!!pendingDelete}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setPendingDelete(null)}
-      >
-        <Pressable style={styles.dialogBackdrop} onPress={() => setPendingDelete(null)}>
-          <Pressable style={styles.dialog} onPress={(e) => e.stopPropagation()}>
-            <Text style={styles.dialogTitle}>Delete recipe?</Text>
-            <Text style={styles.dialogBody}>
-              "{pendingDelete?.title}" will be permanently removed.
-            </Text>
-            <View style={styles.dialogActions}>
-              <TouchableOpacity
-                style={styles.dialogCancel}
-                onPress={() => setPendingDelete(null)}
-                activeOpacity={0.7}
-              >
-                <Text style={styles.dialogCancelText}>Cancel</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={styles.dialogDelete}
-                onPress={() => {
-                  if (pendingDelete) del.mutate(pendingDelete._id);
-                  setPendingDelete(null);
-                }}
-                activeOpacity={0.8}
-              >
-                <Text style={styles.dialogDeleteText}>Delete</Text>
-              </TouchableOpacity>
-            </View>
-          </Pressable>
-        </Pressable>
-      </Modal>
     </View>
   );
 }
@@ -272,18 +239,15 @@ const styles = StyleSheet.create({
   pane: { flex: 1, backgroundColor: colors.background },
   content: { padding: spacing.md, paddingBottom: 96 },
   chips: { gap: spacing.xs, paddingTop: spacing.sm, paddingBottom: spacing.xs },
-  chip: { paddingVertical: 6, paddingHorizontal: 12, borderRadius: 16, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border },
-  chipActive: { backgroundColor: colors.primary, borderColor: colors.primary },
-  chipText: { fontSize: 13, color: colors.text, fontWeight: '500' },
-  chipTextActive: { color: '#fff' },
-  sectionHeader: { fontSize: 12, fontWeight: '700', color: colors.textMuted, textTransform: 'uppercase', backgroundColor: colors.background, paddingVertical: 6 },
+  // Sticky section header keeps a solid background so rows scroll under it; the
+  // typography comes from the shared SectionHeader.
+  stickyHeader: { backgroundColor: colors.background, paddingVertical: 6, marginBottom: 0 },
   row: { flexDirection: 'row', alignItems: 'center', marginBottom: spacing.sm, gap: spacing.md },
   thumb: { width: 56, height: 56, borderRadius: 8 },
   thumbPlaceholder: { backgroundColor: colors.background, alignItems: 'center', justifyContent: 'center' },
   title: { fontSize: 16, fontWeight: '600', color: colors.text },
   metaRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 4, flexWrap: 'wrap' },
   meta: { fontSize: 13, color: colors.textMuted },
-  empty: { textAlign: 'center', color: colors.textMuted, marginTop: spacing.xl },
 
   // Swipe-to-delete. The red action sits behind the card and is uncovered as
   // the card slides left; the card keeps its own marginBottom for row spacing.
@@ -301,36 +265,4 @@ const styles = StyleSheet.create({
   },
   swipeActionBtn: { flex: 1, alignSelf: 'stretch', alignItems: 'center', justifyContent: 'center' },
   swipeActionText: { color: '#fff', fontSize: 12, fontWeight: '600', marginTop: 2 },
-
-  // Centered "Delete recipe?" confirmation dialog.
-  dialogBackdrop: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.5)',
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: spacing.lg,
-  },
-  dialog: {
-    width: '100%',
-    maxWidth: 340,
-    backgroundColor: colors.surface,
-    borderRadius: radius.lg,
-    padding: spacing.lg,
-  },
-  dialogTitle: { fontSize: 18, fontWeight: '700', color: colors.text, marginBottom: spacing.sm },
-  dialogBody: { fontSize: 15, color: colors.textMuted, lineHeight: 21, marginBottom: spacing.lg },
-  dialogActions: { flexDirection: 'row', justifyContent: 'flex-end', gap: spacing.sm },
-  dialogCancel: {
-    paddingVertical: 10,
-    paddingHorizontal: spacing.md,
-    borderRadius: radius.md,
-  },
-  dialogCancelText: { fontSize: 15, fontWeight: '600', color: colors.text },
-  dialogDelete: {
-    paddingVertical: 10,
-    paddingHorizontal: spacing.lg,
-    borderRadius: radius.md,
-    backgroundColor: colors.error,
-  },
-  dialogDeleteText: { fontSize: 15, fontWeight: '700', color: '#fff' },
 });

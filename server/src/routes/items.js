@@ -3,6 +3,7 @@ const multer = require('multer');
 const Anthropic = require('@anthropic-ai/sdk');
 const Item = require('../models/Item');
 const Manual = require('../models/Manual');
+const Receipt = require('../models/Receipt');
 const { requireAuth } = require('../middleware/auth');
 const { meter } = require('../middleware/usageMeter');
 const { activity } = require('../middleware/activity');
@@ -23,8 +24,6 @@ const ITEM_SCHEMA = `{
   "modelNumber": "model number or model name or null",
   "serialNumber": "VIN, serial number, or null",
   "location": "where the item is located or null",
-  "purchaseDate": "YYYY-MM-DD or null",
-  "warrantyExpiry": "YYYY-MM-DD or null",
   "notes": "any other relevant details or null",
   "customFields": [{ "key": "string", "value": "string" }]
 }
@@ -86,6 +85,7 @@ router.get('/', async (req, res) => {
 
     const items = await Item.find(filter)
       .populate('categoryId', 'name icon color')
+      .populate('propertyId', 'name icon color')
       .sort('name');
     res.json(items);
   } catch (err) {
@@ -104,10 +104,14 @@ router.post('/', activity('itemAdded'), async (req, res) => {
 
 router.get('/:id', async (req, res) => {
   const item = await Item.findOne({ _id: req.params.id, userId: { $in: req.scopeIds } })
-    .populate('categoryId', 'name icon color');
+    .populate('categoryId', 'name icon color')
+    .populate('propertyId', 'name icon color');
   if (!item) return res.status(404).json({ error: 'Not found' });
-  const manuals = await Manual.find({ itemId: item._id });
-  res.json({ ...item.toObject(), manuals });
+  const [manuals, receipts] = await Promise.all([
+    Manual.find({ itemId: item._id }),
+    Receipt.find({ itemId: item._id }).sort('-createdAt'),
+  ]);
+  res.json({ ...item.toObject(), manuals, receipts });
 });
 
 router.put('/:id', async (req, res) => {
@@ -128,7 +132,10 @@ router.delete('/:id', async (req, res) => {
   try {
     const item = await Item.findOneAndDelete({ _id: req.params.id, userId: { $in: req.scopeIds } });
     if (!item) return res.status(404).json({ error: 'Not found' });
-    await Manual.deleteMany({ itemId: item._id });
+    await Promise.all([
+      Manual.deleteMany({ itemId: item._id }),
+      Receipt.deleteMany({ itemId: item._id }),
+    ]);
     res.json({ message: 'Deleted' });
   } catch (err) {
     res.status(500).json({ error: err.message });

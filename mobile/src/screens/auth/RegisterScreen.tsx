@@ -1,10 +1,11 @@
 import React, { useState } from 'react';
-import { View, Text, StyleSheet, KeyboardAvoidingView, Platform } from 'react-native';
+import { View, Text, StyleSheet, KeyboardAvoidingView } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useAuth } from '../../store/auth';
 import { Button, Input } from '../../components/ui';
-import { colors, spacing } from '../../theme';
+import { spacing } from '../../theme';
+import { authStyles, authInputProps, AUTH_PRIMARY_BTN_COLOR, keyboardBehavior } from './authStyles';
 import type { AuthStackParamList } from '../../navigation/AuthNavigator';
 
 export default function RegisterScreen() {
@@ -30,24 +31,21 @@ export default function RegisterScreen() {
   }
 
   return (
-    <KeyboardAvoidingView
-      style={styles.container}
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-    >
-      <View style={styles.inner}>
-        <Text style={styles.title}>Create your account</Text>
-        <Input label="First name" value={firstName} onChangeText={setFirstName} />
-        <Input label="Last name (optional)" value={lastName} onChangeText={setLastName} />
-        <Input label="Email" value={email} onChangeText={setEmail} autoCapitalize="none" keyboardType="email-address" />
-        <Input label="Password" value={password} onChangeText={setPassword} secureTextEntry />
+    <KeyboardAvoidingView style={authStyles.container} behavior={keyboardBehavior}>
+      <View style={authStyles.inner}>
+        <Text style={[authStyles.title, styles.title]}>Create your account</Text>
+        <Input label="First name" value={firstName} onChangeText={setFirstName} {...authInputProps} />
+        <Input label="Last name (optional)" value={lastName} onChangeText={setLastName} {...authInputProps} />
+        <Input label="Email" value={email} onChangeText={setEmail} autoCapitalize="none" keyboardType="email-address" {...authInputProps} />
+        <Input label="Password" value={password} onChangeText={setPassword} secureTextEntry {...authInputProps} />
 
-        {error ? <Text style={styles.error}>{error}</Text> : null}
+        {error ? <Text style={authStyles.error}>{error}</Text> : null}
 
-        <Button title="Create account" onPress={handleRegister} loading={loading} />
+        <Button title="Create account" onPress={handleRegister} loading={loading} color={AUTH_PRIMARY_BTN_COLOR} />
 
-        <View style={styles.footer}>
-          <Text style={styles.footerText}>Already have an account? </Text>
-          <Text style={styles.link} onPress={() => nav.navigate('Login')}>
+        <View style={authStyles.footer}>
+          <Text style={authStyles.footerText}>Already have an account? </Text>
+          <Text style={authStyles.link} onPress={() => nav.navigate('Login')}>
             Sign in
           </Text>
         </View>
@@ -57,11 +55,5 @@ export default function RegisterScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: colors.background },
-  inner: { flex: 1, justifyContent: 'center', padding: spacing.lg },
-  title: { fontSize: 24, fontWeight: '700', color: colors.text, marginBottom: spacing.lg, textAlign: 'center' },
-  error: { color: colors.error, marginBottom: spacing.md, textAlign: 'center' },
-  footer: { flexDirection: 'row', justifyContent: 'center', marginTop: spacing.lg },
-  footerText: { color: colors.textMuted },
-  link: { color: colors.primary, fontWeight: '600' },
+  title: { marginTop: 0, marginBottom: spacing.lg, textAlign: 'center' },
 });

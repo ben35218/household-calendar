@@ -12,12 +12,14 @@ import { Ionicons } from '@expo/vector-icons';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { tasksApi, historyApi, odometerApi } from '../../api';
-import { Button, Card, Screen, Input, Divider, ListRow, DateField } from '../../components/ui';
+import { Button, Card, Screen, Input, ListRow, DateField, CenteredLoader, BottomSheet, HeaderIconButton } from '../../components/ui';
 import {
   recurrenceLabel,
   formatCalendarDate,
-  alertSummary,
+  parseCalendarDate,
 } from '../../lib/recurrence';
+import { itemTypeConfig } from '../../lib/itemTypes';
+import { useCalendarColors } from '../../lib/calendarPrefs';
 import { MaintenanceStackParamList } from '../../navigation/MaintenanceNavigator';
 import { colors, spacing, radius } from '../../theme';
 
@@ -28,16 +30,36 @@ function todayISO() {
   return new Date().toISOString().slice(0, 10);
 }
 
+// Countdown label to the due date (no TZ rollover via parseCalendarDate).
+// Within a week: "Due today" / "Due in N days" / "N days overdue". Beyond a
+// week it breaks into weeks + days: "N weeks, N days until due" / "… overdue".
+function dueInLabel(dueDate?: string | null): string {
+  if (!dueDate) return 'No due date';
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const days = Math.round((parseCalendarDate(dueDate).getTime() - today.getTime()) / 86400000);
+  const plur = (n: number, u: string) => `${n} ${u}${n === 1 ? '' : 's'}`;
+  if (days === 0) return 'Due today';
+
+  const abs = Math.abs(days);
+  if (abs <= 7) {
+    return days < 0 ? `${plur(abs, 'day')} overdue` : `Due in ${plur(abs, 'day')}`;
+  }
+  const weeks = Math.floor(abs / 7);
+  const rem = abs - weeks * 7;
+  const span = rem ? `${plur(weeks, 'week')}, ${plur(rem, 'day')}` : plur(weeks, 'week');
+  return days < 0 ? `${span} overdue` : `${span} until due`;
+}
+
 export default function TaskDetailScreen() {
   const navigation = useNavigation<Nav>();
   const { id } = useRoute<Rt>().params;
   const qc = useQueryClient();
+  const accent = useCalendarColors().colors.maintenance;
   const [completeOpen, setCompleteOpen] = useState(false);
   const [form, setForm] = useState({
     completedDate: todayISO(),
-    cost: '',
     notes: '',
-    performedBy: 'self',
     odometerReading: '',
   });
 
@@ -72,13 +94,12 @@ export default function TaskDetailScreen() {
   const complete = useMutation({
     mutationFn: () => {
       const payload: Record<string, unknown> = { ...form };
-      if (!payload.cost) delete payload.cost;
       if (!payload.odometerReading) delete payload.odometerReading;
       return tasksApi.complete(id, payload);
     },
     onSuccess: () => {
       setCompleteOpen(false);
-      setForm({ completedDate: todayISO(), cost: '', notes: '', performedBy: 'self', odometerReading: '' });
+      setForm({ completedDate: todayISO(), notes: '', odometerReading: '' });
       invalidate();
       qc.invalidateQueries({ queryKey: ['tasks', id, 'history'] });
     },
@@ -104,97 +125,79 @@ export default function TaskDetailScreen() {
     navigation.setOptions({
       title: 'Task',
       headerRight: () => (
-        <TouchableOpacity onPress={() => navigation.navigate('TaskForm', { id })} accessibilityLabel="Edit task">
-          <Ionicons name="pencil" size={22} color="#fff" />
-        </TouchableOpacity>
+        <HeaderIconButton icon="pencil" accessibilityLabel="Edit task" onPress={() => navigation.navigate('TaskForm', { id })} />
       ),
     });
   }, [navigation, id]);
 
   if (taskQ.isLoading || !task) {
-    return (
-      <View style={styles.center}>
-        <ActivityIndicator size="large" color={colors.primary} />
-      </View>
-    );
+    return <CenteredLoader color={accent} />;
   }
 
   const remainingKm =
     task.intervalKm && task.nextDueKm != null && currentKm != null ? task.nextDueKm - currentKm : null;
   const kmColor =
     remainingKm == null ? colors.success : remainingKm <= 0 ? colors.error : remainingKm <= 2000 ? colors.warning : colors.success;
-  const alerts = alertSummary(task);
 
   return (
     <Screen>
+      <Card style={[styles.actionCard, { borderColor: accent }]}>
+        <View style={styles.actionRow}>
+          <TouchableOpacity
+            onPress={() => togglePause.mutate()}
+            disabled={togglePause.isPending}
+            style={[styles.actionHalf, styles.actionHalfPause, { borderRightColor: accent }]}
+            activeOpacity={0.8}
+            accessibilityLabel={isPaused ? 'Resume task' : 'Pause task'}
+          >
+            {togglePause.isPending ? (
+              <ActivityIndicator color={accent} />
+            ) : (
+              <>
+                <Ionicons name={isPaused ? 'play' : 'pause'} size={22} color={accent} />
+                <Text style={[styles.actionLabel, { color: accent }]}>{isPaused ? 'Resume' : 'Pause'}</Text>
+              </>
+            )}
+          </TouchableOpacity>
+          <TouchableOpacity
+            onPress={() => setCompleteOpen((o) => !o)}
+            style={[styles.actionHalf, { backgroundColor: accent }]}
+            activeOpacity={0.8}
+            accessibilityLabel="Mark task done"
+          >
+            <Ionicons name="checkmark" size={24} color="#000" />
+            <Text style={[styles.actionLabel, styles.actionLabelDone]}>Done</Text>
+          </TouchableOpacity>
+        </View>
+      </Card>
+
       <Card style={styles.headerCard}>
         <Text style={styles.screenTitle}>{task.title}</Text>
         {task.description ? <Text style={styles.body}>{task.description}</Text> : null}
       </Card>
 
-      <View style={styles.actionBar}>
-        <TouchableOpacity
-          onPress={() => togglePause.mutate()}
-          disabled={togglePause.isPending}
-          style={[styles.actionBtn, styles.actionBtnGhost]}
-          activeOpacity={0.8}
-        >
-          {togglePause.isPending ? (
-            <ActivityIndicator color={colors.primary} />
-          ) : (
-            <Text style={styles.actionBtnGhostText}>{isPaused ? 'Resume' : 'Pause'}</Text>
-          )}
-        </TouchableOpacity>
-        {!isPaused ? (
-          <TouchableOpacity
-            onPress={() => setCompleteOpen((o) => !o)}
-            style={[styles.actionBtn, styles.actionBtnPrimary]}
-            activeOpacity={0.8}
-          >
-            <Text style={styles.actionBtnPrimaryText}>Mark Done</Text>
-          </TouchableOpacity>
-        ) : null}
-      </View>
-
-      {completeOpen ? (
-        <Card style={styles.completeCard}>
-          <Text style={styles.cardTitle}>Mark Task Complete</Text>
-          <DateField
-            label="Completion Date"
-            value={form.completedDate}
-            onChange={(v) => setForm({ ...form, completedDate: v })}
-          />
-          {task.intervalKm ? (
-            <Input
-              label="Odometer reading (km)"
-              value={form.odometerReading}
-              onChangeText={(v) => setForm({ ...form, odometerReading: v })}
-              keyboardType="numeric"
-            />
-          ) : null}
+      <BottomSheet visible={completeOpen} onClose={() => setCompleteOpen(false)} title="Mark Task Done" avoidKeyboard>
+        <DateField
+          label="Completion Date"
+          value={form.completedDate}
+          onChange={(v) => setForm({ ...form, completedDate: v })}
+        />
+        {task.intervalKm ? (
           <Input
-            label="Cost ($)"
-            value={form.cost}
-            onChangeText={(v) => setForm({ ...form, cost: v })}
+            label="Odometer reading (km)"
+            value={form.odometerReading}
+            onChangeText={(v) => setForm({ ...form, odometerReading: v })}
             keyboardType="numeric"
           />
-          <Input
-            label="Performed By"
-            value={form.performedBy}
-            onChangeText={(v) => setForm({ ...form, performedBy: v })}
-          />
-          <Input
-            label="Notes"
-            value={form.notes}
-            onChangeText={(v) => setForm({ ...form, notes: v })}
-            multiline
-          />
-          <View style={styles.actions}>
-            <Button title="Cancel" variant="ghost" onPress={() => setCompleteOpen(false)} />
-            <Button title="Mark Done" loading={complete.isPending} onPress={() => complete.mutate()} />
-          </View>
-        </Card>
-      ) : null}
+        ) : null}
+        <Input
+          label="Notes"
+          value={form.notes}
+          onChangeText={(v) => setForm({ ...form, notes: v })}
+          multiline
+        />
+        <Button title="Done" loading={complete.isPending} onPress={() => complete.mutate()} />
+      </BottomSheet>
 
       {remainingKm !== null ? (
         <Card style={[styles.kmCard, { borderColor: kmColor }]}>
@@ -214,9 +217,9 @@ export default function TaskDetailScreen() {
 
       <Card style={styles.infoCard}>
         {task.itemId && typeof task.itemId === 'object' ? (
-          <ListRow icon="link-outline" title="Linked item" subtitle={task.itemId.name} />
+          <ListRow mdiIcon={itemTypeConfig(task.itemId.type).icon} title={task.itemId.name} />
         ) : null}
-        <ListRow icon="calendar-outline" title="Next due" subtitle={formatCalendarDate(task.nextDueDate)} />
+        <ListRow icon="calendar-outline" title={dueInLabel(task.nextDueDate)} />
         {task.lastCompletedAt ? (
           <ListRow icon="time-outline" title="Last completed" subtitle={formatCalendarDate(task.lastCompletedAt)} />
         ) : null}
@@ -226,12 +229,9 @@ export default function TaskDetailScreen() {
         {task.intervalKm ? (
           <ListRow icon="speedometer-outline" title="Service interval" subtitle={`Every ${task.intervalKm.toLocaleString()} km`} />
         ) : null}
-        <ListRow icon="notifications-outline" title="Alerts" subtitle={alerts} />
       </Card>
 
       <Card style={styles.infoCard}>
-        <Text style={[styles.cardTitle, styles.historyTitle]}>History</Text>
-        <Divider />
         {historyQ.data?.length ? (
           historyQ.data.map((h) => (
             <ListRow
@@ -254,25 +254,18 @@ export default function TaskDetailScreen() {
 }
 
 const styles = StyleSheet.create({
-  center: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.background },
   headerCard: { marginBottom: spacing.md, gap: spacing.sm },
   screenTitle: { fontSize: 24, fontWeight: '700', color: colors.text },
-  actionBar: { flexDirection: 'row', gap: spacing.sm, marginBottom: spacing.md },
-  actionBtn: { flex: 1, height: 48, borderRadius: radius.md, alignItems: 'center', justifyContent: 'center' },
-  actionBtnPrimary: { backgroundColor: colors.primary },
-  actionBtnPrimaryText: { color: '#fff', fontSize: 16, fontWeight: '600' },
-  actionBtnGhost: { borderWidth: 1.5, borderColor: colors.primary, backgroundColor: 'transparent' },
-  actionBtnGhostText: { color: colors.primary, fontSize: 16, fontWeight: '600' },
-  actions: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
-  completeCard: { marginBottom: spacing.md },
-  cardTitle: { fontSize: 16, fontWeight: '700', color: colors.text, marginBottom: spacing.sm },
+  actionCard: { marginBottom: spacing.md, padding: 0, overflow: 'hidden' },
+  actionRow: { flexDirection: 'row' },
+  actionHalf: { flex: 1, height: 64, alignItems: 'center', justifyContent: 'center', gap: 4 },
+  actionHalfPause: { borderRightWidth: 1 },
+  actionLabel: { fontSize: 13, fontWeight: '600' },
+  actionLabelDone: { color: '#000' },
   kmCard: { flexDirection: 'row', alignItems: 'center', marginBottom: spacing.md, borderWidth: 1.5 },
   kmTitle: { fontSize: 18, fontWeight: '700' },
   kmSub: { fontSize: 13, color: colors.textMuted, marginTop: 2 },
   infoCard: { padding: 0, paddingVertical: spacing.xs, marginBottom: spacing.md },
-  // infoCard has no horizontal padding (its ListRows pad themselves), so a title
-  // inside it needs explicit padding to align with the rows and not look cramped.
-  historyTitle: { paddingHorizontal: spacing.md, paddingTop: spacing.sm },
   body: { fontSize: 15, color: colors.text, lineHeight: 21 },
   muted: { color: colors.textMuted, padding: spacing.md },
   deleteWrap: { marginTop: spacing.sm, marginBottom: spacing.xl },

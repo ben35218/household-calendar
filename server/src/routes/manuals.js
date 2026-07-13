@@ -10,7 +10,7 @@ const { requireAuth } = require('../middleware/auth');
 const { meter } = require('../middleware/usageMeter');
 const { findManuals } = require('../services/manualLookup');
 const { parseManualForTasks, parseManualBufferForTasks } = require('../services/manualParser');
-const { computeNextDueDate } = require('../services/recurrence');
+const { computeNextDueDate, anchorRecurrence } = require('../services/recurrence');
 
 const router = express.Router();
 router.use(requireAuth);
@@ -214,7 +214,7 @@ router.post('/:id/create-tasks', async (req, res) => {
           title: t.title,
           description: [t.description, t.notes].filter(Boolean).join(' — '),
           priority: t.priority || 'medium',
-          recurrence: t.recurrence?.type ? t.recurrence : undefined,
+          recurrence: t.recurrence?.type ? anchorRecurrence(t.recurrence) : undefined,
           estimatedDurationMins: t.estimatedDurationMins || undefined,
           estimatedCost: t.estimatedCost || undefined,
         });

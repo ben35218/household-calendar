@@ -340,9 +340,18 @@ function assembleCalendarData({
   const from = new Date(fromDate);
   const to   = new Date(toDate);
 
+  // Overlap test, not a start-only test: a multi-day event that began before
+  // `from` still touches the range through its endDate and must be kept (else a
+  // tight window — e.g. the day view's ±7 days — drops it once "today" slides
+  // past its start). Mirrors the trip `overlaps` helper below.
   const regularEvents = events
     .filter(e => !e.recurrence || !e.recurrence.freq)
-    .filter(e => e.startDate && new Date(e.startDate) >= from && new Date(e.startDate) <= to);
+    .filter(e => {
+      if (!e.startDate) return false;
+      const s = new Date(e.startDate);
+      const end = e.endDate ? new Date(e.endDate) : s;
+      return s <= to && end >= from;
+    });
   const recurringEvents = events
     .filter(e => e.recurrence && e.recurrence.freq)
     .filter(e => e.startDate && new Date(e.startDate) <= to);

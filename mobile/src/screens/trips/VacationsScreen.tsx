@@ -3,19 +3,17 @@ import {
   View,
   Text,
   StyleSheet,
-  ActivityIndicator,
   TouchableOpacity,
   RefreshControl,
 } from 'react-native';
 import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
 import { useQuery } from '@tanstack/react-query';
-import { Ionicons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { tripsApi, Trip } from '../../api';
 import { openRecord } from '../../lib/e2ee';
 import * as replica from '../../lib/replica';
-import { Card, Badge, RoundIconButton } from '../../components/ui';
+import { Card, Badge, RoundIconButton, SectionHeader, SkeletonList, EmptyState } from '../../components/ui';
 import { tripStatusLabel, tripStatusColor } from '../../lib/tripTypes';
 import { formatCalendarDate } from '../../lib/recurrence';
 import { useCalendarColors } from '../../lib/calendarPrefs';
@@ -82,11 +80,7 @@ export default function VacationsScreen() {
   }, [tripsQ.data]);
 
   if (tripsQ.isLoading) {
-    return (
-      <View style={styles.center}>
-        <ActivityIndicator size="large" color={accent} />
-      </View>
-    );
+    return <SkeletonList />;
   }
 
   return (
@@ -96,14 +90,19 @@ export default function VacationsScreen() {
         refreshControl={<RefreshControl refreshing={tripsQ.isRefetching} onRefresh={tripsQ.refetch} />}
       >
         {groups.length === 0 ? (
-          <View style={styles.empty}>
-            <Ionicons name="briefcase-outline" size={48} color={colors.textMuted} />
-            <Text style={styles.emptyText}>No trips yet. Plan your next getaway.</Text>
-          </View>
+          <EmptyState
+            variant="inline"
+            icon="briefcase-outline"
+            title="No trips yet"
+            message="Plan your next getaway."
+            actionLabel="Add Trip"
+            onAction={() => navigation.navigate('TripForm', {})}
+            accent={accent}
+          />
         ) : (
           groups.map((g) => (
             <View key={g.label} style={styles.group}>
-              <Text style={styles.groupTitle}>{g.label}</Text>
+              <SectionHeader>{g.label}</SectionHeader>
               {g.items.map((t) => (
                 <TouchableOpacity key={t._id} activeOpacity={0.8} onPress={() => navigation.navigate('TripDetail', { id: t._id })}>
                   <Card style={styles.tripCard}>
@@ -130,17 +129,11 @@ export default function VacationsScreen() {
 
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: colors.background },
-  center: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.background },
-  content: { padding: spacing.md },
-  headerActions: { flexDirection: 'row' },
-  headerBtn: { paddingHorizontal: 6 },
+  content: { padding: spacing.md, paddingBottom: spacing.xl },
   group: { marginBottom: spacing.lg },
-  groupTitle: { fontSize: 13, fontWeight: '700', color: colors.textMuted, textTransform: 'uppercase', marginBottom: spacing.sm },
   tripCard: { flexDirection: 'row', padding: 0, paddingVertical: spacing.md, paddingRight: spacing.md, overflow: 'hidden', marginBottom: spacing.sm },
   bar: { width: 5, alignSelf: 'stretch' },
   titleRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, flexWrap: 'wrap' },
   name: { fontSize: 17, fontWeight: '700', color: colors.text },
   sub: { fontSize: 13, color: colors.textMuted, marginTop: 2 },
-  empty: { alignItems: 'center', marginTop: spacing.xl, gap: spacing.sm },
-  emptyText: { color: colors.textMuted, fontSize: 15 },
 });
