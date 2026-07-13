@@ -8,6 +8,7 @@ const Category = require('../models/Category');
 const { requireAuth, signToken } = require('../middleware/auth');
 const { rateLimit } = require('../middleware/rateLimit');
 const { sendPasswordResetCode } = require('../services/mailer');
+const { deleteUserAndData } = require('../services/accountDeletion');
 const { seedDefaultCategories, seedDefaultSubcategories } = require('../seed');
 
 const router = express.Router();
@@ -178,6 +179,27 @@ router.put('/password', requireAuth, credChangeLimiter, async (req, res) => {
 
     user.passwordHash = await bcrypt.hash(newPassword, 12);
     await user.save();
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Permanent, irreversible account deletion (Apple 5.1.1(v)). Re-authenticate
+// with the password before wiping — this is destructive and the session token
+// alone shouldn't be enough. Deletes the user and all their data (see
+// services/accountDeletion); the now-invalid session 401s on its next request.
+router.delete('/account', requireAuth, credChangeLimiter, async (req, res) => {
+  try {
+    const { password } = req.body;
+    if (!password) return res.status(400).json({ error: 'Password is required to delete your account' });
+
+    const user = await User.findById(req.user._id);
+    if (!user) return res.status(401).json({ error: 'Unauthorized' });
+    const valid = await bcrypt.compare(password, user.passwordHash);
+    if (!valid) return res.status(401).json({ error: 'Password is incorrect' });
+
+    await deleteUserAndData(user);
     res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ error: err.message });

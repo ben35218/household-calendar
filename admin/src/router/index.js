@@ -14,6 +14,7 @@ const routes = [
   { path: '/email-log', name: 'EmailLog', component: () => import('../views/EmailLogView.vue') },
   { path: '/e2ee', name: 'E2EE', component: () => import('../views/E2eeOpsView.vue') },
   { path: '/audit', name: 'Audit', component: () => import('../views/AuditLogView.vue') },
+  { path: '/moderation', name: 'Moderation', component: () => import('../views/ModerationView.vue') },
 ];
 
 const router = createRouter({

@@ -20,6 +20,7 @@
           <v-list-item to="/users" prepend-icon="mdi-account-multiple" title="Users" />
           <v-list-item to="/ai-usage" prepend-icon="mdi-counter" title="AI usage" />
           <v-list-item to="/support-inbox" prepend-icon="mdi-face-agent" title="Support inbox" />
+          <v-list-item to="/moderation" prepend-icon="mdi-flag-outline" title="Content reports" />
           <v-list-item to="/email-log" prepend-icon="mdi-email-fast-outline" title="Email log" />
           <v-list-item to="/e2ee" prepend-icon="mdi-shield-lock" title="E2EE ops" />
           <v-list-item to="/audit" prepend-icon="mdi-clipboard-text-clock" title="Audit log" />

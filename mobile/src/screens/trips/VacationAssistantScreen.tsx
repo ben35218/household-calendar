@@ -69,6 +69,7 @@ export default function VacationAssistantScreen() {
   return (
     <ChatScreen
       chat={chat}
+      surface="vacation"
       banner={<AiUsageBanner />}
       accessory="bag-suitcase"
       emptyText={`Hi, I'm ${ASSISTANT_NAME}. In here I can see ${tripName || 'this trip'} — ask about the itinerary, costs, or what's left to plan.`}

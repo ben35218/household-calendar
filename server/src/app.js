@@ -38,6 +38,7 @@ const keyRoutes = require('./routes/keys');
 const notificationRoutes = require('./routes/notifications');
 const storageRoutes = require('./routes/storage');
 const billingRoutes = require('./routes/billing');
+const moderationRoutes = require('./routes/moderation');
 const monetizationConfigRoutes = require('./routes/monetizationConfig');
 const adminRoutes = require('./routes/admin');
 const adminAnalyticsRoutes = require('./routes/adminAnalytics');
@@ -117,6 +118,7 @@ app.use('/api/keys', keyRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/storage', storageRoutes);
 app.use('/api/billing', billingRoutes);
+app.use('/api/moderation', moderationRoutes);
 // Admin-only monetization config (consumed by the separate admin web app).
 // Gated by requireAuth + requireAdmin inside the router.
 app.use('/api/monetization-config', monetizationConfigRoutes);

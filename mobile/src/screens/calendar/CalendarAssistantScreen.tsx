@@ -169,6 +169,7 @@ export default function CalendarAssistantScreen() {
   return (
     <ChatScreen
       chat={chat}
+      surface="calendar"
       banner={<AiUsageBanner />}
       accessory="calendar-month"
       emptyText={`Hi, I'm ${ASSISTANT_NAME}. In here I can see your household calendar — ask me to add appointments, activities, or changes.`}

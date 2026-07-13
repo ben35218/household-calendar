@@ -120,6 +120,7 @@ export default function MaintenanceChatScreen() {
   return (
     <ChatScreen
       chat={chat}
+      surface="maintenance"
       banner={banner}
       accessory="wrench"
       emptyText={`Hi, I'm ${ASSISTANT_NAME}. In this chat I help set up maintenance tasks${itemName ? ` for ${itemName}` : ''}.`}

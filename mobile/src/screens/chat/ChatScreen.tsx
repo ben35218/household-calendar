@@ -8,8 +8,10 @@ import {
   KeyboardAvoidingView,
   Platform,
   ActivityIndicator,
+  Alert,
   StyleSheet,
 } from 'react-native';
+import { moderationApi } from '../../api';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { colors, radius, spacing } from '../../theme';
@@ -33,6 +35,7 @@ export default function ChatScreen({
   disabled = false,
   banner,
   onFollowupPress,
+  surface = 'assistant',
 }: {
   chat: ChatController;
   // Domain badge on Calvin in the empty state (wrench, calendar, suitcase, …).
@@ -42,6 +45,8 @@ export default function ChatScreen({
   placeholder?: string;
   disabled?: boolean;
   banner?: React.ReactNode;
+  // Which assistant this is, tagged on any content report (Apple 1.2).
+  surface?: string;
   // Intercept a follow-up chip tap. Return true if handled (e.g. a client-side
   // action like saving an event); otherwise the chip text is sent to the chat.
   onFollowupPress?: (text: string) => boolean;
@@ -53,6 +58,27 @@ export default function ChatScreen({
   const scrollToEnd = () => scrollRef.current?.scrollToEnd({ animated: true });
 
   const empty = chat.messages.length === 0 && !chat.streamingText;
+
+  // Report objectionable AI output (Apple 1.2). Long-press any assistant reply.
+  function reportMessage(content: string) {
+    Alert.alert(
+      'Report this message?',
+      'This sends the message to our team to review. Thanks for helping keep the assistant safe.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Report',
+          style: 'destructive',
+          onPress: () => {
+            moderationApi
+              .report({ content, surface })
+              .then(() => Alert.alert('Reported', 'Thanks — we’ll review this message.'))
+              .catch(() => Alert.alert('Couldn’t send report', 'Please try again.'));
+          },
+        },
+      ],
+    );
+  }
 
   // Master switch (Phase 5): with AI off in Privacy settings the assistant is
   // unusable and nothing is ever sent to the provider — same guarantee FormAssist
@@ -153,11 +179,21 @@ export default function ChatScreen({
         {chat.messages.map((msg, i) => (
           <View key={i}>
             <View style={[styles.row, msg.role === 'user' ? styles.rowRight : styles.rowLeft]}>
-              <View style={[styles.bubble, msg.role === 'user' ? styles.bubbleUser : styles.bubbleAssistant]}>
-                <Text style={msg.role === 'user' ? styles.bubbleUserText : styles.bubbleAssistantText}>
-                  {msg.role === 'user' ? msg.content : flattenMarkdown(msg.content)}
-                </Text>
-              </View>
+              {msg.role === 'user' ? (
+                <View style={[styles.bubble, styles.bubbleUser]}>
+                  <Text style={styles.bubbleUserText}>{msg.content}</Text>
+                </View>
+              ) : (
+                <TouchableOpacity
+                  style={[styles.bubble, styles.bubbleAssistant]}
+                  activeOpacity={0.8}
+                  onLongPress={() => reportMessage(msg.content)}
+                  delayLongPress={400}
+                  accessibilityHint="Long-press to report this message"
+                >
+                  <Text style={styles.bubbleAssistantText}>{flattenMarkdown(msg.content)}</Text>
+                </TouchableOpacity>
+              )}
             </View>
             {msg.role === 'assistant' && msg.tokens ? (
               <Text style={styles.tokenMeta}>{formatCompact(msg.tokens)} tokens</Text>

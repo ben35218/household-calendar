@@ -49,6 +49,16 @@ export const authApi = {
   passkeyChallenge: (data: { email: string }) => api.post<PasskeyChallenge>('/auth/passkey/challenge', data),
   passkeyLogin: (data: { challengeId: string; response: unknown }) =>
     api.post<AuthResponse>('/auth/passkey/login', data),
+  // Permanent account + data deletion (Apple 5.1.1(v)). Re-auth with the
+  // password; the session token is invalid immediately afterwards.
+  deleteAccount: (data: { password: string }) =>
+    api.delete<{ ok: boolean }>('/auth/account', { data }),
+};
+
+// Report objectionable AI-generated content (Apple 1.2).
+export const moderationApi = {
+  report: (data: { content: string; reason?: string; surface?: string }) =>
+    api.post<{ ok: boolean }>('/moderation/report', data),
 };
 
 // E2EE key material (Phase 1). The server is a blind store: it only sees the

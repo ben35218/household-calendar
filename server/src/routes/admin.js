@@ -10,6 +10,8 @@
 //   GET  /api/admin/e2ee/:householdId     → per-member enrollment + client versions
 //   POST /api/admin/e2ee/:householdId/nudge → push blocking members to update/enroll
 //   GET  /api/admin/audit                 → paginated audit-log entries
+//   GET  /api/admin/moderation            → paginated AI-content reports (Apple 1.2)
+//   POST /api/admin/moderation/:id/status → mark a report reviewed/dismissed/open
 //
 // Pure request-independent logic lives in ./adminHelpers (unit-tested).
 
@@ -19,6 +21,7 @@ const User = require('../models/User');
 const Household = require('../models/Household');
 const HouseholdKeyEnvelope = require('../models/HouseholdKeyEnvelope');
 const AuditLog = require('../models/AuditLog');
+const ContentReport = require('../models/ContentReport');
 const { computeReadiness, versionSatisfied } = require('../services/dropReadiness');
 const { pushToUser } = require('../services/notify');
 const { requireAuth, requireAdmin } = require('../middleware/auth');
@@ -275,5 +278,65 @@ function groupBy(rows, key) {
   }
   return out;
 }
+
+// --- Content moderation (Apple 1.2) ----------------------------------------
+
+// Paginated AI-content reports, newest first, filterable by status. Unlike the
+// rest of admin (which is content-blind), a report deliberately carries the
+// flagged assistant message so it can actually be reviewed — the user chose to
+// send it to us. Resolves the reporter's email for follow-up.
+router.get('/moderation', async (req, res) => {
+  try {
+    const { status } = req.query;
+    const { page, pageSize, skip } = paginate(req.query, { defaultSize: 50, maxSize: 200 });
+    const filter = {};
+    if (status && ['open', 'reviewed', 'dismissed'].includes(status)) filter.status = status;
+
+    const [total, openCount, reports] = await Promise.all([
+      ContentReport.countDocuments(filter),
+      ContentReport.countDocuments({ status: 'open' }),
+      ContentReport.find(filter).sort({ createdAt: -1 }).skip(skip).limit(pageSize).lean(),
+    ]);
+
+    const userIds = [...new Set(reports.map((r) => r.userId).filter(Boolean).map(String))];
+    const users = userIds.length
+      ? await User.find({ _id: { $in: userIds } }).select('email').lean()
+      : [];
+    const emailById = Object.fromEntries(users.map((u) => [String(u._id), u.email]));
+
+    res.json({
+      items: reports.map((r) => ({
+        _id: r._id,
+        surface: r.surface,
+        content: r.content,
+        reason: r.reason,
+        status: r.status,
+        createdAt: r.createdAt,
+        reporterEmail: r.userId ? emailById[String(r.userId)] || null : null,
+      })),
+      total, openCount, page, pageSize,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Triage a report: open → reviewed/dismissed (or back to open).
+router.post('/moderation/:id/status', async (req, res) => {
+  try {
+    const { status } = req.body;
+    if (!['open', 'reviewed', 'dismissed'].includes(status)) {
+      return res.status(400).json({ error: 'status must be open, reviewed, or dismissed' });
+    }
+    if (!mongoose.isValidObjectId(req.params.id)) return res.status(404).json({ error: 'Not found' });
+    const report = await ContentReport.findByIdAndUpdate(
+      req.params.id, { $set: { status } }, { new: true },
+    ).lean();
+    if (!report) return res.status(404).json({ error: 'Not found' });
+    res.json({ _id: report._id, status: report.status });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
 module.exports = router;

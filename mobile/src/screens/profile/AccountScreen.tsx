@@ -65,7 +65,7 @@ type KeyStatus = 'locked' | 'ready' | 'pending' | null;
 export default function AccountScreen() {
   const qc = useQueryClient();
   const navigation = useNavigation();
-  const { user, setUser } = useAuth();
+  const { user, setUser, logout } = useAuth();
 
   // Only the identity section starts open; the rest are one tap away.
   const [open, setOpen] = useState<Record<SectionKey, boolean>>({
@@ -317,6 +317,37 @@ export default function AccountScreen() {
       setPwError(e?.response?.data?.error || 'Failed to update password');
     } finally {
       setPwSaving(false);
+    }
+  }
+
+  // ── Delete account (Apple 5.1.1(v)) ──────────────────────────────────────────
+  const [delOpen, setDelOpen] = useState(false);
+  const [delPw, setDelPw] = useState('');
+  const [delBusy, setDelBusy] = useState(false);
+  const [delError, setDelError] = useState('');
+
+  function confirmDelete() {
+    if (!delPw) return;
+    Alert.alert(
+      'Delete your account?',
+      'This permanently deletes your account and all your data, including anything you added to your household. This cannot be undone.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Delete account', style: 'destructive', onPress: runDelete },
+      ],
+    );
+  }
+
+  async function runDelete() {
+    setDelBusy(true);
+    setDelError('');
+    try {
+      await authApi.deleteAccount({ password: delPw });
+      // Account is gone — tear down the session and return to the auth stack.
+      await logout();
+    } catch (e: any) {
+      setDelError(e?.response?.data?.error || 'Could not delete your account. Please try again.');
+      setDelBusy(false);
     }
   }
 
@@ -884,6 +915,36 @@ export default function AccountScreen() {
           </TouchableOpacity>
         </Card>
       </AccordionSection>
+
+      {/* ── Delete account (always visible, Apple 5.1.1(v)) ── */}
+      <Card style={[styles.sectionCard, styles.dangerCard]}>
+        <SectionTitle>Delete account</SectionTitle>
+        <Text style={styles.cardNote}>
+          Permanently delete your account and all your data, including anything you added to your household. This can’t be
+          undone.
+        </Text>
+        {delOpen ? (
+          <View style={styles.expand}>
+            <Input
+              label="Confirm your password"
+              value={delPw}
+              onChangeText={setDelPw}
+              secureTextEntry
+              autoCapitalize="none"
+            />
+            {delError ? <Text style={styles.error}>{delError}</Text> : null}
+            <Button
+              title="Permanently delete account"
+              variant="danger"
+              onPress={confirmDelete}
+              loading={delBusy}
+              disabled={!delPw || delBusy}
+            />
+          </View>
+        ) : (
+          <Button title="Delete account" variant="danger" onPress={() => setDelOpen(true)} />
+        )}
+      </Card>
     </Screen>
   );
 }
@@ -892,6 +953,7 @@ const styles = StyleSheet.create({
   cardNote: { fontSize: 13, color: colors.textMuted, marginBottom: spacing.sm, lineHeight: 18 },
   hint: { fontSize: 12, color: colors.textMuted, marginTop: spacing.sm, marginBottom: spacing.md, lineHeight: 16 },
   sectionCard: { marginBottom: spacing.md },
+  dangerCard: { borderColor: colors.error + '55' },
   // Reminders
   mainRow: { flexDirection: 'row', alignItems: 'center' },
   iconBubble: {

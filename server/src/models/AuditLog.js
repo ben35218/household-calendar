@@ -8,6 +8,7 @@ const mongoose = require('mongoose');
 const AUDIT_EVENTS = [
   'hdk_minted', 'member_approved', 'member_removed', 'hdk_rotated', 'key_enrolled',
   'deletion_scheduled', 'deletion_canceled', 'deletion_purged',
+  'account_deleted', // user permanently deleted their account from the app (5.1.1(v))
   'plaintext_dropped', // §9 point-of-no-return: household went E2EE-live
   // Admin-console actions (who changed what from the admin web app):
   'admin_role_changed', // an admin granted/revoked another user's admin role

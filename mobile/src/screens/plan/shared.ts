@@ -1,6 +1,6 @@
-// Shared pieces of the plan/billing screens (PlanScreen hub, ComparePlans,
-// AiUsage, UpsellSheet): formatting helpers, the RevenueCat package↔tier
-// mapping, and the usePurchase hook that owns the buy flow.
+// Shared pieces of the plan/billing surfaces (the inline plan cards on
+// ProfileHome, ComparePlans, AiUsage, UpsellSheet): formatting helpers, the
+// RevenueCat package↔tier mapping, and the usePurchase hook that owns the buy flow.
 
 import { useEffect, useMemo, useState } from 'react';
 import { Alert, Platform } from 'react-native';

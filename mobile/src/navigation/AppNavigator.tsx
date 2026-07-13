@@ -76,7 +76,6 @@ import PersonDetailScreen from '../screens/profile/PersonDetailScreen';
 import PersonFormScreen from '../screens/profile/PersonFormScreen';
 import ContactImportScreen from '../screens/profile/ContactImportScreen';
 import HouseholdScreen from '../screens/profile/HouseholdScreen';
-import PlanScreen from '../screens/plan/PlanScreen';
 import ComparePlansScreen from '../screens/plan/ComparePlansScreen';
 import AiUsageScreen from '../screens/plan/AiUsageScreen';
 import UpsellSheet from '../screens/plan/UpsellSheet';
@@ -274,9 +273,9 @@ export default function AppNavigator() {
       <Stack.Screen name="PersonForm" component={PersonFormScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Person' }} />
       <Stack.Screen name="ContactImport" component={ContactImportScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Import Contacts' }} />
       <Stack.Screen name="Household" component={HouseholdScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Household' }} />
-      {/* Plan & billing: status hub → catalog / usage drill-ins, plus the
-          upsell sheet the AI-surface nudges open as a modal. */}
-      <Stack.Screen name="Plan" component={PlanScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Plan & Billing' }} />
+      {/* Plan & billing: the status hub now lives inline on ProfileHome; these
+          are its drill-ins — catalog / usage — plus the upsell sheet the
+          AI-surface nudges open as a modal. */}
       <Stack.Screen name="ComparePlans" component={ComparePlansScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Plans' }} />
       <Stack.Screen name="AiUsage" component={AiUsageScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'AI Usage' }} />
       <Stack.Screen

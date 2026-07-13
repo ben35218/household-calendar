@@ -53,6 +53,8 @@ export const adminApi = {
   e2eeDetail: (householdId) => api.get(`/admin/e2ee/${householdId}`),
   nudge: (householdId) => api.post(`/admin/e2ee/${householdId}/nudge`),
   audit: (params) => api.get('/admin/audit', { params }),
+  moderation: (params) => api.get('/admin/moderation', { params }),
+  setReportStatus: (id, status) => api.post(`/admin/moderation/${id}/status`, { status }),
 };
 
 // Email surfaces: the outbound no-reply@ send log and the live support@

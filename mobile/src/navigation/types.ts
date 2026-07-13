@@ -133,8 +133,7 @@ export type RootStackParamList = {
   ContactImport: undefined;
   Household: undefined;
 
-  // ----- Plan & billing -----
-  Plan: undefined;         // status hub (the Profile destination)
+  // ----- Plan & billing (status hub is inlined on ProfileHome) -----
   ComparePlans: undefined; // the paywall proper (tier catalog + purchase)
   AiUsage: undefined;      // usage drill-in (per member / per feature)
   Upsell: { reason: 'quota' | 'warning' } | undefined; // focused upgrade sheet from the AI nudges

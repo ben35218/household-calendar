@@ -12,18 +12,52 @@
       "bundleIdentifier": "app.householdcalendar.mobile",
       "infoPlist": {
         "CFBundleDisplayName": "Calendar",
-        "ITSAppUsesNonExemptEncryption": false,
+        "ITSAppUsesNonExemptEncryption": true,
         "UIBackgroundModes": [
           "fetch"
         ],
         "NSCameraUsageDescription": "Take photos of items, receipts, recipes, and booking confirmations to add them automatically.",
         "NSPhotoLibraryUsageDescription": "Attach photos of items, receipts, and confirmations from your library.",
-        "NSContactsUsageDescription": "Import family and friends from your contacts so the assistant can suggest activities and remember birthdays."
+        "NSContactsUsageDescription": "Import family and friends from your contacts so the assistant can suggest activities and remember birthdays.",
+        "NSFaceIDUsageDescription": "Use Face ID to sign in and unlock your end-to-end-encrypted data on this device."
       },
       "privacyManifests": {
         "NSPrivacyTracking": false,
         "NSPrivacyTrackingDomains": [],
-        "NSPrivacyCollectedDataTypes": [],
+        "NSPrivacyCollectedDataTypes": [
+          {
+            "NSPrivacyCollectedDataType": "NSPrivacyCollectedDataTypeEmailAddress",
+            "NSPrivacyCollectedDataTypeLinked": true,
+            "NSPrivacyCollectedDataTypeTracking": false,
+            "NSPrivacyCollectedDataTypePurposes": [
+              "NSPrivacyCollectedDataTypePurposeAppFunctionality"
+            ]
+          },
+          {
+            "NSPrivacyCollectedDataType": "NSPrivacyCollectedDataTypeName",
+            "NSPrivacyCollectedDataTypeLinked": true,
+            "NSPrivacyCollectedDataTypeTracking": false,
+            "NSPrivacyCollectedDataTypePurposes": [
+              "NSPrivacyCollectedDataTypePurposeAppFunctionality"
+            ]
+          },
+          {
+            "NSPrivacyCollectedDataType": "NSPrivacyCollectedDataTypeContacts",
+            "NSPrivacyCollectedDataTypeLinked": true,
+            "NSPrivacyCollectedDataTypeTracking": false,
+            "NSPrivacyCollectedDataTypePurposes": [
+              "NSPrivacyCollectedDataTypePurposeAppFunctionality"
+            ]
+          },
+          {
+            "NSPrivacyCollectedDataType": "NSPrivacyCollectedDataTypeOtherUserContent",
+            "NSPrivacyCollectedDataTypeLinked": true,
+            "NSPrivacyCollectedDataTypeTracking": false,
+            "NSPrivacyCollectedDataTypePurposes": [
+              "NSPrivacyCollectedDataTypePurposeAppFunctionality"
+            ]
+          }
+        ],
         "NSPrivacyAccessedAPITypes": [
           {
             "NSPrivacyAccessedAPIType": "NSPrivacyAccessedAPICategoryUserDefaults",
@@ -64,8 +98,7 @@
       "permissions": [
         "android.permission.CAMERA",
         "android.permission.READ_MEDIA_IMAGES",
-        "android.permission.POST_NOTIFICATIONS",
-        "android.permission.RECORD_AUDIO"
+        "android.permission.POST_NOTIFICATIONS"
       ]
     },
     "web": {
@@ -84,7 +117,9 @@
       [
         "expo-image-picker",
         {
-          "photosPermission": "Attach photos of items, receipts, and confirmations."
+          "photosPermission": "Attach photos of items, receipts, and confirmations.",
+          "cameraPermission": "Take photos of items, receipts, recipes, and booking confirmations to add them automatically.",
+          "microphonePermission": false
         }
       ],
       [
