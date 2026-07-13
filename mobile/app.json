@@ -12,7 +12,7 @@
       "bundleIdentifier": "app.householdcalendar.mobile",
       "infoPlist": {
         "CFBundleDisplayName": "Calendar",
-        "ITSAppUsesNonExemptEncryption": true,
+        "ITSAppUsesNonExemptEncryption": false,
         "UIBackgroundModes": [
           "fetch"
         ],
