@@ -80,30 +80,27 @@ export function humanTokens(n: number | null | undefined): string | null {
 // mirror the server's MonetizationConfig.models (free = fast model, paid = the
 // smarter one).
 export function tierBenefits(t: CatalogTier): string[] {
-  const tokens = humanTokens(t.weeklyTokenLimit);
   switch (t.key) {
     case 'free':
       return [
-        tokens ? `${tokens} AI tokens each week — per person` : 'A weekly AI allowance per person',
+        'Weekly AI to answer household questions, plan meals & schedules, and scan receipts — per person',
         'Calendar, chores, recipes, trips & maintenance',
         'AI assistants on our fast model',
       ];
     case 'premium':
       return [
-        tokens
-          ? `${tokens} AI tokens each week, shared by your whole household`
-          : 'A big weekly AI pool, shared by your whole household',
+        'A bigger weekly AI allowance, shared by your whole household',
         'Smarter AI model behind every assistant',
         'Everything in Free',
       ];
     case 'unlimited':
       return [
-        'No weekly AI cap',
+        'Unlimited AI — no weekly cap on chat, recipes, plans or scans',
         'Smarter AI model behind every assistant',
         'Everything in Premium',
       ];
     default:
-      return tokens ? [`${tokens} AI tokens each week`] : [];
+      return [];
   }
 }
 

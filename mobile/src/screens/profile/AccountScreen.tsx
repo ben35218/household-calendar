@@ -916,6 +916,11 @@ export default function AccountScreen() {
         </Card>
       </AccordionSection>
 
+      {/* ── Sign out ── */}
+      <View style={styles.signOut}>
+        <Button title="Sign out" variant="danger" onPress={() => logout()} />
+      </View>
+
       {/* ── Delete account (always visible, Apple 5.1.1(v)) ── */}
       <Card style={[styles.sectionCard, styles.dangerCard]}>
         <SectionTitle>Delete account</SectionTitle>
@@ -953,6 +958,7 @@ const styles = StyleSheet.create({
   cardNote: { fontSize: 13, color: colors.textMuted, marginBottom: spacing.sm, lineHeight: 18 },
   hint: { fontSize: 12, color: colors.textMuted, marginTop: spacing.sm, marginBottom: spacing.md, lineHeight: 16 },
   sectionCard: { marginBottom: spacing.md },
+  signOut: { marginBottom: spacing.md },
   dangerCard: { borderColor: colors.error + '55' },
   // Reminders
   mainRow: { flexDirection: 'row', alignItems: 'center' },

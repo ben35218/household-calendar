@@ -40,18 +40,11 @@ export default function AiUsageScreen() {
         <Text style={styles.heading}>
           {data.usageScope === 'household' ? "Household's AI usage this week" : 'Your AI usage this week'}
         </Text>
-        <Text style={styles.scopeNote}>
-          {data.usageScope === 'household'
-            ? 'Shared across everyone in your household.'
-            : 'On the free plan each person has their own weekly allowance.'}
-        </Text>
         {reset ? <Text style={styles.reset}>{reset}</Text> : null}
         <View style={styles.gaugeHeader}>
           <Text style={styles.gaugePct}>{unlimited ? 'Unlimited' : `${data.tokenPct}%`}</Text>
           <Text style={styles.gaugeCaption}>
-            {unlimited
-              ? `${humanTokens(data.tokensUsed)} tokens used`
-              : `${humanTokens(data.tokensUsed)} of ${humanTokens(data.weeklyTokenLimit)} tokens`}
+            {unlimited ? `${humanTokens(data.tokensUsed)} tokens used` : 'used'}
           </Text>
         </View>
         {!unlimited ? (
@@ -67,6 +60,11 @@ export default function AiUsageScreen() {
         {over ? (
           <Text style={styles.overNote}>You've reached your weekly AI limit. Upgrade for more.</Text>
         ) : null}
+        <Text style={styles.scopeNoteBelow}>
+          {data.usageScope === 'household'
+            ? 'Shared across everyone in your household.'
+            : 'On the free plan each person has their own weekly allowance.'}
+        </Text>
       </Card>
 
       {members.length > 0 ? (
@@ -118,6 +116,7 @@ const styles = StyleSheet.create({
 
   heading: { fontSize: 13, fontWeight: '600', color: colors.textMuted, marginBottom: 2 },
   scopeNote: { fontSize: 12, color: colors.textMuted, marginBottom: spacing.sm },
+  scopeNoteBelow: { fontSize: 12, color: colors.textMuted, marginTop: spacing.sm },
   reset: { fontSize: 12, color: colors.textMuted, marginBottom: spacing.sm },
   gaugeHeader: { flexDirection: 'row', alignItems: 'baseline', gap: spacing.sm, marginBottom: 6 },
   gaugePct: { fontSize: 28, fontWeight: '700', color: colors.text },

@@ -44,7 +44,7 @@ const SECTIONS: Section[] = [
 
 export default function ProfileScreen() {
   const nav = useNavigation<NativeStackNavigationProp<ProfileStackParamList>>();
-  const { user, logout } = useAuth();
+  const { user } = useAuth();
 
   const { data: household } = useQuery({
     queryKey: ['household'],
@@ -213,8 +213,6 @@ export default function ProfileScreen() {
           />
         ))}
       </Card>
-
-      <Button title="Sign out" variant="danger" onPress={() => logout()} />
 
       <View style={styles.legalRow}>
         <Text style={styles.legalLink} onPress={() => Linking.openURL(TERMS_URL)}>
