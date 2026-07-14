@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "Calvin",
+    "name": "Calen",
     "slug": "household-calendar",
     "scheme": "householdcalendar",
     "version": "1.0.0",
@@ -11,7 +11,7 @@
       "supportsTablet": true,
       "bundleIdentifier": "app.householdcalendar.mobile",
       "infoPlist": {
-        "CFBundleDisplayName": "Calvin",
+        "CFBundleDisplayName": "Calen",
         "ITSAppUsesNonExemptEncryption": false,
         "UIBackgroundModes": [
           "fetch"
@@ -89,7 +89,7 @@
     "android": {
       "package": "app.householdcalendar.mobile",
       "adaptiveIcon": {
-        "backgroundColor": "#4F9DF5",
+        "backgroundColor": "#F3F6FA",
         "foregroundImage": "./assets/android-icon-foreground.png",
         "backgroundImage": "./assets/android-icon-background.png",
         "monochromeImage": "./assets/android-icon-monochrome.png"
@@ -109,6 +109,7 @@
         "expo-splash-screen",
         {
           "image": "./assets/splash-icon.png",
+          "imageWidth": 320,
           "resizeMode": "contain",
           "backgroundColor": "#4F9DF5"
         }

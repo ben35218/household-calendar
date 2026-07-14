@@ -57,11 +57,10 @@ export default function LoginScreen() {
       <View style={authStyles.inner}>
         <View style={authStyles.header}>
           <Image
-            source={require('../../../assets/android-icon-monochrome.png')}
-            style={styles.logo}
+            source={require('../../../assets/calen-wordmark.png')}
+            style={styles.wordmark}
             resizeMode="contain"
           />
-          <Text style={authStyles.title}>Calen</Text>
           <Text style={authStyles.subtitle}>Sign in to your account</Text>
         </View>
 
@@ -114,7 +113,7 @@ export default function LoginScreen() {
 }
 
 const styles = StyleSheet.create({
-  logo: { width: 96, height: 96 },
+  wordmark: { width: 240, height: 95, marginBottom: spacing.sm },
   passkeyButton: { marginTop: spacing.sm },
   forgot: { textAlign: 'center', marginTop: spacing.md },
 });
