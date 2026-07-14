@@ -11,7 +11,7 @@
       "supportsTablet": true,
       "bundleIdentifier": "app.householdcalendar.mobile",
       "infoPlist": {
-        "CFBundleDisplayName": "Calvinder",
+        "CFBundleDisplayName": "Calen",
         "ITSAppUsesNonExemptEncryption": false,
         "UIBackgroundModes": [
           "fetch"
