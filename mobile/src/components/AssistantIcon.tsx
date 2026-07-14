@@ -3,14 +3,14 @@ import { View } from 'react-native';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { colors } from '../theme';
 
-// Calvin's mark: a chat bubble with a friendly face inside, used at every
-// "talk to Calvin" entry point (chat FABs, form assist, chat empty states).
+// Calen's mark: a chat bubble with a friendly face inside, used at every
+// "talk to Calen" entry point (chat FABs, form assist, chat empty states).
 // The bubble is the Ionicons outline glyph so the stroke weight matches the
 // rest of the icon set; the face is drawn with plain Views (no SVG dep) so
 // it tints with `color` and scales with `size` like any other icon.
 //
 // `accessory` docks a small domain badge (wrench, calendar, suitcase, …) at
-// the bubble's bottom-right corner — one Calvin, different hats per surface.
+// the bubble's bottom-right corner — one Calen, different hats per surface.
 // The badge is a `color` disc with the glyph knocked out in `badgeColor`
 // (pass the backdrop colour when not on the default screen background). It
 // auto-hides below 24px, where a badge glyph is illegible.

@@ -647,7 +647,7 @@ export default function ItemFormScreen() {
         placeholder={'Describe the item, e.g. "Samsung fridge, model RF28R, bought last March, 2-year warranty"'}
         fields={assistFields}
         // Custom/preset fields and user-added fields live outside `form`; fold
-        // their filled values in so Calvin sees them (context only — applyPatch
+        // their filled values in so Calen sees them (context only — applyPatch
         // ignores keys not in the core form, so these can't be overwritten).
         current={{
           ...form,

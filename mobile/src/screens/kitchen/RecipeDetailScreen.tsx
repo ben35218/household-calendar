@@ -69,7 +69,7 @@ export default function RecipeDetailScreen() {
       'Instructions:',
       ...(recipe.instructions ?? []).map((step, i) => `${i + 1}. ${step}`),
       '',
-      'Shared from Household Calendar — https://householdcalendar.com',
+      'Shared from Calen — https://householdcalendar.com',
     ];
     Share.share({ message: lines.join('\n') }, { subject: recipe.title });
   };
@@ -196,7 +196,7 @@ export default function RecipeDetailScreen() {
         <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={() => setEmailOpen(false)}>
           <TouchableOpacity style={styles.emailSheet} activeOpacity={1}>
             <Text style={styles.emailTitle}>Email this recipe</Text>
-            <Text style={styles.emailSub}>They'll get a styled copy from Household Calendar.</Text>
+            <Text style={styles.emailSub}>They'll get a styled copy from Calen.</Text>
             <Input
               placeholder="Email address"
               value={shareEmailAddr}

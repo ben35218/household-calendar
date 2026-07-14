@@ -2,7 +2,7 @@
   "name": "household-calendar-admin",
   "version": "1.0.0",
   "private": true,
-  "description": "Household Calendar — admin web app (monetization, households, plans)",
+  "description": "Calen — admin web app (monetization, households, plans)",
   "scripts": {
     "dev": "vite",
     "build": "vite build",

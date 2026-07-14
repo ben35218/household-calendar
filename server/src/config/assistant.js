@@ -4,6 +4,6 @@
 // Keep in sync with ASSISTANT_NAME in mobile/src/config.ts (UI labels).
 // One-shot/plumbing prompts (booking extraction, manual parsing, form assist)
 // intentionally stay unnamed — they aren't conversations.
-const ASSISTANT_NAME = 'Calvin';
+const ASSISTANT_NAME = 'Calen';
 
 module.exports = { ASSISTANT_NAME };

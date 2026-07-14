@@ -41,7 +41,7 @@ function buildEventICS({ uid, event }) {
   const lines = [
     'BEGIN:VCALENDAR',
     'VERSION:2.0',
-    'PRODID:-//Household Calendar//Event Invitation//EN',
+    'PRODID:-//Calen//Event Invitation//EN',
     'METHOD:PUBLISH',
     'BEGIN:VEVENT',
     `UID:${uid}@household-calendar.app`,

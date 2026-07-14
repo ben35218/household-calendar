@@ -38,7 +38,7 @@ export default function ChatScreen({
   surface = 'assistant',
 }: {
   chat: ChatController;
-  // Domain badge on Calvin in the empty state (wrench, calendar, suitcase, …).
+  // Domain badge on Calen in the empty state (wrench, calendar, suitcase, …).
   accessory?: keyof typeof MaterialCommunityIcons.glyphMap;
   emptyText: string;
   emptyHint?: string;

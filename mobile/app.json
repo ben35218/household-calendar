@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "Household Calendar",
+    "name": "Calvin",
     "slug": "household-calendar",
     "scheme": "householdcalendar",
     "version": "1.0.0",
@@ -11,7 +11,7 @@
       "supportsTablet": true,
       "bundleIdentifier": "app.householdcalendar.mobile",
       "infoPlist": {
-        "CFBundleDisplayName": "Calen",
+        "CFBundleDisplayName": "Calvin",
         "ITSAppUsesNonExemptEncryption": false,
         "UIBackgroundModes": [
           "fetch"

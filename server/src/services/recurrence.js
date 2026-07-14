@@ -4,7 +4,7 @@ const { addDays, differenceInDays } = require('date-fns');
 // The km-based estimation helpers below stay server-only.
 const { computeNextDueDate } = require('@household/calendar');
 
-// Give a Calvin-generated recurrence (from a template, a manual, or Ask Calvin) a
+// Give a Calen-generated recurrence (from a template, a manual, or Ask Calen) a
 // clean anchor day so it doesn't land on an arbitrary date:
 //   • monthly or longer (months/years intervals, or calendar) → the 1st of the
 //     month it occurs in.

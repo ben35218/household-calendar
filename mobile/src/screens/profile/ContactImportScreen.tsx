@@ -32,7 +32,7 @@ type Row = {
 
 // The mobile-native equivalent of web PeopleView's .vcf import. Reads the device
 // address book, then offers two paths — Direct (you tag each) or AI-assisted
-// (Calvin categorizes + pre-fills, web-searching professionals) — and lets you
+// (Calen categorizes + pre-fills, web-searching professionals) — and lets you
 // import everything at once or review each in the person form first.
 export default function ContactImportScreen() {
   const nav = useNavigation<Nav>();

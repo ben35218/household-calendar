@@ -1,6 +1,6 @@
 # Store Release (Phase 4)
 
-Status of store-prep work for the Household Calendar mobile app (`mobile/`).
+Status of store-prep work for the Calen mobile app (`mobile/`).
 
 ## Already scaffolded (in the repo)
 

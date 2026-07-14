@@ -237,7 +237,7 @@ export default function TaskFormScreen() {
         formType="home maintenance task"
         placeholder={'Describe the task, e.g. "replace the furnace filter every 3 months"'}
         fields={assistFields}
-        // Recurrence lives outside `form`; pass a readable summary so Calvin
+        // Recurrence lives outside `form`; pass a readable summary so Calen
         // sees the schedule already set (context only — not an editable field).
         current={{ ...form, recurrence: repeatSummary(repeatRule) }}
         onApply={applyPatch}

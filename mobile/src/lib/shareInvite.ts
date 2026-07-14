@@ -31,7 +31,7 @@ export function classifyRecipient(raw: string): Recipient | null {
 // the app. The inviter sends it themselves, from their own number. Resolves when
 // the composer closes so callers can sequence multiple texts.
 export async function composeShareSms(phone: string, what: string): Promise<void> {
-  const body = `I invited you to ${what} on Household Calendar. Get the app and open your invitations to accept: ${WEB_URL}`;
+  const body = `I invited you to ${what} on Calen. Get the app and open your invitations to accept: ${WEB_URL}`;
   // Keep only digits and a leading + so the recipient parses cleanly (spaces,
   // dashes and parens can stop iOS from prefilling the number).
   const number = phone.replace(/[^\d+]/g, '');

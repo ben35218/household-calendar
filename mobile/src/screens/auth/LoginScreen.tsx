@@ -61,7 +61,7 @@ export default function LoginScreen() {
             style={styles.logo}
             resizeMode="contain"
           />
-          <Text style={authStyles.title}>Household Calendar</Text>
+          <Text style={authStyles.title}>Calen</Text>
           <Text style={authStyles.subtitle}>Sign in to your account</Text>
         </View>
 

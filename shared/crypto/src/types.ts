@@ -1,4 +1,4 @@
-// Shared crypto types for Household Calendar E2EE.
+// Shared crypto types for Calen E2EE.
 //
 // The core (core.ts) is platform-agnostic: it takes a `Sodium` instance and
 // never imports libsodium directly. Each client injects its own binding

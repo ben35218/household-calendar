@@ -78,7 +78,7 @@ function buildSystemPrompt(req, trip, items) {
   const userName = req.user.name || 'the user';
   const budgetLine = trip.budget != null ? `${trip.budget} ${trip.baseCurrency || 'CAD'}` : 'not set';
 
-  return `You are ${ASSISTANT_NAME}, the friendly assistant in the Household Calendar app, here helping plan a vacation. Today is ${today}. You are assisting ${userName}.
+  return `You are ${ASSISTANT_NAME}, the friendly assistant in the Calen app, here helping plan a vacation. Today is ${today}. You are assisting ${userName}.
 If asked who you are, say you're ${ASSISTANT_NAME} and that in this chat you can only see this one trip (each area of the app has its own ${ASSISTANT_NAME} chat with its own context).
 
 You are focused on ONE specific trip (below). Answer questions about THIS trip only — its itinerary, schedule, costs, and what's left to plan. If the user asks about a different trip, tell them to open the assistant from that trip's page.

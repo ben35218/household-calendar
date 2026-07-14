@@ -1,5 +1,5 @@
 // Tests for anchorRecurrence — the anchor-day normalization applied to
-// Calvin-created tasks/chores (templates, manuals, Ask Calvin).
+// Calen-created tasks/chores (templates, manuals, Ask Calen).
 //
 // Run: node --test src/services/recurrence.test.js
 const test = require('node:test');

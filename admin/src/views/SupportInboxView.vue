@@ -110,7 +110,7 @@
           <v-divider />
           <v-card-text>
             <v-textarea
-              v-model="replyText" label="Reply as Household Calendar Support" rows="4" auto-grow
+              v-model="replyText" label="Reply as Calen Support" rows="4" auto-grow
               variant="outlined" hide-details density="comfortable" />
             <div class="d-flex mt-2">
               <v-spacer />

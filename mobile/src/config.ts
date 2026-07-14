@@ -52,5 +52,5 @@ export const PRIVACY_URL =
 // assist. Keep in sync with server/src/config/assistant.js (system prompts).
 // Settings/plumbing copy ("AI Usage", "Use AI features") intentionally stays
 // generic "AI" so users managing the technology can find it.
-export const ASSISTANT_NAME = 'Calvin';
+export const ASSISTANT_NAME = 'Calen';
 export const ASSISTANT_NAME_SHORT = 'Cal';

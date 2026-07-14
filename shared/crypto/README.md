@@ -1,6 +1,6 @@
 # @household/crypto
 
-Shared end-to-end-encryption primitives for Household Calendar, used by the web
+Shared end-to-end-encryption primitives for Calen, used by the web
 client, admin app, and mobile app. See [`docs/E2EE-SYNC-PLAN.md`](../../docs/E2EE-SYNC-PLAN.md)
 for the full design.
 

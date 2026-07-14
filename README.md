@@ -1,4 +1,4 @@
-# Household Calendar
+# Calen
 
 A household management platform for inventory, product manuals, and maintenance schedules. Built for rural/countryside homeowners who need to track many items and recurring tasks across appliances, vehicles, systems, and land. The product ships as a **native mobile app** (Expo/React Native) backed by an Express/MongoDB API, plus a **Vue admin web app** for monetization, households, and plans.
 
@@ -90,7 +90,7 @@ The app uses Nodemailer with Gmail App Passwords (SMTP). OAuth2 is architectural
 
 1. Go to your Google Account → **Security** → **2-Step Verification** (must be enabled)
 2. At the bottom, click **App passwords**
-3. Create a new app password for "Mail" / "Other" → name it "Household Calendar"
+3. Create a new app password for "Mail" / "Other" → name it "Calen"
 4. Copy the 16-character password into `GMAIL_APP_PASSWORD` in `server/.env`
 
 The scheduler sends a single daily digest at 07:00 local time for all tasks due within your reminder lead window (default: 7 days). Use **Settings → Trigger Email Check Now** to test without waiting.

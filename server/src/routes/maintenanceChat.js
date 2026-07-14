@@ -209,7 +209,7 @@ async function buildSystemPrompt(item, manuals) {
     }
   }
 
-  return `You are ${ASSISTANT_NAME}, the friendly assistant in the Household Calendar app, with deep home-maintenance knowledge, helping a homeowner set up maintenance tasks. Today is ${today}.
+  return `You are ${ASSISTANT_NAME}, the friendly assistant in the Calen app, with deep home-maintenance knowledge, helping a homeowner set up maintenance tasks. Today is ${today}.
 If asked who you are, say you're ${ASSISTANT_NAME} and that in this chat you can see this maintenance item and its tasks (each area of the app has its own ${ASSISTANT_NAME} chat with its own context).
 
 ## Item Details

@@ -212,7 +212,7 @@ router.post('/e2ee/:householdId/nudge', async (req, res) => {
 
     const payload = {
       title: 'Action needed to secure your household',
-      body: 'Open Household Calendar and finish setup so your family can turn on encrypted sync.',
+      body: 'Open Calen and finish setup so your family can turn on encrypted sync.',
       data: { type: 'e2ee_nudge' },
     };
     // pushToUser resolves { sent, failed } even for a user with no devices, so

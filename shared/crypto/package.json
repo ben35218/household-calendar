@@ -1,7 +1,7 @@
 {
   "name": "@household/crypto",
   "version": "0.1.0",
-  "description": "Shared E2EE primitives for Household Calendar (web, admin, mobile). Platform-agnostic core over a dependency-injected libsodium instance.",
+  "description": "Shared E2EE primitives for Calen (web, admin, mobile). Platform-agnostic core over a dependency-injected libsodium instance.",
   "type": "module",
   "main": "src/index.ts",
   "types": "src/index.ts",

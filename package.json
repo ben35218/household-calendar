@@ -1,7 +1,7 @@
 {
   "name": "household-calendar",
   "version": "1.0.0",
-  "description": "Household Calendar - home inventory, manuals & maintenance scheduler",
+  "description": "Calen - home inventory, manuals & maintenance scheduler",
   "private": true,
   "scripts": {
     "dev:server": "npm --prefix server run dev",

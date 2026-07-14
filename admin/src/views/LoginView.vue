@@ -7,7 +7,7 @@
             <div class="text-center mb-6">
               <v-icon size="64" color="primary">mdi-shield-crown</v-icon>
               <h1 class="text-h5 mt-2 font-weight-bold">Admin Console</h1>
-              <p class="text-body-2 text-medium-emphasis">Household Calendar</p>
+              <p class="text-body-2 text-medium-emphasis">Calen</p>
             </div>
             <v-form @submit.prevent="handleLogin">
               <v-text-field v-model="form.email" label="Email" type="email" prepend-inner-icon="mdi-email" variant="outlined" class="mb-3" required />

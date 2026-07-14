@@ -1,4 +1,4 @@
-// Platform-agnostic E2EE core for Household Calendar.
+// Platform-agnostic E2EE core for Calen.
 //
 // `createHouseholdCrypto(sodium)` returns the full crypto API bound to one
 // libsodium instance. All primitives are libsodium standards — no hand-rolled

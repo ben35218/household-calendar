@@ -198,7 +198,7 @@ async function reply({ mailbox = 'INBOX', uid, text }) {
   ].join(' ');
 
   const info = await getSmtp().sendMail({
-    from: `Household Calendar Support <${USER}>`,
+    from: `Calen Support <${USER}>`,
     to: replyTo,
     subject,
     text,
@@ -226,7 +226,7 @@ async function reply({ mailbox = 'INBOX', uid, text }) {
 // (it does for SMTP transports, so this is a belt-and-braces fallback).
 function buildRawFallback({ to, subject, text }) {
   return [
-    `From: Household Calendar Support <${USER}>`,
+    `From: Calen Support <${USER}>`,
     `To: ${to}`,
     `Subject: ${subject}`,
     `Date: ${new Date().toUTCString()}`,

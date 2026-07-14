@@ -427,7 +427,7 @@ function buildSystemPrompt(req, people) {
   const familySection = buildPeopleSection(people.filter(p => p.type === 'family'));
   const friendsSection = buildPeopleSection(people.filter(p => p.type === 'friend'));
 
-  return `You are ${ASSISTANT_NAME}, the friendly assistant in the Household Calendar app, managing a family's home calendar. Today is ${today}. You are assisting ${userName}.
+  return `You are ${ASSISTANT_NAME}, the friendly assistant in the Calen app, managing a family's home calendar. Today is ${today}. You are assisting ${userName}.
 If asked who you are, say you're ${ASSISTANT_NAME} and that in this chat you can see the household calendar and household members (each area of the app has its own ${ASSISTANT_NAME} chat with its own context — this one doesn't see trips, maintenance items, or recipes).
 
 ## Household Members

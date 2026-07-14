@@ -18,7 +18,7 @@ const SMTP_HOST = process.env.SMTP_HOST;
 const SMTP_PORT = process.env.SMTP_PORT ? Number(process.env.SMTP_PORT) : undefined;
 const SMTP_USER = process.env.SMTP_USER;
 const SMTP_PASS = process.env.SMTP_PASS;
-const MAIL_FROM = process.env.MAIL_FROM || 'Household Calendar <no-reply@householdcalendar.com>';
+const MAIL_FROM = process.env.MAIL_FROM || 'Calen <no-reply@householdcalendar.com>';
 
 // App-download links for email CTAs. Store URLs stay unset until the listings
 // exist (Phase 4); until then invitation emails fall back to the website link.
@@ -100,13 +100,13 @@ function htmlLayout(contentHtml) {
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f3f4f6;"><tr><td align="center" style="padding:24px 12px;">
   <table role="presentation" cellpadding="0" cellspacing="0" style="width:560px;max-width:100%;background:#ffffff;border-radius:12px;overflow:hidden;font-family:-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
     <tr><td style="background:${BRAND};padding:18px 32px;">
-      <span style="color:#ffffff;font-size:18px;font-weight:700;">Household Calendar</span>
+      <span style="color:#ffffff;font-size:18px;font-weight:700;">Calen</span>
     </td></tr>
     <tr><td style="padding:28px 32px;color:#1f2937;font-size:15px;line-height:1.6;">
 ${contentHtml}
     </td></tr>
     <tr><td style="padding:18px 32px;border-top:1px solid #e5e7eb;color:#9ca3af;font-size:12px;line-height:1.5;">
-      Household Calendar — a shared calendar for your household.<br>
+      Calen — a shared calendar for your household.<br>
       <a href="${WEB_URL}" style="color:#9ca3af;">householdcalendar.com</a>
     </td></tr>
   </table>
@@ -124,7 +124,7 @@ function downloadLinks() {
     APP_STORE_URL  && { href: APP_STORE_URL,  label: 'Download on the App Store' },
     PLAY_STORE_URL && { href: PLAY_STORE_URL, label: 'Get it on Google Play' },
   ].filter(Boolean);
-  const links = stores.length ? stores : [{ href: WEB_URL, label: 'Get Household Calendar' }];
+  const links = stores.length ? stores : [{ href: WEB_URL, label: 'Get Calen' }];
   return {
     html: links.map((l) => htmlButton(l.href, l.label)).join('&nbsp;&nbsp;'),
     text: links.map((l) => `${l.label}: ${l.href}`).join('\n'),
@@ -198,7 +198,7 @@ function sendPasswordResetCode(user, code) {
     kind: 'password_reset',
     text:
       `Hi ${user.firstName || 'there'},\n\n` +
-      `Your Household Calendar password reset code is:\n\n` +
+      `Your Calen password reset code is:\n\n` +
       `  ${code}\n\n` +
       `Enter it in the app within 15 minutes to choose a new password. If you ` +
       `didn't request this, you can ignore this email — your password is unchanged.\n\n` +
@@ -207,7 +207,7 @@ function sendPasswordResetCode(user, code) {
       `recovery code afterwards.\n`,
     html: htmlLayout(
       `<p style="margin:0 0 16px;">Hi ${esc(user.firstName || 'there')},</p>
-<p style="margin:0 0 16px;">Your Household Calendar password reset code is:</p>
+<p style="margin:0 0 16px;">Your Calen password reset code is:</p>
 <div style="background:#f3f4f6;border-radius:8px;padding:16px;text-align:center;font-size:28px;letter-spacing:6px;font-weight:700;font-family:ui-monospace,Menlo,Consolas,monospace;color:#1f2937;">${esc(code)}</div>
 <p style="margin:16px 0;">Enter it in the app within <strong>15 minutes</strong> to choose a new password. If you didn't request this, you can ignore this email — your password is unchanged.</p>
 <p style="margin:0;color:#6b7280;">Note: if you use encrypted sync, resetting your password does not unlock your encrypted data — you'll be asked for Face&nbsp;ID / Touch&nbsp;ID or your recovery code afterwards.</p>`
@@ -234,8 +234,8 @@ function sendTripShareInvitation({ toEmail, fromName, tripName, destination, has
     `  ${sub}`,
     '',
     hasAccount
-      ? 'Accept or decline from the Invitations screen in the Household Calendar app — accepting shows the full itinerary and lets you add to it.'
-      : 'Join Household Calendar to see this trip and plan it together.',
+      ? 'Accept or decline from the Invitations screen in the Calen app — accepting shows the full itinerary and lets you add to it.'
+      : 'Join Calen to see this trip and plan it together.',
     '',
     get.text,
   ];
@@ -252,8 +252,8 @@ function sendTripShareInvitation({ toEmail, fromName, tripName, destination, has
 </div>
 <p style="margin:0 0 20px;">${
         hasAccount
-          ? 'Accept or decline from the <strong>Invitations</strong> screen in the Household Calendar app — accepting shows the full itinerary and lets you add to it.'
-          : 'Join Household Calendar to see this trip and plan it together.'
+          ? 'Accept or decline from the <strong>Invitations</strong> screen in the Calen app — accepting shows the full itinerary and lets you add to it.'
+          : 'Join Calen to see this trip and plan it together.'
       }</p>
 <div style="text-align:center;margin:0 0 4px;">${get.html}</div>`
     ),
@@ -268,11 +268,11 @@ function sendHouseholdInvitation({ toEmail, fromName, householdName, hasAccount 
   const inviter = fromName || 'Someone';
   const get = downloadLinks();
   const lines = [
-    `${inviter} invited you to join their household “${householdName}” on Household Calendar.`,
+    `${inviter} invited you to join their household “${householdName}” on Calen.`,
     '',
     hasAccount
       ? 'Accept from the Invitations screen in the app. A household member will then confirm you on their device, and you\'ll share the family calendar, tasks, trips, and more.'
-      : 'Join Household Calendar to accept — you\'ll share the family calendar, tasks, trips, and more.',
+      : 'Join Calen to accept — you\'ll share the family calendar, tasks, trips, and more.',
     '',
     get.text,
   ];
@@ -289,7 +289,7 @@ function sendHouseholdInvitation({ toEmail, fromName, householdName, hasAccount 
 <p style="margin:0 0 20px;">${
         hasAccount
           ? 'Accept from the <strong>Invitations</strong> screen in the app. A household member will then confirm you on their device, and you\'ll share the family calendar, tasks, trips, and more.'
-          : 'Join Household Calendar to accept — you\'ll share the family calendar, tasks, trips, and more.'
+          : 'Join Calen to accept — you\'ll share the family calendar, tasks, trips, and more.'
       }</p>
 <div style="text-align:center;margin:0 0 4px;">${get.html}</div>`
     ),
@@ -381,8 +381,8 @@ function sendEventInvitation({ toEmail, fromName, event, hasAccount, ics }) {
     'The attached invite.ics adds this event to Apple, Google, or Outlook Calendar.',
     '',
     hasAccount
-      ? 'You can also accept or decline this invitation from the Invitations screen in the Household Calendar app — accepting adds the event to your calendar there.'
-      : 'Join Household Calendar to keep events like this on a shared family calendar.',
+      ? 'You can also accept or decline this invitation from the Invitations screen in the Calen app — accepting adds the event to your calendar there.'
+      : 'Join Calen to keep events like this on a shared family calendar.',
     '',
     get.text,
   ];
@@ -401,8 +401,8 @@ function sendEventInvitation({ toEmail, fromName, event, hasAccount, ics }) {
 <p style="margin:0 0 16px;">The attached <strong>invite.ics</strong> adds this event to Apple, Google, or Outlook Calendar.</p>
 <p style="margin:0 0 20px;">${
       hasAccount
-        ? 'You can also accept or decline this invitation from the <strong>Invitations</strong> screen in the Household Calendar app — accepting adds the event to your calendar there.'
-        : 'Join Household Calendar to keep events like this on a shared family calendar.'
+        ? 'You can also accept or decline this invitation from the <strong>Invitations</strong> screen in the Calen app — accepting adds the event to your calendar there.'
+        : 'Join Calen to keep events like this on a shared family calendar.'
     }</p>
 <div style="text-align:center;margin:0 0 4px;">${get.html}</div>`
   );
@@ -429,8 +429,8 @@ function sendCalendarInvitation({ toEmail, fromName, calendarName, hasAccount })
     `  ${calendarName}`,
     '',
     hasAccount
-      ? 'Accept or decline from the Invitations screen in the Household Calendar app — accepting shows this calendar and its events alongside your own.'
-      : 'Join Household Calendar to see this calendar and keep your own family calendar in one place.',
+      ? 'Accept or decline from the Invitations screen in the Calen app — accepting shows this calendar and its events alongside your own.'
+      : 'Join Calen to see this calendar and keep your own family calendar in one place.',
     '',
     get.text,
   ];
@@ -441,8 +441,8 @@ function sendCalendarInvitation({ toEmail, fromName, calendarName, hasAccount })
 </div>
 <p style="margin:0 0 20px;">${
       hasAccount
-        ? 'Accept or decline from the <strong>Invitations</strong> screen in the Household Calendar app — accepting shows this calendar and its events alongside your own.'
-        : 'Join Household Calendar to see this calendar and keep your own family calendar in one place.'
+        ? 'Accept or decline from the <strong>Invitations</strong> screen in the Calen app — accepting shows this calendar and its events alongside your own.'
+        : 'Join Calen to see this calendar and keep your own family calendar in one place.'
     }</p>
 <div style="text-align:center;margin:0 0 4px;">${get.html}</div>`
   );

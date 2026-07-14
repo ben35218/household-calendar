@@ -1,4 +1,4 @@
-# Render Blueprint for the Household Calendar API.
+# Render Blueprint for the Calen API.
 # Dashboard → New + → Blueprint → connect this repo; Render reads this file.
 # Secrets marked `sync: false` are entered in the Render UI, never committed.
 services:
@@ -52,7 +52,7 @@ services:
       - key: SMTP_USER
         value: no-reply@householdcalendar.com
       - key: MAIL_FROM
-        value: Household Calendar <no-reply@householdcalendar.com>
+        value: Calen <no-reply@householdcalendar.com>
       # --- support inbox in the admin app (Migadu, services/supportMail.js) ---
       - key: SUPPORT_EMAIL_USER
         value: support@householdcalendar.com

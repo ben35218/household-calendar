@@ -31,7 +31,7 @@ const { rateLimit } = require('../middleware/rateLimit');
 const router = express.Router();
 
 const rpID = process.env.PASSKEY_RP_ID || 'localhost';
-const rpName = 'Household Calendar';
+const rpName = 'Calen';
 const expectedOrigin = (process.env.PASSKEY_ORIGINS || `https://${rpID}`)
   .split(',').map((o) => o.trim()).filter(Boolean);
 
