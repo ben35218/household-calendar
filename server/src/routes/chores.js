@@ -4,6 +4,8 @@ const Chore = require('../models/Chore');
 const { requireAuth } = require('../middleware/auth');
 const { activity } = require('../middleware/activity');
 const { computeNextDueDate, anchorRecurrence } = require('../services/recurrence');
+const { isObjectId, pickRecordEnc } = require('../services/householdKey');
+const { plaintextCreateBlocked, E2EE_REQUIRED_MESSAGE } = require('../services/e2eePolicy');
 
 const router = express.Router();
 router.use(requireAuth);
@@ -29,7 +31,21 @@ router.get('/', async (req, res) => {
 
 router.post('/', activity('choreCreated'), async (req, res) => {
   try {
-    const data = { ...req.body, userId: { $in: req.scopeIds } };
+    let enc;
+    try { enc = pickRecordEnc(req.body); }
+    catch (msg) { return res.status(400).json({ error: String(msg) }); }
+    if (plaintextCreateBlocked(req.household, enc.enc)) {
+      return res.status(400).json({ error: E2EE_REQUIRED_MESSAGE });
+    }
+    // Owner is the creating user; the `$in: req.scopeIds` filter is for reads —
+    // storing it as the value made Mongoose try to cast { $in: [...] } to an
+    // ObjectId and fail, so chores could never be created via the API.
+    const data = {
+      ...req.body,
+      ...(isObjectId(req.body._id) ? { _id: req.body._id } : {}),
+      userId: req.user._id,
+      ...enc,
+    };
     if (!data.nextDueDate && data.recurrence) {
       data.nextDueDate = computeNextDueDate({ recurrence: data.recurrence }, new Date());
     }

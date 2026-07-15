@@ -7,6 +7,8 @@ const Receipt = require('../models/Receipt');
 const { requireAuth } = require('../middleware/auth');
 const { meter } = require('../middleware/usageMeter');
 const { activity } = require('../middleware/activity');
+const { isObjectId, pickRecordEnc } = require('../services/householdKey');
+const { plaintextCreateBlocked, E2EE_REQUIRED_MESSAGE } = require('../services/e2eePolicy');
 
 const router = express.Router();
 router.use(requireAuth);
@@ -95,7 +97,18 @@ router.get('/', async (req, res) => {
 
 router.post('/', activity('itemAdded'), async (req, res) => {
   try {
-    const item = await Item.create({ ...req.body, userId: req.user._id });
+    let enc;
+    try { enc = pickRecordEnc(req.body); }
+    catch (msg) { return res.status(400).json({ error: String(msg) }); }
+    if (plaintextCreateBlocked(req.household, enc.enc)) {
+      return res.status(400).json({ error: E2EE_REQUIRED_MESSAGE });
+    }
+    const item = await Item.create({
+      ...req.body,
+      ...(isObjectId(req.body._id) ? { _id: req.body._id } : {}),
+      userId: req.user._id,
+      ...enc,
+    });
     res.status(201).json(item);
   } catch (err) {
     res.status(400).json({ error: err.message });

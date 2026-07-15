@@ -14,6 +14,7 @@ const { rateLimit } = require('../middleware/rateLimit');
 const { meter } = require('../middleware/usageMeter');
 const { activity } = require('../middleware/activity');
 const { isObjectId, pickRecordEnc } = require('../services/householdKey');
+const { plaintextCreateBlocked, E2EE_REQUIRED_MESSAGE } = require('../services/e2eePolicy');
 const { DROP_FIELDS } = require('../services/dropReadiness');
 const { isTripShared } = require('../services/tripSharing');
 const { sendTripShareInvitation } = require('../services/mailer');
@@ -679,6 +680,9 @@ router.post('/', activity('tripCreated'), async (req, res) => {
     let enc;
     try { enc = pickRecordEnc(req.body); }
     catch (msg) { return res.status(400).json({ error: msg }); }
+    if (plaintextCreateBlocked(req.household, enc.enc)) {
+      return res.status(400).json({ error: E2EE_REQUIRED_MESSAGE });
+    }
     const trip = await Trip.create({
       ...(isObjectId(req.body._id) ? { _id: req.body._id } : {}),
       userId: req.user._id, ...pick(req.body, TRIP_FIELDS), ...enc,
@@ -743,10 +747,17 @@ router.post('/:id/items', async (req, res) => {
     });
     applyItemBody(item, req.body, req.user.householdId);
     // A shared trip stays plaintext-readable for collaborators (§9.3): never seal
-    // its items. Private-trip items keep the client's ciphertext as usual.
+    // its items. Private-trip items keep the client's ciphertext as usual, and
+    // under the mandate must carry it.
     try {
       if (isTripShared(trip)) { item.enc = undefined; item.keyVersion = undefined; }
-      else Object.assign(item, pickRecordEnc(req.body));
+      else {
+        const enc = pickRecordEnc(req.body);
+        if (plaintextCreateBlocked(req.household, enc.enc)) {
+          return res.status(400).json({ error: E2EE_REQUIRED_MESSAGE });
+        }
+        Object.assign(item, enc);
+      }
     } catch (msg) { return res.status(400).json({ error: msg }); }
     await item.save();
     res.status(201).json(item);

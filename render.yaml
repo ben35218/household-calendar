@@ -70,6 +70,11 @@ services:
       # android:apk-key-hash:<hash> origin (comma-separated) for Play builds.
       - key: PASSKEY_RP_ID
         value: householdcalendar.com
+      # --- mandatory E2EE (§9) ---
+      # Minimum app version that always sends record ciphertext. The drop-readiness
+      # gate blocks a household with any member on a pre-mandate build below this.
+      - key: E2EE_MIN_APP_VERSION
+        value: 1.0.0
       # --- secrets / set in the Render dashboard ---
       - key: MONGODB_URI
         sync: false

@@ -5,6 +5,7 @@ const path = require('path');
 const fs = require('fs');
 const FoodInventory = require('../models/FoodInventory');
 const { isObjectId, pickRecordEnc } = require('../services/householdKey');
+const { plaintextCreateBlocked, E2EE_REQUIRED_MESSAGE } = require('../services/e2eePolicy');
 const { requireAuth } = require('../middleware/auth');
 const { meter } = require('../middleware/usageMeter');
 const { activity } = require('../middleware/activity');
@@ -119,6 +120,9 @@ router.post('/', activity('inventoryAdded'), async (req, res) => {
     let enc;
     try { enc = pickRecordEnc(req.body); }
     catch (msg) { return res.status(400).json({ error: msg }); }
+    if (plaintextCreateBlocked(req.household, enc.enc)) {
+      return res.status(400).json({ error: E2EE_REQUIRED_MESSAGE });
+    }
     const item = await FoodInventory.create({
       ...(isObjectId(req.body._id) ? { _id: req.body._id } : {}),
       userId: req.user._id,

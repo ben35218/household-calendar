@@ -5,6 +5,7 @@ const Person  = require('../models/Person');
 const { requireAuth } = require('../middleware/auth');
 const { meter, getConfig } = require('../middleware/usageMeter');
 const { isObjectId, pickRecordEnc } = require('../services/householdKey');
+const { plaintextCreateBlocked, E2EE_REQUIRED_MESSAGE } = require('../services/e2eePolicy');
 
 const router = express.Router();
 router.use(requireAuth);
@@ -92,6 +93,9 @@ router.post('/', async (req, res) => {
     let enc;
     try { enc = pickRecordEnc(req.body); }
     catch (msg) { return res.status(400).json({ error: msg }); }
+    if (plaintextCreateBlocked(req.household, enc.enc)) {
+      return res.status(400).json({ error: E2EE_REQUIRED_MESSAGE });
+    }
     const person = await Person.create({
       ...(isObjectId(req.body._id) ? { _id: req.body._id } : {}),
       userId: req.user._id,
@@ -116,6 +120,9 @@ router.post('/self', async (req, res) => {
       let enc;
       try { enc = pickRecordEnc(req.body); }
       catch (msg) { return res.status(400).json({ error: msg }); }
+      if (plaintextCreateBlocked(req.household, enc.enc)) {
+        return res.status(400).json({ error: E2EE_REQUIRED_MESSAGE });
+      }
       const { name, relationship, birthday, interests, notes, address, phone, email } = req.body;
       self = await Person.create({
         ...(isObjectId(req.body._id) ? { _id: req.body._id } : {}),
@@ -301,8 +308,8 @@ router.post('/classify', meter('chat', 'contactImport'), async (req, res) => {
     }));
 
     const config = await getConfig();
-    const plan = req.household?.plan || 'free';
-    const model = plan === 'free' ? config.models.freeChat : config.models.paidChat;
+    // Sonnet on all tiers: every plan uses the paid chat model.
+    const model = config.models.paidChat;
     const client = new Anthropic({ apiKey });
 
     const resp = await client.messages.create({

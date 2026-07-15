@@ -137,6 +137,25 @@ export async function rotateHouseholdKey(): Promise<boolean> {
   }
 }
 
+// ── Born-encrypted activation (mandatory E2EE) ───────────────────────────────
+// After a fresh solo owner enrolls → mints the HDK → seeds their self-Person, a
+// mandated household flips itself E2EE-live on first login: the server drops its
+// plaintext (§9) so the boundary is live from day one. Idempotent and best-
+// effort — a not-yet-ready or exempt household is simply left as-is. On the first
+// login the register-seeded self-Person is still plaintext, so a `stragglers`
+// result triggers the re-encrypt pass (which seals it) and one retry.
+export async function activateBornEncryptedHousehold(): Promise<boolean> {
+  if (!currentHDK()) return false; // no key held → nothing to activate yet
+  let { data } = await householdApi.activate();
+  if (data.status === 'stragglers') {
+    // Seal any server-seeded plaintext (e.g. the self-Person), then retry once.
+    const { reencryptStragglers } = await import('./dropMigration');
+    await reencryptStragglers().catch(() => {});
+    ({ data } = await householdApi.activate());
+  }
+  return !!data.e2eeActive;
+}
+
 // ── Record encryption (Phase 3 dual-write) ───────────────────────────────────
 // A client-minted Mongo ObjectId so a new encrypted record's AAD can bind to its
 // _id before the server round-trip. 4-byte time + 8 random bytes as hex.

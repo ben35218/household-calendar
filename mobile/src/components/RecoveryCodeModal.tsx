@@ -5,7 +5,7 @@
 // "I've saved it" gate is deliberate friction. Mirrors the web RecoveryCodeDialog.
 
 import React, { useEffect, useState } from 'react';
-import { Modal, View, Text, StyleSheet, Pressable } from 'react-native';
+import { Modal, View, Text, StyleSheet, Pressable, Alert } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
 import { colors, spacing, radius } from '../theme';
 import { Button } from './ui';
@@ -13,14 +13,25 @@ import {
   subscribeRecoveryCode,
   getPendingRecoveryCode,
   clearRecoveryCode,
+  addPasskeyFactor,
 } from '../lib/e2ee';
+import { passkeysSupported } from '../lib/passkeys';
 
 export default function RecoveryCodeModal() {
   const [code, setCode] = useState<string | null>(getPendingRecoveryCode());
   const [acknowledged, setAcknowledged] = useState(false);
   const [copied, setCopied] = useState(false);
+  // Two-step flow: capture the recovery code, then (where supported) offer a
+  // passkey as a convenient second unlock factor. Under the mandate, losing
+  // every factor means the data is unrecoverable — so we push both.
+  const [phase, setPhase] = useState<'code' | 'passkey'>('code');
+  const [busy, setBusy] = useState(false);
 
-  useEffect(() => subscribeRecoveryCode(() => setCode(getPendingRecoveryCode())), []);
+  useEffect(() => subscribeRecoveryCode(() => {
+    setCode(getPendingRecoveryCode());
+    setPhase('code');
+    setAcknowledged(false);
+  }), []);
 
   async function copy() {
     if (!code) return;
@@ -29,43 +40,79 @@ export default function RecoveryCodeModal() {
     setTimeout(() => setCopied(false), 1500);
   }
 
-  function done() {
+  function close() {
     setAcknowledged(false);
+    setPhase('code');
     clearRecoveryCode();
+  }
+
+  // Advance from the recovery-code step: offer the passkey step where the device
+  // supports it, otherwise finish.
+  function afterCode() {
+    if (passkeysSupported()) setPhase('passkey');
+    else close();
+  }
+
+  async function enablePasskey() {
+    setBusy(true);
+    try {
+      const ok = await addPasskeyFactor();
+      if (ok) close();
+    } catch (err) {
+      Alert.alert('Couldn’t set up Face ID', (err as Error)?.message ?? 'Please try again later.');
+    } finally {
+      setBusy(false);
+    }
   }
 
   return (
     <Modal visible={!!code} transparent animationType="fade" onRequestClose={() => {}}>
       <View style={styles.backdrop}>
         <View style={styles.card}>
-          <Text style={styles.title}>Save your recovery code</Text>
-          <Text style={styles.body}>
-            Your data is end-to-end encrypted. This one-time code is the only way to
-            regain access if you lose your password and other sign-in methods.{' '}
-            <Text style={styles.bold}>We can’t recover it for you.</Text>
-          </Text>
+          {phase === 'code' ? (
+            <>
+              <Text style={styles.title}>Save your recovery code</Text>
+              <Text style={styles.body}>
+                Your data is end-to-end encrypted. This one-time code is the only way to
+                regain access if you lose your password and other sign-in methods.{' '}
+                <Text style={styles.bold}>We can’t recover it for you.</Text>
+              </Text>
 
-          <View style={styles.codeBox}>
-            <Text style={styles.code} selectable>{code}</Text>
-          </View>
+              <View style={styles.codeBox}>
+                <Text style={styles.code} selectable>{code}</Text>
+              </View>
 
-          <Pressable onPress={copy} style={styles.copyBtn}>
-            <Text style={styles.copyText}>{copied ? 'Copied ✓' : 'Copy code'}</Text>
-          </Pressable>
+              <Pressable onPress={copy} style={styles.copyBtn}>
+                <Text style={styles.copyText}>{copied ? 'Copied ✓' : 'Copy code'}</Text>
+              </Pressable>
 
-          <Text style={styles.note}>
-            Resetting your password restores sign-in only — it does not by itself
-            decrypt old data. Keep this code.
-          </Text>
+              <Text style={styles.note}>
+                Resetting your password restores sign-in only — it does not by itself
+                decrypt old data. Keep this code.
+              </Text>
 
-          <Pressable style={styles.check} onPress={() => setAcknowledged((v) => !v)}>
-            <View style={[styles.checkbox, acknowledged && styles.checkboxOn]}>
-              {acknowledged && <Text style={styles.checkmark}>✓</Text>}
-            </View>
-            <Text style={styles.checkLabel}>I’ve saved my recovery code somewhere safe</Text>
-          </Pressable>
+              <Pressable style={styles.check} onPress={() => setAcknowledged((v) => !v)}>
+                <View style={[styles.checkbox, acknowledged && styles.checkboxOn]}>
+                  {acknowledged && <Text style={styles.checkmark}>✓</Text>}
+                </View>
+                <Text style={styles.checkLabel}>I’ve saved my recovery code somewhere safe</Text>
+              </Pressable>
 
-          <Button title="Done" onPress={done} disabled={!acknowledged} />
+              <Button title="Continue" onPress={afterCode} disabled={!acknowledged} />
+            </>
+          ) : (
+            <>
+              <Text style={styles.title}>Add Face ID unlock</Text>
+              <Text style={styles.body}>
+                Add a passkey so you can unlock your encrypted data with Face ID or Touch
+                ID — a faster second factor if you ever forget your password.
+              </Text>
+              <Button title={busy ? 'Setting up…' : 'Enable Face ID'} onPress={enablePasskey} disabled={busy} />
+              <Pressable style={styles.skip} onPress={close} disabled={busy}>
+                <Text style={styles.skipText}>Not now</Text>
+              </Pressable>
+            </>
+          )}
         </View>
       </View>
     </Modal>
@@ -101,4 +148,6 @@ const styles = StyleSheet.create({
   checkboxOn: { backgroundColor: colors.primary, borderColor: colors.primary },
   checkmark: { color: '#fff', fontSize: 14, fontWeight: '700' },
   checkLabel: { color: colors.text, flex: 1, fontSize: 14 },
+  skip: { alignSelf: 'center', paddingVertical: spacing.sm },
+  skipText: { color: colors.textMuted, fontSize: 14, fontWeight: '600' },
 });

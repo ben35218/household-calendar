@@ -19,6 +19,12 @@ const householdSchema = new mongoose.Schema({
   // seeds encrypted records instead). Gates Person.ensureSelf + the onboarding
   // self-Person seed. Defaults false → identical pre-drop behavior.
   e2eeActive: { type: Boolean, default: false },
+  // Exempts this household from *mandatory* E2EE enforcement. E2EE is required for
+  // all new households (they're born encrypted); exempt households — QA/test
+  // accounts and the pre-mandate users grandfathered at rollout — may run without
+  // it. Independent of e2eeActive (an exempt household can still opt into E2EE).
+  // Enforcement also always bypasses when NODE_ENV === 'test'.
+  e2eeExempt: { type: Boolean, default: false },
   // Shared (household-level) settings — moved off User in Phase 3.
   timezone:           { type: String, default: 'America/Toronto' },
   homeAddress:        { type: String, default: '' },

@@ -12,7 +12,8 @@ const { rateLimit } = require('../middleware/rateLimit');
 const { dedupeCategoriesForScope } = require('../services/dedupeCategories');
 const { validateHDKEnvelope, validateRotation, pickRecordEnc } = require('../services/householdKey');
 const { computeReadiness, DROP_FIELDS } = require('../services/dropReadiness');
-const { cancelDeletionSet } = require('../services/cloudDeletion');
+const { e2eeRequired } = require('../services/e2eePolicy');
+const { dropPlaintext } = require('../scripts/dropPlaintext');
 const { CONTENT_MODELS } = require('../services/contentModels');
 const { sharedTripIds, excludeSharedFilter } = require('../services/tripSharing');
 const { outsideSharedCalendarKeys, excludeOutsideCalendarFilter } = require('../services/calendarSharing');
@@ -149,6 +150,26 @@ router.post('/e2ee/seal', async (req, res) => {
     );
     if (!r.matchedCount) return res.status(404).json({ error: 'record not found in your household' });
     res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// §9 born-encrypted activation. A brand-new mandated household (typically a solo
+// owner who just enrolled → minted HDK → sealed their seeded self-Person) flips
+// itself E2EE-live on first login: verify the policy applies, then reuse the
+// household-scoped plaintext drop. Idempotent — 'already-active' is success, and
+// an exempt/grandfathered household is left for the managed drop instead. The
+// client seals any stragglers and retries when this reports 'stragglers'.
+router.post('/e2ee/activate', async (req, res) => {
+  try {
+    if (!req.household) return res.status(404).json({ error: 'No household' });
+    if (!e2eeRequired(req.household)) {
+      return res.json({ status: 'not-required', e2eeActive: !!req.household.e2eeActive });
+    }
+    const result = await dropPlaintext(req.household._id, { commit: true });
+    const hh = await Household.findById(req.household._id).select('e2eeActive').lean();
+    res.json({ ...result, e2eeActive: !!hh?.e2eeActive });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -600,7 +621,7 @@ router.post('/join-requests/:id/approve', async (req, res) => {
     // wrapped to; otherwise the key changed mid-flight and we refuse.
     const requester = await User.findById(
       request.requesterUserId,
-      'identityPublicKey householdId storageMode cloudDeletionState',
+      'identityPublicKey householdId',
     );
     if (!requester) return res.status(404).json({ error: 'Requester no longer exists' });
     if (requester.identityPublicKey !== request.requesterPublicKey) {
@@ -617,18 +638,12 @@ router.post('/join-requests/:id/approve', async (req, res) => {
     );
 
     // Move the requester into this household (their own data comes with them) and
-    // clean up the household they left. §6.4 local→household: a member can't be
-    // local-only, so if the joiner had a pending local purge, cancel it and put
-    // them back on cloud sync (their data is now shared with the household).
+    // clean up the household they left.
     const oldId = requester.householdId;
-    const wasPurgeScheduled = requester.cloudDeletionState === 'scheduled';
     await User.updateOne(
       { _id: requester._id },
-      { $set: { householdId: req.household._id, ...cancelDeletionSet() } },
+      { $set: { householdId: req.household._id } },
     );
-    if (wasPurgeScheduled) {
-      await AuditLog.create({ userId: requester._id, householdId: req.household._id, event: 'deletion_canceled' });
-    }
     if (String(oldId) !== String(req.household._id)) await handleDeparture(oldId, requester._id);
 
     // Merge the joiner's default categories into the destination set so identical

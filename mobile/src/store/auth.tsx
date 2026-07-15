@@ -7,6 +7,7 @@ import { loadToken, saveToken, clearToken } from '../lib/secureToken';
 import {
   ensureEnrolledOnLogin, ensureHouseholdKey, unlockWithPasskey,
   unlockWithPasskeyPrfOutput, rewrapForNewPassword, lock as lockE2EE,
+  activateBornEncryptedHousehold,
 } from '../lib/e2ee';
 import { passkeysSupported, assertPasskeyForLogin } from '../lib/passkeys';
 import { queryClient } from '../lib/queryClient';
@@ -18,7 +19,12 @@ import { clearAll as clearReplica } from '../lib/replica';
 async function initE2EE(password: string) {
   try {
     const status = await ensureEnrolledOnLogin(password);
-    if (status !== 'locked') await ensureHouseholdKey();
+    if (status !== 'locked') {
+      const key = await ensureHouseholdKey();
+      // Fresh mandated household → go E2EE-live on this first unlock. No-op for
+      // exempt/grandfathered or already-active households.
+      if (key === 'ready') await activateBornEncryptedHousehold();
+    }
   } catch (err) {
     console.warn('[e2ee] enrollment/unlock skipped:', (err as Error)?.message ?? err);
   }

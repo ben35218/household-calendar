@@ -1,5 +1,8 @@
 const express = require('express');
+const path = require('path');
+const fs = require('fs');
 const CalendarEvent    = require('../models/CalendarEvent');
+const EventAttachment  = require('../models/EventAttachment');
 const CustomCalendar   = require('../models/CustomCalendar');
 const { requireAuth }  = require('../middleware/auth');
 const { activity }     = require('../middleware/activity');
@@ -7,9 +10,14 @@ const Person           = require('../models/Person');
 const { collectCalendarRecords, fetchCalendarSources } = require('../services/calendarData');
 const { effectiveCalendarAccess } = require('../services/calendarSharing');
 const { isObjectId, pickRecordEnc } = require('../services/householdKey');
+const { plaintextCreateBlocked, E2EE_REQUIRED_MESSAGE } = require('../services/e2eePolicy');
 
 const router = express.Router();
 router.use(requireAuth);
+
+// Where attachment files live on disk (matches routes/eventAttachments.js), for
+// the delete cascade below.
+const uploadDir = path.resolve(process.env.UPLOAD_DIR || './uploads');
 
 function buildReminderAt(startDate, reminderMinutes) {
   if (reminderMinutes == null || !startDate) return undefined;
@@ -164,6 +172,9 @@ router.post('/events', activity('eventCreated'), async (req, res) => {
     let encFields;
     try { encFields = pickRecordEnc(req.body); }
     catch (msg) { return res.status(400).json({ error: msg }); }
+    if (plaintextCreateBlocked(req.household, encFields.enc)) {
+      return res.status(400).json({ error: E2EE_REQUIRED_MESSAGE });
+    }
 
     // Custom calendars gate creation by access: View Only can't add events.
     // (Built-ins create under the requester's own userId — always allowed.)
@@ -297,6 +308,17 @@ router.delete('/events/:id', async (req, res) => {
       return res.status(403).json({ error: 'You have view-only access to this calendar' });
     }
     await CalendarEvent.deleteOne({ _id: req.params.id });
+    // Cascade: remove the event's file attachments (rows + on-disk files).
+    const attachments = await EventAttachment.find({ eventId: req.params.id }, 'storageKey').lean();
+    if (attachments.length) {
+      for (const a of attachments) {
+        if (a.storageKey) {
+          const filepath = path.join(uploadDir, a.storageKey);
+          if (fs.existsSync(filepath)) fs.unlinkSync(filepath);
+        }
+      }
+      await EventAttachment.deleteMany({ eventId: req.params.id });
+    }
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });

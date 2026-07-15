@@ -115,6 +115,8 @@ export interface Task {
   categoryId?: LinkedRef | string | null;
   itemId?: LinkedRef | string | null;
   templateId?: string;
+  // MaterialCommunityIcons glyph; falls back to the category icon when absent.
+  icon?: string;
   priority?: 'low' | 'medium' | 'high';
   estimatedDurationMins?: number;
   estimatedCost?: number;
@@ -169,6 +171,27 @@ export interface TaskTemplate {
   estimatedCost?: number;
   intervalKm?: number;
   defaultCategoryName?: string;
+  // MaterialCommunityIcons glyph; falls back to the category icon when absent.
+  icon?: string;
+  // Who typically does the work: DIY, hire a pro, or depends on setup.
+  diy?: 'diy' | 'pro' | 'depends';
+}
+
+// A maintenance task Calen staged during the AI plan chat, not yet created.
+// Carries everything needed to create the task once an item is linked in the
+// TaskTemplateReview flow; shape mirrors the server's normalizeProposedTask.
+export interface ProposedTask {
+  title: string;
+  defaultCategoryName?: string | null;
+  recurrence?: Recurrence;
+  nextDueDate?: string | null;
+  priority?: 'low' | 'medium' | 'high';
+  description?: string;
+  // Set when Calen sourced this from a curated template, so the created task
+  // links back to it (marks the template "in use").
+  templateId?: string;
+  // Who typically does the work (carried from the source template).
+  diy?: 'diy' | 'pro' | 'depends';
 }
 
 // ----- Chores ----------------------------------------------------------------
@@ -677,7 +700,16 @@ export const householdApi = {
   stragglers: () => api.get<E2eeStragglers>('/household/e2ee/stragglers'),
   seal: (payload: { collection: string; _id: string; enc: unknown; keyVersion?: number }) =>
     api.post('/household/e2ee/seal', payload),
+  // Born-encrypted activation: flip a fresh mandated household E2EE-live once its
+  // records already carry ciphertext (§9). Idempotent; the server no-ops for
+  // exempt/grandfathered households.
+  activate: () => api.post<E2eeActivateResult>('/household/e2ee/activate'),
 };
+
+export interface E2eeActivateResult {
+  status: 'committed' | 'already-active' | 'not-required' | 'not-ready' | 'stragglers' | 'dry-run';
+  e2eeActive: boolean;
+}
 
 export interface E2eeStragglerGroup {
   collection: string;
@@ -729,7 +761,7 @@ export const placesApi = {
   routeLeg: (payload: Record<string, unknown>) => api.post('/places/route-leg', payload),
 };
 
-// ----- Trips / Vacations -----------------------------------------------------
+// ----- Trips ------------------------------------------------------------------
 
 export type TripStatus = 'considering' | 'booked' | 'completed';
 export type TripItemType =
@@ -915,6 +947,7 @@ export interface CalendarEvent {
   endDate?: string;
   description?: string;
   location?: string;
+  url?: string;
   phone?: string;
   travelMinutes?: number | null;
   travelDistanceKm?: string | null;
@@ -990,6 +1023,29 @@ export interface CalendarRaw {
   selfId: string;
   groceryShoppingDay: number;
 }
+
+// A file attachment on a calendar event (photo / PDF). Same shape as Receipt,
+// scoped to an event instead of an item.
+export interface EventAttachment {
+  _id: string;
+  eventId?: string;
+  title: string;
+  fileSizeBytes?: number;
+  fileType?: string;         // original mime type (for opening the decrypted file)
+  createdAt?: string;
+  encrypted?: boolean;       // E2EE (Phase 4c): opaque ciphertext, decrypted on-device
+  wrappedFileKey?: string;   // HDK-wrapped per-file key (JSON), needed to decrypt
+  keyVersion?: number;       // which HDK version wrapped the file key
+}
+
+export const eventAttachmentsApi = {
+  list: (eventId: string) => api.get<EventAttachment[]>(`/calendar/events/${eventId}/attachments`),
+  delete: (id: string) => api.delete(`/calendar/attachments/${id}`),
+  // upload is handled via lib/upload (multipart, field 'file'); endpoint:
+  //   POST /calendar/events/:eventId/attachments/upload
+  // download is a Bearer / token-query URL built in the screen:
+  //   GET /calendar/attachments/:id/download
+};
 
 export const calendarApi = {
   get: (params?: { from?: string; to?: string }) => api.get<CalendarData>('/calendar', { params }),
@@ -1193,35 +1249,6 @@ export const weatherApi = {
   get: () => api.get<WeatherData>('/weather'),
   range: (from: string, to: string) => api.get('/weather/range', { params: { from, to } }),
   outlook: () => api.get<{ weeks: OutlookWeek[] }>('/weather/outlook'),
-};
-
-// ----- Storage mode / cloud-purge lifecycle (server: routes/storage.js) ------
-
-export type StorageMode = 'cloud' | 'local';
-export type CloudDeletionState = 'none' | 'scheduled' | 'purged';
-
-export interface StorageState {
-  storageMode: StorageMode;
-  cloudDeletionState: CloudDeletionState;
-  cloudDeletionScheduledAt: string | null;
-  localReplicaVerifiedAt: string | null;
-  canGoLocal: boolean;
-  memberCount: number;
-}
-
-// The download-first manifest the client proves before the server will schedule
-// a purge (§6.2). Shape mirrors services/cloudDeletion.js buildManifest.
-export interface ReplicaManifest {
-  total: number;
-  counts: Record<string, number>;
-  hash: string;
-}
-
-export const storageApi = {
-  getMode: () => api.get<StorageState>('/storage'),
-  switchToLocal: (manifest: ReplicaManifest) =>
-    api.post<StorageState>('/storage/switch-to-local', { manifest }),
-  switchToCloud: () => api.post<StorageState>('/storage/switch-to-cloud'),
 };
 
 // Native push device registration (server: routes/notifications.js).
