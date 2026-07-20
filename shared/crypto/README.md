@@ -1,11 +1,12 @@
 # @household/crypto
 
-Shared end-to-end-encryption primitives for Calen, used by the web
-client, admin app, and mobile app. See [`docs/E2EE-SYNC-PLAN.md`](../../docs/E2EE-SYNC-PLAN.md)
-for the full design.
+Shared end-to-end-encryption primitives for Calen, used by the mobile app and
+the admin web app. The auditable cryptographic specification is
+[`docs/CRYPTO-SPEC.md`](../../docs/CRYPTO-SPEC.md).
 
-**Phase 0 (crypto foundation) — implemented and tested.** No product surface is
-wired to this yet; that begins in Phase 1 (key management).
+**This is the live E2EE core.** End-to-end encryption is mandatory for every
+household — records are born encrypted and sealed with these primitives before
+they leave the device.
 
 ## Design in one paragraph
 
@@ -31,7 +32,7 @@ per-user X25519 identity keypair
 per-household symmetric HDK (versioned)
   └─ sealed-boxed (crypto_box_seal) to each member's public key  → HouseholdKeyEnvelope
   └─ encrypts records (XChaCha20-Poly1305, AAD-bound to record slot + key version)
-  └─ wraps per-file content keys; files streamed via secretstream
+  └─ wraps per-file content keys; file bytes encrypted as chunked AEAD
 ```
 
 ## Primitives
@@ -81,6 +82,6 @@ npm install
 npm test        # node:test runner (Node 26 runs the TS directly)
 ```
 
-14 tests cover record/file roundtrips, AAD location binding, tamper &
-truncation rejection, sealed-box HDK envelopes, all three factor types, and
-multi-factor independent recovery.
+The suite covers record/file roundtrips, AAD location binding, tamper &
+truncation rejection, sealed-box HDK envelopes, all three factor types,
+multi-factor independent recovery, and device linking.

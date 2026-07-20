@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cd \"$CLAUDE_PROJECT_DIR\" 2>/dev/null || exit 0; out=$(node scripts/check-spec-sync.mjs 2>&1); echo \"$out\" | grep -q 'possible drift' && jq -nc --arg m \"$out\" '{systemMessage:$m}' || true",
+            "statusMessage": "Checking spec sync…",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}

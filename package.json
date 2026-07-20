@@ -1,7 +1,7 @@
 {
   "name": "household-calendar",
   "version": "1.0.0",
-  "description": "Calen - home inventory, manuals & maintenance scheduler",
+  "description": "Calen - end-to-end-encrypted household calendar & AI assistant",
   "private": true,
   "scripts": {
     "dev:server": "npm --prefix server run dev",
@@ -14,6 +14,8 @@
     "typescript": "~6.0.3"
   },
   "dependencies": {
-    "expo": "^56.0.12"
+    "expo": "^56.0.12",
+    "react": "19.2.3",
+    "react-native": "0.85.3"
   }
 }
