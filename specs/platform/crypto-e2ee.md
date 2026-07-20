@@ -1,7 +1,7 @@
 ---
 title: Cryptography & E2EE
 status: current
-last-verified: dad7c5a (2026-07-20)
+last-verified: b242e6c (2026-07-20)
 code:
   - shared/crypto/src/core.ts
   - shared/crypto/src/enrollment.ts
@@ -88,8 +88,13 @@ the call). Each is documented in the relevant feature spec and in
 
 ## Open questions
 
-- `docs/CRYPTO-SPEC.md` §7 still lists `nextDueDate` as server-visible; with the
-  opaque store it should be sealed. Confirm and reconcile (also noted in
-  [data-model.md](data-model.md)).
+- **Reconcile `docs/CRYPTO-SPEC.md` §7 + `docs/TRANSPARENCY.md`.** Both still
+  list the **household name** and **`nextDueDate`** as server-visible. Both are
+  now **sealed** (C2 and D4 respectively — confirmed in `Household.js` /
+  `dropReadiness.DROP_FIELDS`). The user-facing docs are stale (conservative,
+  and prod households dropped before the re-seal backfill may still carry the
+  plaintext); update them once the prod re-drop is confirmed complete.
+- E3 (third-party audit) is the only remaining Signal-parity item — an ops/comms
+  engagement, not code.
 - E2 open-source action: publish `shared/crypto` + `CRYPTO-SPEC.md` so the
   claims are independently inspectable.

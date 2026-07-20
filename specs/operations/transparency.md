@@ -1,7 +1,7 @@
 ---
 title: Transparency (what Calen can/can't see)
 status: reference
-last-verified: dad7c5a (2026-07-20)
+last-verified: b242e6c (2026-07-20)
 code:
   - docs/TRANSPARENCY.md
 ---
@@ -19,7 +19,8 @@ This spec is the engineering pointer + the internal contract it commits us to.
 A server (or a valid legal request) can obtain **only**:
 
 - Account identity (email, name, timestamps) and household structure
-  (membership, join/leave timing, household **name**).
+  (membership, join/leave timing). The household **name** and home address are
+  **sealed** (Signal-parity C2) — not server-visible.
 - Encrypted records: existence, owning household, create/change time, key
   version, padded size — **never content or type** (opaque store; see
   [platform/data-model.md](../platform/data-model.md)).
@@ -39,7 +40,12 @@ or adds an external data flow (e.g. a new AI surface) MUST update
 [platform/crypto-e2ee.md](../platform/crypto-e2ee.md) and the relevant feature
 spec's "Encryption boundary" section.
 
-## Known state
+## Known corrections owed to docs/TRANSPARENCY.md
 
-The stale "Local-only mode / 7-day cloud purge" retention bullet was removed
-(2026-07-20) — that feature no longer exists in the code.
+- The stale "Local-only mode / 7-day cloud purge" retention bullet was removed
+  (2026-07-20) — that feature no longer exists in the code.
+- The doc still lists the **household name** and task **`nextDueDate`** as
+  server-visible; both are now sealed (Signal-parity C2 / D4). Update the
+  user-facing wording once the prod re-seal/re-drop backfill is confirmed
+  complete (until then the conservative wording is defensible for un-backfilled
+  prod households).

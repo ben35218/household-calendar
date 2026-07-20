@@ -1,7 +1,7 @@
 ---
 title: AI assistant (Calen)
 status: current
-last-verified: dad7c5a (2026-07-20)
+last-verified: b242e6c (2026-07-20)
 code:
   - mobile/src/screens/chat/
   - server/src/routes/{calendarChat,choresChat,maintenanceChat,maintenancePlanChat,tripsChat}.js
@@ -46,6 +46,10 @@ reference).
   anything leaves the device. No account identifiers are sent; requests egress
   from the server, not the user's IP. See
   [operations/transparency.md](../operations/transparency.md).
+- Payloads are also **query-scoped** (Signal-parity G4): the calendar assistant
+  sends only a conversation-derived **date window** of decrypted sources
+  (recurrence-safe), not the whole calendar — so a single question never ships
+  the full history.
 
 ### Phone calls
 

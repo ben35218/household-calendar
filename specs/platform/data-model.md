@@ -1,7 +1,7 @@
 ---
 title: Data model
 status: current
-last-verified: dad7c5a (2026-07-20)
+last-verified: b242e6c (2026-07-20)
 code:
   - server/src/models/Record.js        # the live opaque content store
   - server/src/models/encFields.js
@@ -49,6 +49,14 @@ The per-collection schemas — `CalendarEvent`, `Person`, `MaintenanceTask`,
 define the **decrypted shape** of what gets sealed into a Record's `enc`. The
 client seals `{ collection, ...fields }`; those field definitions are the schema.
 
+The exact **sealed field set per collection** is enumerated in
+[`services/dropReadiness.js`](../../server/src/services/dropReadiness.js) as
+`DROP_FIELDS` (the columns the drop nulls once ciphertext exists, and that
+`e2eePolicy.stripSealedContent` strips on writes to an active household). It is
+versioned (`DROP_FIELDS_VERSION`); notable additions over time: `nextDueDate`,
+`nextDueKm`/`intervalKm`/`lastServiceKm` (D4), odometer reading/notes,
+`RecipeSchedule.notes`, `Category.name` (D5), and `Household.name` (C2).
+
 > **Caveat for these schemas:** they carry `...encFields` and mark content fields
 > `requiredUntilSealed`, and some fields have comments calling them "plaintext
 > scope field" (e.g. `calendarType`, `alertAudience`). Those comments describe
@@ -63,8 +71,10 @@ client seals `{ collection, ...fields }`; those field definitions are the schema
 - **Identity/keys:** `User` (email, name, timestamps, auth factors, public key),
   `HouseholdKeyEnvelope` (HDK sealed per member × version), `ResourceKeyEnvelope`
   (calendar/trip keys for cross-household sharing), `DeviceLink`.
-- **Household/membership:** `Household` (name is plaintext), `HouseholdInvitation`,
-  `JoinRequest`.
+- **Household/membership:** `Household` — **name + `homeAddress`/`lat`/`lon` are
+  sealed** into `Household.enc` (Signal-parity C2/P5), nulled at the drop; owner,
+  key version, plan/billing, and grocery/timezone settings stay plaintext.
+  `HouseholdInvitation`, `JoinRequest`.
 - **Sharing & outside invitations:** `CustomCalendar`, `CalendarInvitation`,
   `EventInvitation`, `TripInvitation` — these carry the deliberate plaintext
   snapshots that make outside sharing work (see below).
@@ -81,18 +91,23 @@ client seals `{ collection, ...fields }`; those field definitions are the schema
 
 ## Authoritative server-visible set
 
-The honest list of what a server (or a legal request) can see is maintained in
-[`docs/CRYPTO-SPEC.md`](../../docs/CRYPTO-SPEC.md) §7 and
-[`docs/TRANSPARENCY.md`](../../docs/TRANSPARENCY.md): membership graph, household
-name, record existence/timing/(padded)size, key version, and the deliberate
-plaintext exceptions — content **shared outside** the household (trips/calendars),
-**event invitations** to non-account people, and **AI phone-call** essentials.
-See [platform/crypto-e2ee.md](crypto-e2ee.md).
+The honest list of what a server (or a legal request) can see: membership graph,
+record existence/timing/(padded)size, key version, plan/billing counts, device
+labels, and the deliberate plaintext exceptions — content **shared outside** the
+household (trips/calendars), **event invitations** to non-account people, and
+**AI phone-call** essentials. Household **name and home address are NOT** in this
+list (sealed, C2). See [platform/crypto-e2ee.md](crypto-e2ee.md).
+
+> `docs/CRYPTO-SPEC.md` §7 and `docs/TRANSPARENCY.md` still list household name
+> (and `nextDueDate`) as server-visible — stale since C2/D4. Reconcile once the
+> prod re-seal/re-drop backfill is confirmed complete.
 
 ## Open questions
 
 - Confirm whether any live client path still writes the legacy per-collection
   collections, or whether they are now purely historical + tooling.
-- `docs/CRYPTO-SPEC.md` §7 still lists `nextDueDate` scheduling metadata as
-  server-visible; verify whether that survives the opaque-store move or is now
-  sealed (it would be, if it rides in `enc`). Pin the answer here.
+
+*(Resolved 2026-07-20: `nextDueDate` and the km-scheduling fields are **sealed**
+— they are in `DROP_FIELDS` (D4) and scheduling runs client-side via the
+`shared/calendar` km engine. The earlier "is nextDueDate server-visible?"
+question is closed.)*

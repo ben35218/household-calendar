@@ -1,7 +1,7 @@
 ---
 title: Maintenance (items, tasks, chores)
 status: current
-last-verified: dad7c5a (2026-07-20)
+last-verified: b242e6c (2026-07-20)
 code:
   - mobile/src/screens/maintenance/
   - server/src/routes/{items,tasks,chores,taskTemplates,choreTemplates,odometer,manuals}.js
@@ -65,13 +65,14 @@ odometer tracking for mileage-based service.
 ## Encryption boundary
 
 Items, tasks, chores, and odometer logs are sealed content records; manual file
-bytes are encrypted per-file. **Note the `nextDueDate` open question** — the
-per-model schedule fields are legacy-era plaintext; in the opaque store they are
-sealed. Reminder timing is on-device — see [notifications.md](notifications.md)
-and [platform/data-model.md](../platform/data-model.md).
+bytes are encrypted per-file. **Scheduling is sealed too** — `nextDueDate`,
+`nextDueKm`, `intervalKm`, `lastServiceKm`, and odometer reading/notes are in
+`DROP_FIELDS` (Signal-parity D4/D5), and due-date/mileage computation runs
+client-side via the `shared/calendar` engine. Reminder timing is on-device — see
+[notifications.md](notifications.md) and
+[platform/data-model.md](../platform/data-model.md).
 
 ## Open questions
 
-- Confirm mileage-based due recomputation path end-to-end (odometer → nextDueKm).
-- Pin whether any scheduling field remains server-visible after the opaque-store
-  move (tracked in data-model + crypto-e2ee).
+- Confirm mileage-based due recomputation path end-to-end (odometer → nextDueKm),
+  now that the km engine lives in `shared/calendar`.

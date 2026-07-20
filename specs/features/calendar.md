@@ -1,7 +1,7 @@
 ---
 title: Calendar & events
 status: current
-last-verified: dad7c5a (2026-07-20)
+last-verified: b242e6c (2026-07-20)
 code:
   - mobile/src/screens/calendar/
   - mobile/src/lib/calendar.ts
@@ -109,12 +109,14 @@ and printing. It is also the anchor for the calendar AI assistant.
     describe the earlier dual-write era; they are **not** server-visible for new
     records. Reminder *timing* is handled on-device (local notifications), not by
     a server-visible schedule field.
-- **Outside sharing is a deliberate plaintext exception.** An event invitation
-  to a non-household person carries a *readable snapshot* of that one event
-  (that's what makes the email + `.ics` attachment work); revoking the
-  invitation deletes the snapshot. A calendar shared by email is likewise stored
-  readably for the collaborator. See `platform/crypto-e2ee.md` and
-  `docs/TRANSPARENCY.md`.
+- **Outside sharing is a minimized plaintext exception.** Event invitations to
+  people who **have accounts** are **sealed** to the recipient (Signal-parity
+  D3) — no plaintext snapshot. Only an invitation to someone **without an
+  account** carries a *readable snapshot* of that one event (that's what makes
+  the email + `.ics` attachment work); revoking the invitation deletes the
+  snapshot. A calendar shared outside the household uses a per-resource
+  CalendarKey (D1) so the collaborator decrypts it without the HDK. See
+  [platform/crypto-e2ee.md](../platform/crypto-e2ee.md) and `docs/TRANSPARENCY.md`.
 
 ## Out of scope
 
@@ -129,6 +131,6 @@ and printing. It is also the anchor for the calendar AI assistant.
 ## Open questions
 
 - Document the ICS subscription refresh cadence and failure behavior.
-- Confirm whether reminder scheduling still touches any server-visible field for
-  events (it should be fully on-device now) and pin it in
-  [notifications.md](notifications.md).
+
+*(Resolved 2026-07-20: event reminder scheduling is fully on-device; no
+server-visible schedule field remains — see [notifications.md](notifications.md).)*

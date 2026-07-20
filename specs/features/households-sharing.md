@@ -1,7 +1,7 @@
 ---
 title: Households & sharing
 status: current
-last-verified: dad7c5a (2026-07-20)
+last-verified: b242e6c (2026-07-20)
 code:
   - mobile/src/screens/profile/HouseholdScreen.tsx
   - server/src/routes/household.js
@@ -28,8 +28,19 @@ verification. The cryptographic mechanics are in
 - Every user has exactly one `householdId`. `Household` has an owner; the owner
   is the only member who can remove others and is the authority for key
   rotation.
-- The household `name` is plaintext metadata (admin/support UX depends on it);
-  everything else about the household's content is encrypted.
+- The household **`name` is encrypted content** (Signal-parity C2): it is sealed
+  into the household-settings blob (`Household.enc`, alongside `homeAddress`) and
+  the server nulls the plaintext at/after the drop, so admin/support identify
+  households by **id**, not name. It is stripped server-side on writes to an
+  `e2eeActive` household (`services/e2eePolicy.stripSealedContent`). Plaintext
+  routing that necessarily stays server-visible: membership graph, owner, key
+  version, plan/billing.
+
+  > Reconcile: `docs/TRANSPARENCY.md` and `docs/CRYPTO-SPEC.md` §7 still list the
+  > household name as server-visible (conservative/pre-C2 wording, and prod
+  > households dropped before the re-seal backfill may still carry it). The
+  > sealed design is the code truth; the user-facing docs need updating once the
+  > prod re-drop is confirmed complete.
 
 ### Invitations & joining
 
@@ -90,8 +101,9 @@ verification. The cryptographic mechanics are in
 
 ## Encryption boundary
 
-Membership graph and household name are server-visible by necessity; all content
-is sealed. See [platform/crypto-e2ee.md](../platform/crypto-e2ee.md) and
+The **membership graph** (who is in which household, join/leave timing) is
+server-visible by necessity. The household **name and home address are sealed**
+(C2). See [platform/crypto-e2ee.md](../platform/crypto-e2ee.md) and
 [operations/transparency.md](../operations/transparency.md).
 
 ## Open questions

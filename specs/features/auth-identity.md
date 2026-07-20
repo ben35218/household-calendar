@@ -1,7 +1,7 @@
 ---
 title: Auth & identity
 status: current
-last-verified: dad7c5a (2026-07-20)
+last-verified: b242e6c (2026-07-20)
 code:
   - mobile/src/screens/auth/
   - mobile/src/store/auth.tsx
@@ -55,6 +55,15 @@ your private key. The key primitives are in
   `RESET_COOLDOWN_HOURS`) and loudly announced to existing devices + email; the
   user can cancel it with `POST /auth/reset/cancel`.
 - Auth endpoints are per-IP rate-limited; sessions slide via `X-Refreshed-Token`.
+
+### Device security (screen capture & app lock)
+
+- **Screen security** (Signal-parity A3): screenshots/recording can be blocked
+  (`expo-screen-capture`) and an app-switcher `PrivacyShield` cover hides content;
+  toggled by the `screenSecurity` pref (default on).
+- **App lock** (A4, `useAppLock`): the app can require Face ID again after being
+  backgrounded, with a configurable delay (Never / 0 / 1 / 5 min) in Sign-in &
+  Security.
 
 ### Factors, sessions, devices
 
