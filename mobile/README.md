@@ -1,7 +1,9 @@
 # Calen — Mobile (iOS + Android)
 
-Native app built with **React Native + Expo (SDK 56) + TypeScript**. It talks to
-the same Express/Mongoose API as the web app and admin console.
+Native app built with **React Native + Expo (SDK 56) + TypeScript**. It is the
+primary end-user client, talking to the same Express/Mongoose API that backs the
+admin console. See [`specs/`](../specs/) for what the app does; this file is the
+mobile dev-setup entry point.
 
 ## Stack
 - **Expo** managed workflow, **TypeScript**
@@ -15,14 +17,14 @@ the same Express/Mongoose API as the web app and admin console.
 ## Project layout
 ```
 src/
-  api/            axios client + typed endpoint groups (ports services/api.js)
-  components/     shared UI kit (Button, Input, Card)
-  lib/            secureToken, push, media, upload, purchases, queryClient
+  api/            axios client + typed endpoint groups (+ the opaque record store)
+  components/     shared UI kit (see mobile/CLAUDE.md for conventions)
+  lib/            e2ee, recordStore, replica, notifications, secureToken, push, media, upload, purchases, …
   navigation/     Root / Auth / Tab / Profile navigators
-  screens/        Login, Register, Dashboard, Calendar, Tasks, Profile, Paywall
+  screens/        by area: auth, calendar, kitchen, maintenance, trips, chat, profile, plan
   store/          auth context (session + bootstrap)
   config.ts       API base URL + RevenueCat key resolution
-  theme.ts        design tokens mirroring the web Vuetify palette
+  theme.ts        design tokens (see mobile/CLAUDE.md)
 ```
 
 ## Running locally
@@ -45,8 +47,9 @@ src/
   (`REVENUECAT_WEBHOOK_SECRET` on the server).
 
 ## Status
-- ✅ Foundation: auth (login/register/secure token), navigation, API layer, server state.
-- ✅ Native capability scaffolds: camera/library/document pickers + upload helper, push
-  registration, RevenueCat paywall.
-- 🚧 Feature screens are being ported wave by wave (see the plan). Calendar and the
-  trip timeline are the most involved.
+
+Shipped and in active development — all feature areas (calendar, kitchen,
+maintenance, trips, people, chat/AI, plan/billing) are built on end-to-end
+encryption. See [`specs/`](../specs/) for current behavior per area and
+[`specs/operations/release.md`](../specs/operations/release.md) for the release
+flow.

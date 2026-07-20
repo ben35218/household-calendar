@@ -1,7 +1,7 @@
 ---
 title: Release & build
 status: current
-last-verified: dad7c5a (2026-07-20)
+last-verified: c69bdfd (2026-07-20)
 code:
   - mobile/RELEASE.md
   - mobile/eas.json
@@ -63,11 +63,10 @@ A native **dev/store build** is required whenever native modules change
 
 - The old **"per-household plaintext drop"** go-live is obsolete: E2EE is now
   mandatory and born-encrypted, so there is no plaintext to drop. (The former
-  `docs/RELEASE-SMOKE-CHECKLIST.md` was written around that flow — it should be
-  retired or rewritten to this pass.)
+  `docs/RELEASE-SMOKE-CHECKLIST.md`, written around that flow, was retired
+  2026-07-20 — this spec supersedes it.)
 - Cross-household trip-attachment encryption (design gap — see [trips.md](../features/trips.md)).
 
 ## Open questions
 
-- Retire/replace `docs/RELEASE-SMOKE-CHECKLIST.md` (E2EE-go-live specific).
 - Document the Android release track status (currently iOS-first).
