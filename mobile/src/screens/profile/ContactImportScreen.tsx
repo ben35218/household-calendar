@@ -8,7 +8,8 @@ import { useQueryClient } from '@tanstack/react-query';
 // functions (getContactsAsync/requestPermissionsAsync/Fields) live under /legacy.
 import * as Contacts from 'expo-contacts/legacy';
 import { peopleApi, ImportContact, Person } from '../../api';
-import { Button, Input, SegmentedControl } from '../../components/ui';
+import { Button, Input, SegmentedControl, SwitchRow } from '../../components/ui';
+import { usePrivacyPrefs } from '../../lib/privacyPrefs';
 import { ASSISTANT_NAME } from '../../config';
 import { colors, spacing } from '../../theme';
 import type { PersonPrefill } from '../../navigation/types';
@@ -34,14 +35,26 @@ type Row = {
 // address book, then offers two paths — Direct (you tag each) or AI-assisted
 // (Calen categorizes + pre-fills, web-searching professionals) — and lets you
 // import everything at once or review each in the person form first.
+//
+// AI-assisted classification necessarily ships contact names/companies to the
+// model, so it is consent-gated (spec: ai-assistant.md) on BOTH the AI master
+// switch and the "personal & contact info in prompts" toggle. With either off,
+// only Direct import is offered — the app never surfaces an AI path the server
+// (requireAiEnabled) would reject or that the user has opted out of.
 export default function ContactImportScreen() {
   const nav = useNavigation<Nav>();
   const qc = useQueryClient();
+  const { prefs } = usePrivacyPrefs();
+  // AI-assisted import needs the master switch AND permission to put contact
+  // details in prompts (that's exactly what classify does).
+  const aiImportAllowed = prefs.aiEnabled && prefs.aiUsePersonalInfo;
 
   const [status, setStatus] = useState<'loading' | 'denied' | 'ready'>('loading');
   const [rows, setRows] = useState<Row[]>([]);
   const [search, setSearch] = useState('');
   const [method, setMethod] = useState<Method>('ai');
+  // Web-search enrichment of professionals is opt-in (spec: ai-assistant.md).
+  const [enrich, setEnrich] = useState(false);
   const [applyMode, setApplyMode] = useState<ApplyMode>('review');
   const [busy, setBusy] = useState(false);
 
@@ -91,6 +104,11 @@ export default function ContactImportScreen() {
     })();
   }, [qc]);
 
+  // Fall back to Direct if consent is revoked (or resolves late after mount).
+  useEffect(() => {
+    if (!aiImportAllowed && method === 'ai') setMethod('direct');
+  }, [aiImportAllowed, method]);
+
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     if (!q) return rows;
@@ -114,7 +132,7 @@ export default function ContactImportScreen() {
 
   // Turn selected rows into prefills — via the AI classifier or a direct 1:1 map.
   async function buildPrefills(): Promise<PersonPrefill[]> {
-    if (method === 'direct') {
+    if (method === 'direct' || !aiImportAllowed) {
       return selected.map((r) => ({
         type: r.type,
         name: r.name,
@@ -132,7 +150,7 @@ export default function ContactImportScreen() {
       birthday: r.birthday,
       company: r.company,
     }));
-    const { data } = await peopleApi.classify(contacts);
+    const { data } = await peopleApi.classify(contacts, enrich);
     const byKey = new Map(data.results.map((c) => [c.key, c]));
     return selected.map((r) => {
       const c = byKey.get(r.key);
@@ -207,7 +225,7 @@ export default function ContactImportScreen() {
   }
 
   const busyLabel =
-    method === 'ai' && applyMode !== 'review'
+    method === 'ai' && aiImportAllowed && applyMode !== 'review'
       ? `${ASSISTANT_NAME} is sorting…`
       : applyMode === 'review'
       ? `Review ${selectedCount}`
@@ -216,21 +234,44 @@ export default function ContactImportScreen() {
   return (
     <View style={styles.container}>
       <View style={styles.toolbar}>
-        <View style={styles.selectorRow}>
-          <SegmentedControl
-            value={method}
-            options={[
-              { label: 'AI-assisted', value: 'ai' },
-              { label: 'Direct', value: 'direct' },
-            ]}
-            onChange={(v) => setMethod(v as Method)}
-          />
-        </View>
+        {aiImportAllowed ? (
+          <View style={styles.selectorRow}>
+            <SegmentedControl
+              value={method}
+              options={[
+                { label: 'AI-assisted', value: 'ai' },
+                { label: 'Direct', value: 'direct' },
+              ]}
+              onChange={(v) => setMethod(v as Method)}
+            />
+          </View>
+        ) : null}
         <Text style={styles.selectorHint}>
-          {method === 'ai'
-            ? `${ASSISTANT_NAME} sorts each into Family / Friends / Professionals and fills in the details (searching the web for businesses).`
+          {!aiImportAllowed
+            ? `AI-assisted sorting is off because ${
+                prefs.aiEnabled
+                  ? '“Use personal & contact info in prompts” is'
+                  : '“Use AI features” is'
+              } turned off in Privacy & data. Tag each contact yourself; details come straight from your phone.`
+            : method === 'ai'
+            ? `${ASSISTANT_NAME} sorts each into Family / Friends / Professionals from names and companies only — phone numbers, emails, and birthdays stay on your device.`
             : 'Tag each contact yourself; details come straight from your phone.'}
         </Text>
+        {aiImportAllowed && method === 'ai' ? (
+          <>
+            <SwitchRow
+              label="Look up professionals on the web"
+              value={enrich}
+              onValueChange={setEnrich}
+              color={colors.primary}
+            />
+            <Text style={styles.selectorHint}>
+              {enrich
+                ? 'Business names, addresses, and phone numbers may be sent to a web search to verify and complete professional contacts.'
+                : 'Professionals are sorted without any web lookup — nothing about them leaves the AI request.'}
+            </Text>
+          </>
+        ) : null}
         <View style={styles.selectorRow}>
           <SegmentedControl
             value={applyMode}
