@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -6,8 +6,9 @@ import {
   StyleSheet,
   Linking,
   TouchableOpacity,
+  Alert,
 } from 'react-native';
-import { useNavigation } from '@react-navigation/native';
+import { useNavigation, useIsFocused } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useQuery } from '@tanstack/react-query';
 import { Ionicons } from '@expo/vector-icons';
@@ -19,11 +20,13 @@ import {
   activePriceLine,
   describeReset,
   shortDate,
+  humanCallSeconds,
   MANAGE_SUBSCRIPTIONS_URL,
   STORE_NAME,
 } from './plan/shared';
 import { Badge, Button, Card, ListRow } from '../components/ui';
-import { colors, spacing, radius } from '../theme';
+import { useE2eeLocked } from '../hooks/useE2eeLocked';
+import { colors, spacing } from '../theme';
 import type { ProfileStackParamList } from '../navigation/ProfileNavigator';
 
 type Section = {
@@ -37,7 +40,8 @@ type Section = {
 // billing is no longer a drill-in row: its status/usage cards live inline below
 // the identity card (see the plan cards in the render).
 const SECTIONS: Section[] = [
-  { route: 'Account', label: 'Account', subtitle: 'Identity, sign-in, security & data', icon: 'card-outline' },
+  { route: 'Account', label: 'Account', subtitle: 'Identity, sign-in & reminders', icon: 'card-outline' },
+  { route: 'PrivacyData', label: 'Privacy & data', subtitle: 'Encryption, recovery & data controls', icon: 'lock-closed-outline' },
   { route: 'Household', label: 'Household', subtitle: 'Shared household and invite code', icon: 'home-outline' },
   { route: 'People', label: 'Contacts', subtitle: 'Family, friends & service providers', icon: 'people-outline' },
 ];
@@ -56,6 +60,31 @@ export default function ProfileScreen() {
   const name = [user?.firstName, user?.lastName].filter(Boolean).join(' ') || '—';
   const initial = user?.firstName?.charAt(0).toUpperCase() || '?';
 
+  // Landing on Profile while encrypted data is locked on this device (e.g. after
+  // an email-code sign-in with no passkey): prompt the user to resolve it, and
+  // deep-link straight to Privacy & data where the unlock UI lives. Prompt once
+  // per visit — re-armed each time the screen is left.
+  const dataLocked = useE2eeLocked();
+  const isFocused = useIsFocused();
+  const promptedRef = useRef(false);
+  useEffect(() => {
+    if (!isFocused) {
+      promptedRef.current = false;
+      return;
+    }
+    if (dataLocked && !promptedRef.current) {
+      promptedRef.current = true;
+      Alert.alert(
+        'Your data is locked on this device',
+        "You're signed in, but your encrypted data can't be read here until you unlock it — with your recovery code, or Face ID / your password if you've set them up.",
+        [
+          { text: 'Later', style: 'cancel' },
+          { text: 'Unlock now', onPress: () => nav.navigate('PrivacyData', { focus: 'unlock' }) },
+        ],
+      );
+    }
+  }, [isFocused, dataLocked, nav]);
+
   // Plan card state — mirrors PlanScreen. Only the purchasing member can manage
   // the store subscription; unknown purchaser keeps the link for everyone.
   const sub = data?.subscription;
@@ -64,24 +93,17 @@ export default function ProfileScreen() {
   const renewDate = shortDate(sub?.expiresAt);
   const price = activePriceLine(sub?.productId, packages);
   const reset = describeReset(data?.resetsAt);
-  const unlimited = data?.weeklyTokenLimit == null;
+  // Compact at-a-glance for the AI-usage drill-in card: the two weekly budgets.
+  const tokenUnlimited = data ? data.weeklyTokenLimit == null : false;
+  const tokenOver = data ? data.weeklyTokenLimit != null && data.tokensUsed >= data.weeklyTokenLimit : false;
+  const callUnlimited = data ? data.weeklyCallSecondsLimit == null : false;
+  const callOver = data ? data.weeklyCallSecondsLimit != null && data.callSecondsUsed >= data.weeklyCallSecondsLimit : false;
 
   function renderStatusCard() {
     if (!data) return null;
-    if (!isPaid) {
-      return (
-        <Card style={styles.card}>
-          <View style={styles.statusHeader}>
-            <Text style={styles.statusTitle}>You're on the Free plan</Text>
-            <Badge label={data.planLabel ?? 'Free'} color={colors.textMuted} />
-          </View>
-          <Text style={styles.statusNote}>
-            Every household member gets their own weekly AI allowance on our fast model.
-          </Text>
-          <Button title="See plans" onPress={() => nav.navigate('ComparePlans')} />
-        </Card>
-      );
-    }
+    // Free plan no longer shows a status card here — the "See plans" CTA now
+    // lives on the AI usage page the summary card links to.
+    if (!isPaid) return null;
     if (sub?.billingIssue) {
       return (
         <Card style={[styles.card, styles.issueCard]}>
@@ -156,32 +178,46 @@ export default function ProfileScreen() {
           >
             <Card style={styles.card}>
               {reset ? <Text style={styles.usageReset}>{reset}</Text> : null}
-              {unlimited ? (
-                <View style={styles.gaugeHeader}>
-                  <Text style={styles.gaugePct}>Unlimited</Text>
-                  <Text style={styles.gaugeCaption}>AI usage</Text>
-                </View>
-              ) : (
-                <View style={styles.gaugeRow}>
-                  <View style={styles.usageTrack}>
+              <View style={styles.usageHeaderRow}>
+                <Text style={styles.usageHeading}>Manage AI usage and plans</Text>
+                <Ionicons name="chevron-forward" size={16} color={colors.textMuted} />
+              </View>
+              {/* Two weekly budgets at a glance: AI (tokens) and assistant call time. */}
+              <View style={styles.miniSummary}>
+                <View style={styles.miniRow}>
+                  <Text style={styles.miniLabel}>AI usage</Text>
+                  <View style={styles.miniTrack}>
                     <View
                       style={[
-                        styles.usageFill,
+                        styles.miniFill,
                         {
-                          width: `${data.tokenPct}%`,
-                          backgroundColor: data.tokenPct >= 100 ? colors.error : colors.primary,
+                          width: `${tokenUnlimited ? 0 : data.tokenPct}%`,
+                          backgroundColor: tokenOver ? colors.error : colors.primary,
                         },
                       ]}
                     />
                   </View>
-                  <Text style={styles.gaugePctInline}>{data.tokenPct}% used</Text>
+                  <Text style={styles.miniVal}>{tokenUnlimited ? 'Unlimited' : `${data.tokenPct}%`}</Text>
                 </View>
-              )}
-              <View style={styles.usageHeaderRow}>
-                <Text style={styles.usageHeading}>
-                  {data.usageScope === 'household' ? "Household's AI usage this week" : 'Your AI usage this week'}
-                </Text>
-                <Ionicons name="chevron-forward" size={16} color={colors.textMuted} />
+                <View style={styles.miniRow}>
+                  <Text style={styles.miniLabel}>Call time</Text>
+                  <View style={styles.miniTrack}>
+                    <View
+                      style={[
+                        styles.miniFill,
+                        {
+                          width: `${callUnlimited ? 0 : data.callSecondsPct}%`,
+                          backgroundColor: callOver ? colors.error : colors.primary,
+                        },
+                      ]}
+                    />
+                  </View>
+                  <Text style={styles.miniVal}>
+                    {callUnlimited
+                      ? 'Unlimited'
+                      : `${humanCallSeconds(data.callSecondsUsed) ?? '0 sec'} / ${humanCallSeconds(data.weeklyCallSecondsLimit)}`}
+                  </Text>
+                </View>
               </View>
             </Card>
           </TouchableOpacity>
@@ -257,16 +293,16 @@ const styles = StyleSheet.create({
   statusNote: { color: colors.textMuted, fontSize: 13, lineHeight: 19, marginBottom: spacing.sm },
   issueCard: { borderColor: colors.error + '66', backgroundColor: colors.error + '0D' },
 
-  usageHeaderRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: spacing.sm },
+  usageHeaderRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   usageHeading: { fontSize: 13, fontWeight: '600', color: colors.textMuted },
-  gaugeHeader: { flexDirection: 'row', alignItems: 'baseline', gap: spacing.sm, marginBottom: 6 },
-  gaugePct: { fontSize: 28, fontWeight: '700', color: colors.text },
-  gaugeCaption: { fontSize: 13, color: colors.textMuted },
-  gaugeRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
-  gaugePctInline: { fontSize: 13, fontWeight: '600', color: colors.text },
-  usageTrack: { flex: 1, height: 6, borderRadius: radius.sm, backgroundColor: colors.border, overflow: 'hidden' },
-  usageFill: { height: 6, borderRadius: radius.sm },
   usageReset: { fontSize: 12, color: colors.textMuted, marginBottom: spacing.sm },
+
+  miniSummary: { marginTop: spacing.sm, gap: 8 },
+  miniRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
+  miniLabel: { fontSize: 12, color: colors.textMuted, width: 64 },
+  miniTrack: { flex: 1, height: 5, borderRadius: 3, backgroundColor: colors.border, overflow: 'hidden' },
+  miniFill: { height: 5, borderRadius: 3 },
+  miniVal: { fontSize: 12, color: colors.text, fontWeight: '600', minWidth: 72, textAlign: 'right' },
 
   manageLink: {
     flexDirection: 'row',

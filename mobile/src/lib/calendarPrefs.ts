@@ -41,12 +41,19 @@ const CUSTOM_KEY = 'hc_custom_calendars';
 const CUSTOM_SYNCED_KEY = 'hc_custom_calendars_synced';
 const DELETED_DEFAULTS_KEY = 'hc_deleted_default_calendars';
 const DEFAULT_ALERTS_OFF_KEY = 'hc_default_calendar_alerts_off';
+// Set once the built-in "Vacations" calendar's stored prefs have been remapped
+// from its old id (`vacations`) to `trips` (see migrateVacationsToTrips).
+const TRIPS_RENAME_KEY = 'hc_trips_rename_migrated';
+// The month grid's display density (the top-right view switcher). Device-local,
+// like the other calendar prefs; mirrors Apple Calendar's Compact/Stacked/
+// Details/List modes.
+const DENSITY_KEY = 'hc_month_density';
 
 // The built-in calendars the user may delete from the Calendars view (and add
 // back via Add Calendar) — every default, including the "Other" group
 // (Birthdays/Holidays/Weather).
 export const DELETABLE_DEFAULT_IDS = [
-  'activities', 'appointments', 'chores', 'recipes', 'maintenance', 'vacations',
+  'activities', 'appointments', 'chores', 'recipes', 'maintenance', 'trips',
   'birthdays', 'weather',
 ];
 
@@ -77,7 +84,7 @@ export const CALENDARS: CalendarDef[] = [
   { id: 'chores', name: 'Chores', color: '#F57C00', group: 'advanced' },
   { id: 'recipes', name: 'Meals', color: '#00897B', group: 'advanced' },
   { id: 'maintenance', name: 'Maintenance', color: '#1976D2', group: 'advanced' },
-  { id: 'vacations', name: 'Vacations', color: '#5E35B1', group: 'advanced' },
+  { id: 'trips', name: 'Trips', color: '#5E35B1', group: 'advanced' },
 ];
 
 // A user-created calendar (Calendars → Add Calendar), server-backed via
@@ -219,6 +226,12 @@ export const DEFAULT_CALENDAR_COLORS: Record<string, string> = Object.fromEntrie
 type VisMap = Record<string, boolean>;
 type ColorMap = Record<string, string>;
 
+// The month grid's display density. `details` (event chips with title + time) is
+// the default and matches the pre-switcher behavior.
+export type MonthDensity = 'compact' | 'stacked' | 'details' | 'list';
+const DEFAULT_DENSITY: MonthDensity = 'details';
+const DENSITIES: MonthDensity[] = ['compact', 'stacked', 'details', 'list'];
+
 // ── In-memory state + subscribers ───────────────────────────────────────────
 let visState: VisMap | null = null;
 // Device-local holiday calendars found at load, awaiting one-time upload to the
@@ -230,12 +243,14 @@ let orderState: string[] | null = null; // sparse — ids the user reordered
 let customState: CustomCalendar[] | null = null;
 let deletedDefaultsState: string[] | null = null;
 let defaultAlertsOffState: string[] | null = null;
+let densityState: MonthDensity | null = null;
 const visSubs = new Set<() => void>();
 const colorSubs = new Set<() => void>();
 const orderSubs = new Set<() => void>();
 const customSubs = new Set<() => void>();
 const deletedSubs = new Set<() => void>();
 const defaultAlertsSubs = new Set<() => void>();
+const densitySubs = new Set<() => void>();
 let loaded = false;
 
 // Best-effort country from the device locale (e.g. "en-CA" → CA). Only used
@@ -309,9 +324,44 @@ function defaultVis(): VisMap {
   return Object.fromEntries(CALENDARS.map((c) => [c.id, true]));
 }
 
+// One-time: the built-in trips calendar was renamed from the id `vacations` to
+// `trips`. Remap that id anywhere it's stored so a user's existing visibility,
+// colour, order, deletion, and alert prefs carry over instead of resetting to
+// the default. Runs before the reads below so they see the migrated data.
+async function migrateVacationsToTrips() {
+  try {
+    if (await AsyncStorage.getItem(TRIPS_RENAME_KEY)) return;
+    // Object maps keyed by calendar id (visibility, colour overrides).
+    for (const key of [VIS_KEY, COLORS_KEY]) {
+      const raw = await AsyncStorage.getItem(key);
+      if (!raw) continue;
+      const obj = JSON.parse(raw);
+      if (obj && typeof obj === 'object' && !Array.isArray(obj) && 'vacations' in obj) {
+        if (!('trips' in obj)) obj.trips = obj.vacations;
+        delete obj.vacations;
+        await AsyncStorage.setItem(key, JSON.stringify(obj));
+      }
+    }
+    // Arrays of calendar ids (order, deleted defaults, muted-alert defaults).
+    for (const key of [ORDER_KEY, DELETED_DEFAULTS_KEY, DEFAULT_ALERTS_OFF_KEY]) {
+      const raw = await AsyncStorage.getItem(key);
+      if (!raw) continue;
+      const arr = JSON.parse(raw);
+      if (Array.isArray(arr) && arr.includes('vacations')) {
+        const next = arr.map((id) => (id === 'vacations' ? 'trips' : id));
+        await AsyncStorage.setItem(key, JSON.stringify(next));
+      }
+    }
+    await AsyncStorage.setItem(TRIPS_RENAME_KEY, '1');
+  } catch {
+    // Best-effort; leave the flag unset so the next launch retries.
+  }
+}
+
 async function ensureLoaded() {
   if (loaded) return;
   loaded = true;
+  await migrateVacationsToTrips();
   try {
     const rawVis = await AsyncStorage.getItem(VIS_KEY);
     const saved: VisMap = rawVis ? JSON.parse(rawVis) : {};
@@ -430,6 +480,14 @@ async function ensureLoaded() {
   } catch {
     customState = [];
   }
+  try {
+    const rawDensity = await AsyncStorage.getItem(DENSITY_KEY);
+    densityState = DENSITIES.includes(rawDensity as MonthDensity)
+      ? (rawDensity as MonthDensity)
+      : DEFAULT_DENSITY;
+  } catch {
+    densityState = DEFAULT_DENSITY;
+  }
   syncColorOverrides();
   visSubs.forEach((fn) => fn());
   colorSubs.forEach((fn) => fn());
@@ -437,6 +495,7 @@ async function ensureLoaded() {
   customSubs.forEach((fn) => fn());
   deletedSubs.forEach((fn) => fn());
   defaultAlertsSubs.forEach((fn) => fn());
+  densitySubs.forEach((fn) => fn());
   // The cache painted instantly; now pull the server truth (incl. calendars
   // housemates shared with us) in the background.
   void refreshCustomCalendars();
@@ -616,6 +675,30 @@ export function useCalendarVisibility() {
   }
 
   return { visibility: vis, setVisible, setAll };
+}
+
+// ── Month-grid density hook ─────────────────────────────────────────────────
+// The top-right view switcher's current mode, persisted device-local and shared
+// live with every mounted consumer (same subscriber pattern as visibility).
+export function useMonthDensity() {
+  const [density, setDensityState] = useState<MonthDensity>(densityState ?? DEFAULT_DENSITY);
+
+  useEffect(() => {
+    const sub = () => setDensityState(densityState ?? DEFAULT_DENSITY);
+    densitySubs.add(sub);
+    ensureLoaded().then(sub);
+    return () => {
+      densitySubs.delete(sub);
+    };
+  }, []);
+
+  function setDensity(next: MonthDensity) {
+    densityState = next;
+    AsyncStorage.setItem(DENSITY_KEY, next).catch(() => {});
+    densitySubs.forEach((fn) => fn());
+  }
+
+  return { density, setDensity };
 }
 
 // Holiday calendars this user can see (own + shared), to read anywhere (grid,

@@ -19,7 +19,9 @@ export default function GroceryScheduleScreen() {
   const accent = useCalendarColors().colors.recipes;
 
   const settingsQ = useQuery({ queryKey: ['settings'], queryFn: async () => (await settingsApi.get()).data });
-  const groceryDay = settingsQ.data?.groceryShoppingDay ?? 6;
+  // null until the user picks a day — no day is pre-selected on a fresh account.
+  const configuredDay = settingsQ.data?.groceryShoppingDay ?? null;
+  const groceryDay = configuredDay ?? 6;  // fallback for biweekly candidate math
   const frequency: GroceryFrequency = settingsQ.data?.groceryFrequency ?? 'weekly';
   const anchor = settingsQ.data?.groceryAnchor ?? null;
 
@@ -48,7 +50,7 @@ export default function GroceryScheduleScreen() {
       : { groceryFrequency: f });
   };
   const setDay = (day: number) => {
-    if (day === groceryDay || pending) return;
+    if (day === configuredDay || pending) return;
     update.mutate(frequency === 'biweekly'
       ? { groceryShoppingDay: day, groceryAnchor: anchorForToday(day) }
       : { groceryShoppingDay: day });
@@ -91,7 +93,7 @@ export default function GroceryScheduleScreen() {
 
       <SectionHeader style={[styles.groupHeader, { color: accent }]}>Shopping day</SectionHeader>
       <Card style={styles.card}>
-        {DAY_NAMES_FULL.map((d, i) => checkRow(d, groceryDay === i, () => setDay(i), i === 0, d))}
+        {DAY_NAMES_FULL.map((d, i) => checkRow(d, configuredDay === i, () => setDay(i), i === 0, d))}
       </Card>
 
       {frequency === 'biweekly' ? (

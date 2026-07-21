@@ -1,5 +1,5 @@
 const mongoose = require('mongoose');
-const { encFields } = require('./encFields');
+const { encFields, requiredUntilSealed } = require('./encFields');
 
 const ingredientSchema = new mongoose.Schema({
   name:   { type: String, required: true },
@@ -8,8 +8,8 @@ const ingredientSchema = new mongoose.Schema({
 }, { _id: false });
 
 const recipeSchema = new mongoose.Schema({
-  userId:       { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
-  title:        { type: String, required: true },
+  userId:       { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: requiredUntilSealed },
+  title:        { type: String, required: requiredUntilSealed },
   description:  String,
   source:       { type: String, enum: ['url', 'ai', 'manual', 'photo'], default: 'manual' },
   sourceUrl:    String,

@@ -44,6 +44,28 @@ const utf8Decode = (b: Uint8Array): string => new TextDecoder().decode(b);
 const ARGON2_OPSLIMIT = 3; // crypto_pwhash_OPSLIMIT_MODERATE
 const ARGON2_MEMLIMIT = 268435456; // crypto_pwhash_MEMLIMIT_MODERATE (256 MiB)
 
+// Signal-parity D1/D2: a resource `scope.kind` maps to a short AAD prefix and the
+// self-describing `enc.ks` discriminator. Keeping these one-to-one means adding a
+// resource kind is a single-line change and the two can never drift.
+const SCOPE_PREFIX: Record<'calendar' | 'trip', string> = { calendar: 'cal', trip: 'trip' };
+const SCOPE_KS: Record<'calendar' | 'trip', 'cal' | 'trip'> = { calendar: 'cal', trip: 'trip' };
+
+// Record-envelope `alg` values.
+//   RECORD_ALG    — the original format (v1). The AAD binds the plaintext
+//                   `collection` type; the sealed payload is the bare record JSON.
+//   RECORD_ALG_V2 — Signal-parity C3 (opaque record envelopes). The AAD drops
+//                   `collection` (binds a generic `record` tag instead), and the
+//                   collection type moves INSIDE the sealed payload, so the server
+//                   can store a uniform "record" that never reveals its type. This
+//                   is the ONE deliberate envelope-format bump the plan sequences
+//                   (D1/D2/C4 were built additive precisely so it happens once).
+// Reads accept BOTH; new writes are always v2 (opaque). Key/file-key WRAPS keep
+// the v1 primitive (`encryptBytes`/`decryptBytes`) unchanged — they are internal
+// crypto envelopes, not stored content rows whose type leaks, and existing D1/D2
+// ResourceKeyEnvelope + attachment wraps must decrypt byte-for-byte.
+const RECORD_ALG = 'xchacha20poly1305-ietf' as const;
+const RECORD_ALG_V2 = 'xchacha20poly1305-ietf-v2' as const;
+
 export function createHouseholdCrypto(sodium: Sodium) {
   const B64 = sodium.base64_variants.URLSAFE_NO_PADDING;
   const b64 = (b: Uint8Array): string => sodium.to_base64(b, B64);
@@ -54,8 +76,25 @@ export function createHouseholdCrypto(sodium: Sodium) {
   // Passed as a STRING: react-native-libsodium's native AEAD requires a string
   // AAD, and libsodium-wrappers UTF-8-encodes a string AAD to the same bytes, so
   // one form is portable and cross-platform-compatible.
-  function buildAad(loc: RecordLocation): string {
-    return `${loc.collection} ${loc.id} ${loc.householdId} ${loc.keyVersion}`;
+  function buildAad(loc: RecordLocation, opaque = false): string {
+    // Signal-parity C3 (opaque envelopes): the v2 AAD drops the plaintext
+    // `collection` and binds a generic `record` tag in its place. Record ids are
+    // globally-unique ObjectIds, so `id` alone already pins the ciphertext to its
+    // exact slot (no two records share an id) — removing the type from the AAD
+    // does not weaken the move/replay binding, it only stops the AAD from
+    // revealing the record's collection. The v1 form keeps `collection` for
+    // backward-compatible reads of records sealed before the bump.
+    const tag = opaque ? 'record' : loc.collection;
+    // Signal-parity D1/D2: a resource-scoped ciphertext binds to the resource +
+    // resource-key version instead of householdId + HDK version, so a
+    // cross-household collaborator (who never learns the owner's householdId) can
+    // reconstruct the AAD from the record's own routing (its calendar key / trip
+    // id). The kind prefix (cal/trip) is bound too, so a TripKey can't open a
+    // CalendarKey record even if resource ids ever collided.
+    if (loc.scope) {
+      return `${tag} ${loc.id} ${SCOPE_PREFIX[loc.scope.kind]}:${loc.scope.resource} ${loc.scope.version}`;
+    }
+    return `${tag} ${loc.id} ${loc.householdId} ${loc.keyVersion}`;
   }
 
   // Raw CSPRNG bytes (both bindings expose randombytes_buf). Handy for non-crypto
@@ -143,6 +182,104 @@ export function createHouseholdCrypto(sodium: Sodium) {
     return sodium.crypto_box_seal_open(unb64(wrappedHDK), keyPair.publicKey, keyPair.privateKey);
   }
 
+  // ── Per-resource content keys (Signal-parity D1) ──────────────────────────
+  // A CalendarKey seals events on an outside-shared calendar so cross-household
+  // collaborators (who hold no HDK) can read them without a plaintext feed. Same
+  // shape as an HDK; wrapped two ways — to the owning household under its HDK
+  // (AEAD, so any member reads it) and to each accepted collaborator under their
+  // identity public key (anonymous sealed box). See the §D1 decision doc.
+  function generateResourceKey(): Uint8Array {
+    return sodium.randombytes_buf(sodium.crypto_aead_xchacha20poly1305_ietf_KEYBYTES);
+  }
+  // The AAD slot a household-wrapped resource key binds to: the resource + its
+  // CalendarKey version, plus the wrapping HDK version, so a member can't replay
+  // an old wrap or move it to another resource.
+  function resourceWrapLocation(resource: string, keyVersion: number, householdId: string, hdkVersion: number): RecordLocation {
+    return { collection: 'ResourceKey', id: `${resource}:${keyVersion}`, householdId, keyVersion: hdkVersion };
+  }
+  function wrapResourceKeyForHousehold(
+    hdk: Uint8Array, resourceKey: Uint8Array,
+    resource: string, keyVersion: number, householdId: string, hdkVersion: number,
+  ): RecordEnvelope {
+    return encryptBytes(hdk, resourceWrapLocation(resource, keyVersion, householdId, hdkVersion), resourceKey);
+  }
+  function unwrapResourceKeyFromHousehold(
+    hdk: Uint8Array, env: RecordEnvelope,
+    resource: string, keyVersion: number, householdId: string, hdkVersion: number,
+  ): Uint8Array {
+    return decryptBytes(hdk, resourceWrapLocation(resource, keyVersion, householdId, hdkVersion), env);
+  }
+  // Anonymous sealed box to a collaborator's identity public key (= the HDK
+  // member-wrap; a distinct name documents intent at the call sites).
+  function wrapResourceKeyForMember(resourceKey: Uint8Array, memberPublicKey: Uint8Array): string {
+    return b64(sodium.crypto_box_seal(resourceKey, memberPublicKey));
+  }
+  function unwrapResourceKeyForMember(wrapped: string, keyPair: IdentityKeyPair): Uint8Array {
+    return sodium.crypto_box_seal_open(unb64(wrapped), keyPair.publicKey, keyPair.privateKey);
+  }
+
+  // ── One-shot sealed snapshot (Signal-parity D3) ───────────────────────────
+  // An anonymous sealed box carrying an arbitrary JSON payload to a SINGLE
+  // recipient's identity public key — used for the event-invitation snapshot
+  // when the invitee is a known account (models/EventInvitation.sealedEvent).
+  // Unlike D1/D2's resource keys this is a ONE-SHOT wrap: no versioned key, no
+  // rotation, no envelope — the sealed blob lives directly on the invitation
+  // row. Padded (C1) so the ciphertext length doesn't leak the snapshot size.
+  function sealJsonToMember(payload: unknown, memberPublicKey: Uint8Array): string {
+    return b64(sodium.crypto_box_seal(utf8Encode(padJson(JSON.stringify(payload))), memberPublicKey));
+  }
+  function openJsonFromMember<T = unknown>(sealed: string, keyPair: IdentityKeyPair): T {
+    return JSON.parse(
+      utf8Decode(sodium.crypto_box_seal_open(unb64(sealed), keyPair.publicKey, keyPair.privateKey)),
+    ) as T;
+  }
+
+  // ── Ephemeral device-link handshake (Signal-parity F4) ────────────────────
+  // QR device linking: a NEW device shows a QR carrying a one-shot ephemeral
+  // X25519 public key; an existing UNLOCKED device scans it and seals the account
+  // secret (the identity keypair) to that ephemeral key, and the server only
+  // ferries the opaque ciphertext. This is the SAME anonymous-sealed-box primitive
+  // as D1/D2's member-wrap and D3's invitation snapshot (crypto_box_seal over a
+  // C1-padded JSON payload), exposed under link-intent names — no new crypto, so
+  // it inherits the same audited surface. The ephemeral key never persists: it is
+  // generated for one handoff and discarded, and because it travels out-of-band in
+  // the QR (not via the server), a malicious server can't substitute its own key.
+  const generateLinkKeyPair = generateIdentityKeyPair;
+  const sealLinkPayload = sealJsonToMember;
+  const openLinkPayload = openJsonFromMember;
+
+  // ── Guardian recovery, dual-control (specs/features/guardian-recovery.md) ──
+  // Optional backstop: a household member helps the user recover, but neither
+  // party alone can open the identity key. The key is wrapped under TWO locks —
+  // an INNER PIN-derived KEK (Argon2id, reusing the password factor), then an
+  // OUTER anonymous sealed box to the guardian's identity public key. The
+  // guardian who unseals the outer box still only holds the PIN-locked inner
+  // (no PIN → no key); an observer of the server relay holds neither. Reuses the
+  // audited seal + password-factor primitives — no new crypto. NB: a 4-digit
+  // PIN is a speed bump, not a wall against a *determined* guardian (they can
+  // brute-force the inner offline); the model rests on trusting the member.
+  function createGuardianEnvelope(privateKey: Uint8Array, pin: string, guardianPublicKey: Uint8Array): string {
+    const inner = padJson(JSON.stringify(createPasswordFactor(privateKey, pin)));
+    return b64(sodium.crypto_box_seal(utf8Encode(inner), guardianPublicKey));
+  }
+  // Guardian leg: unseal the outer box → the still-PIN-locked inner blob. Cannot
+  // yield the private key (no PIN). Returned opaque so the guardian re-seals it
+  // to the requesting device without ever parsing key material.
+  function unsealGuardianOuter(outer: string, guardianKeyPair: IdentityKeyPair): string {
+    return utf8Decode(sodium.crypto_box_seal_open(unb64(outer), guardianKeyPair.publicKey, guardianKeyPair.privateKey));
+  }
+  // Guardian leg (return): re-seal the PIN-locked inner to the requesting
+  // device's one-shot ephemeral key — same handoff as device-link.
+  function resealGuardianInner(inner: string, recipientPublicKey: Uint8Array): string {
+    return b64(sodium.crypto_box_seal(utf8Encode(inner), recipientPublicKey));
+  }
+  // User leg: open the re-sealed inner with the ephemeral private key, then the
+  // PIN → the identity private key. Throws on a wrong PIN (secretbox MAC fails).
+  function recoverWithGuardian(resealed: string, recipientKeyPair: IdentityKeyPair, pin: string): Uint8Array {
+    const inner = utf8Decode(sodium.crypto_box_seal_open(unb64(resealed), recipientKeyPair.publicKey, recipientKeyPair.privateKey));
+    return openPasswordFactor(JSON.parse(inner) as PasswordFactorEnvelope, pin);
+  }
+
   // Short, human-comparable fingerprint of an identity public key, for the
   // out-of-band verification step in approve-to-join: the approver reads the
   // joiner's fingerprint aloud (or over another channel) and confirms it matches
@@ -166,21 +303,80 @@ export function createHouseholdCrypto(sodium: Sodium) {
   }
 
   // ── Record + raw-bytes AEAD ───────────────────────────────────────────────
+  // Raw-bytes AEAD keeps the v1 format: it wraps KEYS (resource-key envelopes,
+  // per-file content keys), not stored content rows, so its AAD's `collection`
+  // slot (`ResourceKey`, `Manual`, `TripItemAttachment`, …) is a fixed internal
+  // tag, never a leaked record type. Freezing it here means every existing D1/D2
+  // wrap + attachment decrypts byte-for-byte across the C3 bump.
   function encryptBytes(hdk: Uint8Array, loc: RecordLocation, plaintext: Uint8Array): RecordEnvelope {
     const nonce = sodium.randombytes_buf(sodium.crypto_aead_xchacha20poly1305_ietf_NPUBBYTES);
     const ct = sodium.crypto_aead_xchacha20poly1305_ietf_encrypt(plaintext, buildAad(loc), null, nonce, hdk);
-    return { alg: 'xchacha20poly1305-ietf', nonce: b64(nonce), ct: b64(ct) };
+    const env: RecordEnvelope = { alg: RECORD_ALG, nonce: b64(nonce), ct: b64(ct) };
+    // D1/D2 self-describing key-scope discriminator (see buildAad / types).
+    if (loc.scope) env.ks = SCOPE_KS[loc.scope.kind];
+    return env;
   }
   function decryptBytes(hdk: Uint8Array, loc: RecordLocation, env: RecordEnvelope): Uint8Array {
     return sodium.crypto_aead_xchacha20poly1305_ietf_decrypt(null, unb64(env.ct), buildAad(loc), unb64(env.nonce), hdk);
   }
 
-  // JSON record helpers (the common case for content models).
-  function encryptRecord(hdk: Uint8Array, loc: RecordLocation, record: unknown): RecordEnvelope {
-    return encryptBytes(hdk, loc, utf8Encode(JSON.stringify(record)));
+  // Ciphertext padding (Signal-parity plan C1): ciphertext LENGTH leaks record
+  // size, which distinguishes a two-word grocery item from a long note. Pad the
+  // serialized JSON up to a size bucket — powers of two from 256 B to 4 KiB,
+  // then 4 KiB steps — so records within a bucket are indistinguishable.
+  // Padding is trailing spaces: JSON.parse ignores them, so decryptRecord needs
+  // no change, old clients read padded records, and new clients read old
+  // unpadded ones — no envelope version bump.
+  function paddedLength(len: number): number {
+    if (len <= 256) return 256;
+    if (len <= 4096) return 1 << (32 - Math.clz32(len - 1)); // next power of two
+    return Math.ceil(len / 4096) * 4096;
   }
-  function decryptRecord<T = unknown>(hdk: Uint8Array, loc: RecordLocation, env: RecordEnvelope): T {
-    return JSON.parse(utf8Decode(decryptBytes(hdk, loc, env))) as T;
+  function padJson(json: string): string {
+    return json + ' '.repeat(paddedLength(json.length) - json.length);
+  }
+
+  // JSON record helpers (the common case for content models).
+  //
+  // Signal-parity C3: new writes use the opaque v2 envelope. The sealed plaintext
+  // is `{ c: collection, r: record }` — the collection type moves INSIDE the
+  // ciphertext, so the server stores a uniform record that never reveals what kind
+  // it is, and a decryptor recovers the type without any plaintext hint. The AAD
+  // binds the generic `record` tag (see buildAad). Padding (C1) is applied to the
+  // wrapped payload so the wrapper adds no size-class signal.
+  function encryptRecord(key: Uint8Array, loc: RecordLocation, record: unknown): RecordEnvelope {
+    const payload = { c: loc.collection, r: record };
+    const nonce = sodium.randombytes_buf(sodium.crypto_aead_xchacha20poly1305_ietf_NPUBBYTES);
+    const ct = sodium.crypto_aead_xchacha20poly1305_ietf_encrypt(
+      utf8Encode(padJson(JSON.stringify(payload))), buildAad(loc, true), null, nonce, key,
+    );
+    const env: RecordEnvelope = { alg: RECORD_ALG_V2, nonce: b64(nonce), ct: b64(ct) };
+    if (loc.scope) env.ks = SCOPE_KS[loc.scope.kind];
+    return env;
+  }
+  // Decrypt, returning just the record. Accepts BOTH formats — v2 (opaque, reads
+  // the type from inside) and v1 (the pre-C3 form, whose type came from the AAD /
+  // the caller's `loc.collection`). New backlog is converted by the B1-style
+  // re-seal pass, but old-format ciphertext stays readable indefinitely.
+  function decryptRecord<T = unknown>(key: Uint8Array, loc: RecordLocation, env: RecordEnvelope): T {
+    return decryptRecordTagged<T>(key, loc, env).record;
+  }
+  // Decrypt AND surface the record's own collection type. The unified sync/replica
+  // path (C3) fetches opaque rows with no plaintext collection, so it decrypts
+  // with a collection-less `loc` and routes on the returned `collection`. For a v1
+  // record (no embedded type) the caller-supplied `loc.collection` is echoed back.
+  function decryptRecordTagged<T = unknown>(
+    key: Uint8Array, loc: RecordLocation, env: RecordEnvelope,
+  ): { collection: string; record: T } {
+    const opaque = env.alg === RECORD_ALG_V2;
+    const plain = JSON.parse(
+      utf8Decode(sodium.crypto_aead_xchacha20poly1305_ietf_decrypt(
+        null, unb64(env.ct), buildAad(loc, opaque), unb64(env.nonce), key,
+      )),
+    );
+    return opaque
+      ? { collection: plain.c as string, record: plain.r as T }
+      : { collection: loc.collection, record: plain as T };
   }
 
   // ── File / attachment encryption ──────────────────────────────────────────
@@ -284,11 +480,26 @@ export function createHouseholdCrypto(sodium: Sodium) {
     generateHDK,
     wrapHDKForMember,
     unwrapHDK,
+    generateResourceKey,
+    wrapResourceKeyForHousehold,
+    unwrapResourceKeyFromHousehold,
+    wrapResourceKeyForMember,
+    unwrapResourceKeyForMember,
+    sealJsonToMember,
+    openJsonFromMember,
+    generateLinkKeyPair,
+    sealLinkPayload,
+    openLinkPayload,
+    createGuardianEnvelope,
+    unsealGuardianOuter,
+    resealGuardianInner,
+    recoverWithGuardian,
     publicKeyFingerprint,
     encryptBytes,
     decryptBytes,
     encryptRecord,
     decryptRecord,
+    decryptRecordTagged,
     generateFileKey,
     wrapFileKey,
     unwrapFileKey,

@@ -1,4 +1,4 @@
-import { useLayoutEffect, useMemo, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useState } from 'react';
 import {
   View,
   Text,
@@ -11,11 +11,15 @@ import { useQuery } from '@tanstack/react-query';
 import { MaterialCommunityIcons, Ionicons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import { tasksApi, itemsApi, propertiesApi, Task, Item, LinkedRef } from '../../api';
+import { tasksApi, itemsApi, propertiesApi, settingsApi, Task, Item, LinkedRef } from '../../api';
+import { openRecord } from '../../lib/e2ee';
+import { ensureDefaultCategories } from '../../lib/categories';
+import * as replica from '../../lib/replica';
 import { Card, RoundIconButton, SectionHeader, SkeletonList, EmptyState, IconAvatar } from '../../components/ui';
 import { parseCalendarDate } from '../../lib/recurrence';
 import { itemTypeConfig } from '../../lib/itemTypes';
 import { useCalendarColors } from '../../lib/calendarPrefs';
+import { resolveTaskIcon } from '../../lib/maintenanceCategories';
 import { MaintenanceStackParamList } from '../../navigation/MaintenanceNavigator';
 import { colors, spacing } from '../../theme';
 
@@ -109,31 +113,56 @@ export default function MaintenanceScreen() {
     });
   }, [navigation, accent]);
 
-  // All tasks tagged with their status bucket (mirrors DashboardView onMounted).
-  const tasksQ = useQuery({
-    queryKey: ['maintenance', 'tasks-by-status'],
-    queryFn: async (): Promise<StatusTask[]> => {
-      // Only overdue / due-soon are surfaced here — upcoming and paused are hidden.
-      const buckets: StatusKey[] = ['overdue', 'due-soon'];
-      const results = await Promise.all(buckets.map((s) => tasksApi.list({ status: s })));
-      return results.flatMap((res, i) => res.data.map((t) => ({ ...t, _status: buckets[i] })));
+  // Every task, decrypted over the replica (offline-first). Due/overdue
+  // bucketing happens HERE now (Signal-parity D4) — nextDueDate is sealed
+  // content the server can't filter on. Populated item/category refs carry
+  // their own enc, so their sealed names decrypt too.
+  const itemTasksQ = useQuery({
+    queryKey: ['tasks', 'all'],
+    queryFn: async () => {
+      const rows = await replica.syncedList<Task>('MaintenanceTask', async () => (await tasksApi.list()).data);
+      return Promise.all(rows.map(async (t) => {
+        const task = await openRecord('MaintenanceTask', t);
+        if (task.itemId && typeof task.itemId === 'object') task.itemId = await openRecord('Item', task.itemId);
+        if (task.categoryId && typeof task.categoryId === 'object') task.categoryId = await openRecord('Category', task.categoryId);
+        return task;
+      }));
     },
   });
   const itemsQ = useQuery({
     queryKey: ['items', 'list'],
-    queryFn: async () => (await itemsApi.list()).data,
-  });
-  // Every task, grouped under its item when the item is expanded.
-  const itemTasksQ = useQuery({
-    queryKey: ['tasks', 'all'],
-    queryFn: async () => (await tasksApi.list()).data,
+    queryFn: async () => {
+      const rows = await replica.syncedList<Item>('Item', async () => (await itemsApi.list()).data);
+      return Promise.all(rows.map((i) => openRecord('Item', i)));
+    },
   });
   const propertiesQ = useQuery({
     queryKey: ['properties'],
     queryFn: async () => (await propertiesApi.list()).data,
   });
+  const settingsQ = useQuery({ queryKey: ['settings'], queryFn: async () => (await settingsApi.get()).data });
 
-  const allTasks = tasksQ.data ?? [];
+  // P1-pattern client-side seed: an E2EE-active household with no categories
+  // gets the encrypted default set (no-ops everywhere else).
+  useEffect(() => {
+    ensureDefaultCategories().catch(() => {});
+  }, []);
+
+  // Overdue / due-soon buckets over the decrypted tasks (mirrors the retired
+  // server ?status= filters, including the reminderLeadDays window).
+  const leadDays = settingsQ.data?.reminderLeadDays ?? 7;
+  const allTasks = useMemo((): StatusTask[] => {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    return (itemTasksQ.data ?? [])
+      .filter((t) => t.active !== false && t.nextDueDate)
+      .map((t) => {
+        const days = Math.round((parseCalendarDate(t.nextDueDate!).getTime() - today.getTime()) / 86400000);
+        const status: StatusKey | null = days < 0 ? 'overdue' : days <= leadDays ? 'due-soon' : null;
+        return status ? ({ ...t, _status: status } as StatusTask) : null;
+      })
+      .filter((t): t is StatusTask => t !== null);
+  }, [itemTasksQ.data, leadDays]);
   const items = itemsQ.data ?? [];
   const properties = propertiesQ.data ?? [];
 
@@ -210,14 +239,13 @@ export default function MaintenanceScreen() {
   }, [items, properties]);
   const showGroups = groupedItems.length > 1;
 
-  if (tasksQ.isLoading || itemsQ.isLoading) {
+  if (itemTasksQ.isLoading || itemsQ.isLoading) {
     return <SkeletonList />;
   }
 
   const refreshing =
-    tasksQ.isRefetching || itemsQ.isRefetching || propertiesQ.isRefetching || itemTasksQ.isRefetching;
+    itemsQ.isRefetching || propertiesQ.isRefetching || itemTasksQ.isRefetching;
   const onRefresh = () => {
-    tasksQ.refetch();
     itemsQ.refetch();
     propertiesQ.refetch();
     itemTasksQ.refetch();
@@ -241,6 +269,14 @@ export default function MaintenanceScreen() {
                 activeOpacity={0.7}
                 onPress={() => navigation.navigate('TaskDetail', { id: task._id })}
               >
+                <MaterialCommunityIcons
+                  name={resolveTaskIcon(
+                    task.icon,
+                    typeof task.categoryId === 'object' ? task.categoryId?.name : null,
+                  )}
+                  size={22}
+                  color={colors.textMuted}
+                />
                 <View style={styles.dueRowText}>
                   <Text style={styles.taskTitle} numberOfLines={1}>{task.title}</Text>
                   <Text style={styles.dueRowSub} numberOfLines={1}>{refName(task.itemId) || '—'}</Text>
@@ -319,6 +355,14 @@ export default function MaintenanceScreen() {
                             activeOpacity={0.7}
                             onPress={() => navigation.navigate('TaskDetail', { id: task._id })}
                           >
+                            <MaterialCommunityIcons
+                              name={resolveTaskIcon(
+                                task.icon,
+                                typeof task.categoryId === 'object' ? task.categoryId?.name : null,
+                              )}
+                              size={18}
+                              color={colors.textMuted}
+                            />
                             <Text style={styles.itemTaskTitle} numberOfLines={1}>{task.title}</Text>
                             <Text style={[styles.taskChipText, { color: STATUS_COLORS[taskStatus(task)] }]}>
                               {timeUntil(task.nextDueDate)}

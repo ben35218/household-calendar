@@ -1,14 +1,33 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { View, Text, StyleSheet, FlatList, ActivityIndicator, TouchableOpacity } from 'react-native';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
+import { useNavigation } from '@react-navigation/native';
+import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import type { RootStackParamList } from '../../navigation/types';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
-  invitationsApi, EventInvitation, customCalendarsApi, CalendarInvitation,
+  invitationsApi, EventInvitation, InvitationEventSnapshot, customCalendarsApi, CalendarInvitation,
   tripsApi, TripInvitation, householdApi, HouseholdInvitation,
+  callsApi, PhoneCallRecord,
 } from '../../api';
 import { refreshCustomCalendars } from '../../lib/calendarPrefs';
+import { myIdentityPublicKey, openInvitationSnapshot, sealInvitationSnapshot } from '../../lib/e2ee';
 import { Button, SegmentedControl, Badge } from '../../components/ui';
 import { colors, spacing } from '../../theme';
+
+// D3: an event invitation may arrive sealed (its snapshot encrypted to this
+// user's identity key). Decrypt those into the plaintext `event` shape the rows
+// render from; a plaintext invite passes through unchanged. Best-effort — a
+// locked vault (or a blob not sealed to us) leaves `event` undefined.
+async function decryptEventInvitations(rows: EventInvitation[]): Promise<EventInvitation[]> {
+  return Promise.all(
+    rows.map(async (inv) => {
+      if (inv.event?.title || !inv.sealedEvent) return inv;
+      const snap = await openInvitationSnapshot<InvitationEventSnapshot>(inv.sealedEvent);
+      return snap ? { ...inv, event: snap } : inv;
+    }),
+  );
+}
 
 // Invitations inbox (event sharing across households). Opened from the
 // bottom-right floating button on the Calendar and Events views; presented as
@@ -19,16 +38,18 @@ import { colors, spacing } from '../../theme';
 
 type Tab = 'new' | 'replied';
 
-// The inbox mixes invitation kinds: one-shot event invites, and ongoing shares
-// of a calendar, a trip, or a whole household.
+// The inbox mixes invitation kinds — one-shot event invites, ongoing shares of
+// a calendar, a trip, or a whole household — plus outcome notices from phone
+// calls Calen placed ("New" until dismissed, then in the history).
 type Row =
   | { kind: 'event'; inv: EventInvitation }
   | { kind: 'calendar'; inv: CalendarInvitation }
   | { kind: 'trip'; inv: TripInvitation }
-  | { kind: 'household'; inv: HouseholdInvitation };
+  | { kind: 'household'; inv: HouseholdInvitation }
+  | { kind: 'call'; inv: PhoneCallRecord };
 
 // "Monday, July 13, 2026" or "Jul 13, 3:00 PM – 4:00 PM" style when-line.
-function whenLabel(e: EventInvitation['event']): string {
+function whenLabel(e: InvitationEventSnapshot): string {
   const start = new Date(e.startDate);
   if (e.allDay !== false) {
     // All-day records are stored at noon UTC → read the date in UTC.
@@ -98,12 +119,13 @@ function GuestList({ invitation }: { invitation: EventInvitation }) {
 
 export default function InvitationsScreen() {
   const qc = useQueryClient();
+  const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const [tab, setTab] = useState<Tab>('new');
   const [error, setError] = useState('');
 
   const invQ = useQuery({
     queryKey: ['invitations'],
-    queryFn: async () => (await invitationsApi.list()).data,
+    queryFn: async () => decryptEventInvitations((await invitationsApi.list()).data),
   });
   const calInvQ = useQuery({
     queryKey: ['calendarInvitations'],
@@ -117,10 +139,17 @@ export default function InvitationsScreen() {
     queryKey: ['householdInvitations', 'mine'],
     queryFn: async () => (await householdApi.myInvitations()).data,
   });
+  // Outcome notices for phone calls Calen placed (Call to Cancel / chat).
+  const callsQ = useQuery({
+    queryKey: ['calls'],
+    queryFn: async () => (await callsApi.list()).data,
+  });
 
   const respond = useMutation({
-    mutationFn: ({ id, action }: { id: string; action: 'accept' | 'decline' }) =>
-      action === 'accept' ? invitationsApi.accept(id) : invitationsApi.decline(id),
+    // For a sealed invite the server has no plaintext to copy, so accept carries
+    // the on-device decrypted snapshot; a plaintext invite ignores it.
+    mutationFn: ({ id, action, event }: { id: string; action: 'accept' | 'decline'; event?: InvitationEventSnapshot }) =>
+      action === 'accept' ? invitationsApi.accept(id, event) : invitationsApi.decline(id),
     onSuccess: (_res, { action }) => {
       setError('');
       qc.invalidateQueries({ queryKey: ['invitations'] });
@@ -129,6 +158,30 @@ export default function InvitationsScreen() {
     },
     onError: (e: any) => setError(e.response?.data?.error || 'Something went wrong'),
   });
+
+  // D3 lazily-claimed upgrade: any plaintext invite in my inbox that I hold keys
+  // for gets re-sealed to my own identity key, so its snapshot stops sitting in
+  // the clear at rest. One attempt per invite id per session; a re-seal then
+  // re-lists (the row comes back sealed and decrypts under my key).
+  const upgraded = useRef(new Set<string>());
+  useEffect(() => {
+    if (!invQ.data) return;
+    (async () => {
+      const pub = await myIdentityPublicKey();
+      if (!pub) return; // locked / not enrolled — retry next session
+      let sealedAny = false;
+      for (const inv of invQ.data) {
+        if (!inv.event?.title || inv.sealedEvent || upgraded.current.has(inv._id)) continue;
+        upgraded.current.add(inv._id);
+        try {
+          const sealedEvent = await sealInvitationSnapshot(inv.event, pub);
+          await invitationsApi.seal(inv._id, sealedEvent);
+          sealedAny = true;
+        } catch { /* leave it plaintext; retry next session */ }
+      }
+      if (sealedAny) qc.invalidateQueries({ queryKey: ['invitations'] });
+    })();
+  }, [invQ.data, qc]);
 
   const respondCal = useMutation({
     mutationFn: ({ id, action }: { id: string; action: 'accept' | 'decline' }) =>
@@ -187,8 +240,52 @@ export default function InvitationsScreen() {
     const events: Row[] = (invQ.data ?? [])
       .filter((i) => (i.status === 'pending') === wantPending)
       .map((inv) => ({ kind: 'event', inv }));
-    return [...hh, ...cals, ...trips, ...events];
-  }, [invQ.data, calInvQ.data, tripInvQ.data, hhInvQ.data, tab]);
+    // Finished calls with a judged outcome: "New" until dismissed, then history.
+    const calls: Row[] = (callsQ.data ?? [])
+      .filter((c) => (c.status === 'ended' || c.status === 'failed') && c.outcome)
+      .filter((c) => c.acknowledged !== wantPending)
+      .map((inv) => ({ kind: 'call', inv }));
+    return [...calls, ...hh, ...cals, ...trips, ...events];
+  }, [invQ.data, calInvQ.data, tripInvQ.data, hhInvQ.data, callsQ.data, tab]);
+
+  // Outcome of a phone call Calen placed (e.g. the event view's Call to
+  // Cancel). The notice card has no inline action — tapping it opens the full
+  // Interaction (Calen call) view (transcript, recording, confirm actions),
+  // where the user resolves the outcome and dismisses the notice.
+  const renderCallItem = (item: PhoneCallRecord) => {
+    const confirmed = item.outcome === 'confirmed';
+    return (
+      <TouchableOpacity
+        style={styles.card}
+        activeOpacity={0.7}
+        onPress={() => navigation.navigate('Interaction', { id: item._id })}
+      >
+        <Text style={styles.from}>
+          Calen
+          <Text style={styles.fromSub}>
+            {' '}called to {item.action === 'cancel' ? 'cancel' : 'reschedule'} an appointment
+          </Text>
+        </Text>
+        <View style={styles.calTitleRow}>
+          <Ionicons name="call" size={16} color={colors.primary} style={{ marginTop: 2 }} />
+          <Text style={styles.title}>{item.eventTitle || 'Appointment'}</Text>
+        </View>
+        {item.eventDate ? (
+          <View style={styles.metaRow}>
+            <Ionicons name="time-outline" size={14} color={colors.textMuted} />
+            <Text style={styles.meta}>{item.eventDate}</Text>
+          </View>
+        ) : null}
+        {item.summary ? <Text style={styles.description}>{item.summary}</Text> : null}
+        <View style={styles.statusRow}>
+          <Badge
+            label={confirmed ? (item.action === 'cancel' ? 'Cancelled' : 'Rescheduled') : 'Couldn’t confirm'}
+            color={confirmed ? colors.success : colors.warning}
+          />
+        </View>
+      </TouchableOpacity>
+    );
+  };
 
   const renderCalendarItem = (item: CalendarInvitation) => {
     const busy = respondCal.isPending && respondCal.variables?.id === item._id;
@@ -329,7 +426,10 @@ export default function InvitationsScreen() {
         </Text>
         <View style={styles.calTitleRow}>
           <MaterialCommunityIcons name="home-heart" size={16} color={colors.primary} style={{ marginTop: 2 }} />
-          <Text style={styles.title}>{item.householdName}</Text>
+          {/* Sender-name framing when the household name is sealed (C2). */}
+          <Text style={styles.title}>
+            {item.householdName || `${(item.fromName || 'their').split(' ')[0]}${item.fromName ? '’s' : ''} household`}
+          </Text>
         </View>
         <Text style={styles.meta}>
           Accepting shares the family calendar, tasks, trips, and more. A member
@@ -369,25 +469,42 @@ export default function InvitationsScreen() {
 
   const renderEventItem = (item: EventInvitation) => {
     const busy = respond.isPending && respond.variables?.id === item._id;
+    const ev = item.event;
+    // A sealed invite we can't open yet (vault locked) — show a placeholder
+    // rather than crashing; unlocking re-lists and decrypts it.
+    if (!ev?.title) {
+      return (
+        <View style={styles.card}>
+          <Text style={styles.from}>
+            {item.fromName || item.fromEmail || 'Someone'}
+            <Text style={styles.fromSub}> invited you</Text>
+          </Text>
+          <View style={styles.metaRow}>
+            <Ionicons name="lock-closed-outline" size={14} color={colors.textMuted} />
+            <Text style={styles.meta}>Encrypted invitation — unlock to view.</Text>
+          </View>
+        </View>
+      );
+    }
     return (
       <View style={styles.card}>
         <Text style={styles.from}>
           {item.fromName || item.fromEmail || 'Someone'}
           <Text style={styles.fromSub}> invited you</Text>
         </Text>
-        <Text style={styles.title}>{item.event.title}</Text>
+        <Text style={styles.title}>{ev.title}</Text>
         <View style={styles.metaRow}>
           <Ionicons name="time-outline" size={14} color={colors.textMuted} />
-          <Text style={styles.meta}>{whenLabel(item.event)}</Text>
+          <Text style={styles.meta}>{whenLabel(ev)}</Text>
         </View>
-        {item.event.location ? (
+        {ev.location ? (
           <View style={styles.metaRow}>
             <Ionicons name="location-outline" size={14} color={colors.textMuted} />
-            <Text style={styles.meta} numberOfLines={1}>{item.event.location}</Text>
+            <Text style={styles.meta} numberOfLines={1}>{ev.location}</Text>
           </View>
         ) : null}
-        {item.event.description ? (
-          <Text style={styles.description} numberOfLines={3}>{item.event.description}</Text>
+        {ev.description ? (
+          <Text style={styles.description} numberOfLines={3}>{ev.description}</Text>
         ) : null}
 
         <GuestList invitation={item} />
@@ -398,7 +515,7 @@ export default function InvitationsScreen() {
               <Button
                 title="Accept"
                 loading={busy && respond.variables?.action === 'accept'}
-                onPress={() => respond.mutate({ id: item._id, action: 'accept' })}
+                onPress={() => respond.mutate({ id: item._id, action: 'accept', event: ev })}
               />
             </View>
             <View style={styles.actionBtn}>
@@ -457,10 +574,11 @@ export default function InvitationsScreen() {
           data={items}
           keyExtractor={(row) => `${row.kind}-${row.inv._id}`}
           renderItem={({ item }) =>
-            item.kind === 'calendar' ? renderCalendarItem(item.inv)
-              : item.kind === 'trip' ? renderTripItem(item.inv)
-                : item.kind === 'household' ? renderHouseholdItem(item.inv)
-                  : renderEventItem(item.inv)}
+            item.kind === 'call' ? renderCallItem(item.inv)
+              : item.kind === 'calendar' ? renderCalendarItem(item.inv)
+                : item.kind === 'trip' ? renderTripItem(item.inv)
+                  : item.kind === 'household' ? renderHouseholdItem(item.inv)
+                    : renderEventItem(item.inv)}
           contentContainerStyle={styles.list}
         />
       )}

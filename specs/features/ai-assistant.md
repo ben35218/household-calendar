@@ -1,7 +1,7 @@
 ---
 title: AI assistant (Calen)
 status: current
-last-verified: e38ef9d (2026-07-21)
+last-verified: 797df57 (2026-07-21)
 code:
   - mobile/src/screens/chat/
   - server/src/routes/{calendarChat,choresChat,maintenanceChat,maintenancePlanChat,tripsChat}.js
@@ -65,14 +65,18 @@ reference).
   may appear in any AI payload — no birthdays, ages, addresses, relationships,
   interests, or notes. Consequences accepted by design: the assistant cannot see
   the birthdays calendar, and form-assist cannot fill a friend's address.
-  **Professionals (`service` contacts) may share their full business details**
-  (business name, service, address, phone) — form-assist's contacts context is
-  professionals-only.
+  **Professionals (`service` contacts) share the business details the user saved
+  them for** — service (their `relationship`, e.g. "plumber"), business name, and
+  address. Phone and email stay "on file" (see references-not-values below): the
+  calendar assistant sees only `phoneOnFile`/`emailOnFile` presence flags, never
+  the values. (Form-assist, whose contacts context is professionals-only, sends
+  professional phone as a value for form-filling; the calendar chat does not.)
 - **Rosters and record bodies are fetched on demand, not front-loaded.** The
   calendar system prompt contains no people; the model calls
-  `get_household_members` (names only) when a conversation needs them.
-  `list_events` returns titles/dates/recurrence only; `get_event_details`
-  returns one event's description/location on request.
+  `get_household_members` when a conversation needs them — returning household &
+  friends by name only, plus any saved professionals with their business details
+  (phone/email as "on file" flags). `list_events` returns titles/dates/recurrence
+  only; `get_event_details` returns one event's description/location on request.
 - **References, not values.** Phone numbers and booking confirmation codes never
   enter model context — the model sees `"on file"` presence flags; the real
   values stay on the server/client for dialing and display. Call transcripts

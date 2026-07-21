@@ -1,11 +1,16 @@
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
 const Household = require('../models/Household');
+const { scopeClause } = require('../services/scope');
 
 // Single place session JWTs are minted (login, register, reset, passkey login,
-// sliding refresh) so the expiry policy can't drift between routes.
-function signToken(userId) {
-  return jwt.sign({ userId }, process.env.JWT_SECRET, { expiresIn: process.env.JWT_EXPIRES_IN || '7d' });
+// sliding refresh) so the expiry policy can't drift between routes. `sid` is
+// the User.sessions subdoc id backing this token (Signal-parity F2): removing
+// that row revokes the token. Sid-less tokens predate the registry — accepted,
+// and upgraded to a session-backed token at the sliding refresh below.
+function signToken(userId, sid) {
+  const payload = sid ? { userId, sid: String(sid) } : { userId };
+  return jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: process.env.JWT_EXPIRES_IN || '7d' });
 }
 
 async function requireAuth(req, res, next) {
@@ -19,15 +24,37 @@ async function requireAuth(req, res, next) {
     const payload = jwt.verify(token, process.env.JWT_SECRET);
     const user = await User.findById(payload.userId).select('-passwordHash');
     if (!user) return res.status(401).json({ error: 'Unauthorized' });
+    // Session revocation (F2): a sid-carrying token is only valid while its
+    // session row exists. "Sign out device" deletes the row → instant 401 here.
+    let session = null;
+    if (payload.sid) {
+      session = (user.sessions || []).find((s) => String(s._id) === String(payload.sid));
+      if (!session) return res.status(401).json({ error: 'Session revoked' });
+    }
     req.user = user;
+    req.sessionId = payload.sid || null;
     // Sliding session: past the token's half-life, hand back a fresh token so an
     // active user never hits the hard 7-day expiry. Clients watch for this
-    // header (exposed via CORS) and replace their stored token.
+    // header (exposed via CORS) and replace their stored token. A legacy sid-less
+    // token is upgraded here: it gets a session row so it becomes revocable.
     if (payload.iat && payload.exp) {
       const nowSec = Math.floor(Date.now() / 1000);
       if (payload.exp - nowSec < (payload.exp - payload.iat) / 2) {
-        res.set('X-Refreshed-Token', signToken(String(user._id)));
+        let sid = payload.sid;
+        if (!sid) {
+          const { createSession } = require('../services/sessions');
+          sid = await createSession(user._id, req, { quiet: true });
+        }
+        res.set('X-Refreshed-Token', signToken(String(user._id), sid));
       }
+    }
+    // Throttled per-session heartbeat (piggybacks the lastActiveAt cadence) so
+    // the Devices list shows a meaningful "last seen".
+    if (session && Date.now() - session.lastSeenAt.getTime() > 60 * 60 * 1000) {
+      User.updateOne(
+        { _id: user._id, 'sessions._id': session._id },
+        { $set: { 'sessions.$.lastSeenAt': new Date() } },
+      ).catch(() => {});
     }
     // Throttled engagement stamp (≤ once/hour/user) for the analytics DAU/WAU/MAU
     // + retention views. Content-blind and fire-and-forget so it never adds
@@ -51,6 +78,16 @@ async function requireAuth(req, res, next) {
       req.scopeIds = [user._id];
       req.household = null;
     }
+    // Signal-parity C4 (hide record authorship): the household-scoped read/write
+    // filter for content collections. Once a sealed record's member-granular
+    // plaintext `userId` is nulled (author sealed inside `enc`), scoping by
+    // `userId ∈ scopeIds` would miss it — so we scope by the plaintext
+    // `householdId` the write rule stamps. The `$or` keeps this a strict
+    // superset-safe equivalent of the old filter (a legacy record with only
+    // `userId` is still found; a sealed record with only `householdId` too), so
+    // no data backfill is needed. A solo user (no household) stays per-user.
+    // See the §C4 decision doc in docs/SIGNAL-PARITY-PLAN.md.
+    req.scopeFilter = scopeClause(req.scopeIds, req.household?._id);
     next();
   } catch {
     return res.status(401).json({ error: 'Invalid token' });

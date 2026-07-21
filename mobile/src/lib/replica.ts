@@ -85,6 +85,17 @@ export async function syncedList<T extends Row>(
   }
 }
 
+// Remove one row (a C3 tombstone from the unified sync — the server soft-deletes
+// and the client drops it from the replica so a deleted record stops appearing).
+export async function remove(collection: string, id: string): Promise<void> {
+  if (sqliteReady()) return sqlite.remove(collection, id);
+  const map = await readMap(collection);
+  if (map[id]) {
+    delete map[id];
+    await AsyncStorage.setItem(key(collection), JSON.stringify(map));
+  }
+}
+
 export async function clear(collection: string): Promise<void> {
   if (sqliteReady()) return sqlite.clear(collection);
   await AsyncStorage.removeItem(key(collection));

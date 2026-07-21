@@ -38,6 +38,13 @@ default those to `colors.primary` inside an accented area.
 
 ## Headers, buttons, rows
 
+- **Header background matches the body.** Every list / detail / form screen
+  registers its navigation header with `hdr(colors.background)` +
+  `headerShadowVisible: false`, so the header bar blends seamlessly into the
+  screen body (`colors.background`) with no divider. Do **not** tint the header
+  bar with a feature accent — the accent lives *in the body* (add button, FAB,
+  save check, primary buttons), never on the header chrome. A header whose
+  background differs from its body is drift, not a highlight.
 - **Add action on a list** → `RoundIconButton icon="add"` in `headerRight`, `bg={accent}`.
 - **Header action on a detail screen** (edit pencil / share / print) → `<HeaderIconButton icon onPress accessibilityLabel />` in `headerRight`.
 - **Floating action button** (detail screen adds a sub-item, or the AI assistant) → `<Fab icon onPress bg={accent} />` (or `<Fab>` with a custom glyph child).

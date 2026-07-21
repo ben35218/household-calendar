@@ -19,8 +19,14 @@ const METERED_ACTIONS = ['chat', 'scan', 'generation', 'manualParse', 'aiHelper'
 // output + cache read + cache write) a user (free, per-user) or household (paid,
 // pooled) may consume per weekly window. `null` = unlimited. `quotas` are retained
 // only so the admin analytics keep the per-action breakdown; they no longer cap.
-function tier(label, price, quotas, weeklyTokenLimit) {
-  return { label, price, quotas, weeklyTokenLimit };
+//
+// `weeklyCallSecondsLimit` is a SEPARATE enforced cap for assistant phone calls,
+// measured in seconds of connected call time per weekly window (same scope model:
+// per-user on free, pooled on paid). Phone calls are billed by Vapi per-minute
+// (STT + TTS + telephony dominate; the LLM tokens are a rounding error), so they
+// draw down this seconds budget rather than the token budget. `null` = unlimited.
+function tier(label, price, quotas, weeklyTokenLimit, weeklyCallSecondsLimit) {
+  return { label, price, quotas, weeklyTokenLimit, weeklyCallSecondsLimit };
 }
 
 // Prices are USD. The App Store base prices are CAD 5.99/12.99, which Apple
@@ -30,10 +36,14 @@ function tier(label, price, quotas, weeklyTokenLimit) {
 // typical tokens per action; tune against real usage once token metering has
 // run for a week.
 const DEFAULTS = {
+  // weeklyCallSecondsLimit is the 5th tier() arg. At Vapi's measured ~$0.082/min
+  // (~$0.00137/sec) these seed to roughly: free 2 min (~$0.16/wk), premium 15 min
+  // (~$1.23/wk), unlimited 60 min (~$4.90/wk). Tune in the admin config against
+  // real margins — these are starting points, not fixed policy.
   tiers: {
-    free:      tier('Free',       0,     { chat: 15,  scan: 15,  generation: 5,    manualParse: 1,  aiHelper: null }, 150000),
-    premium:   tier('Premium',    3.99,  { chat: 200, scan: 200, generation: 60,   manualParse: 10, aiHelper: null }, 2000000),
-    unlimited: tier('Unlimited',  9.99,  { chat: 600, scan: 600, generation: null, manualParse: 30, aiHelper: null }, null),
+    free:      tier('Free',       0,     { chat: 15,  scan: 15,  generation: 5,    manualParse: 1,  aiHelper: null }, 150000,  120),
+    premium:   tier('Premium',    3.99,  { chat: 200, scan: 200, generation: 60,   manualParse: 10, aiHelper: null }, 2000000, 900),
+    unlimited: tier('Unlimited',  9.99,  { chat: 600, scan: 600, generation: null, manualParse: 30, aiHelper: null }, null,    3600),
   },
   // $ per call — projection inputs only; not used for billing.
   costs: {
@@ -66,6 +76,12 @@ const DEFAULTS = {
   // page (the mobile app will handle real payments later).
   fees: { pct: 2.9, flat: 0.30 },
   guards: { mapsPerDay: 500 },
+  // Admin-account policy. `unlimitedAi: true` exempts users with role 'admin'
+  // from the weekly AI token / call-time budgets (internal team + testing);
+  // usage is still tracked either way. Flip to false in the admin app to meter
+  // admins exactly like everyone else. Read by the usageMeter middleware and the
+  // billing-status gauge.
+  admin: { unlimitedAi: true },
 };
 
 const monetizationConfigSchema = new mongoose.Schema(
@@ -78,6 +94,7 @@ const monetizationConfigSchema = new mongoose.Schema(
     activity: { type: mongoose.Schema.Types.Mixed, default: () => DEFAULTS.activity },
     fees:     { type: mongoose.Schema.Types.Mixed, default: () => DEFAULTS.fees },
     guards:   { type: mongoose.Schema.Types.Mixed, default: () => DEFAULTS.guards },
+    admin:    { type: mongoose.Schema.Types.Mixed, default: () => DEFAULTS.admin },
   },
   { timestamps: true, minimize: false }
 );
@@ -101,6 +118,12 @@ monetizationConfigSchema.statics.getSingleton = async function getSingleton() {
     doc.markModified('fees');
     dirty = true;
   }
+  // Backfill the admin-policy section for configs created before it existed.
+  if (!doc.admin) {
+    doc.admin = { ...DEFAULTS.admin };
+    doc.markModified('admin');
+    dirty = true;
+  }
   if (doc.tiers) {
     for (const key of Object.keys(doc.tiers)) {
       if (doc.tiers[key] && 'stripePriceId' in doc.tiers[key]) {
@@ -112,6 +135,13 @@ monetizationConfigSchema.statics.getSingleton = async function getSingleton() {
       // metering. `null` is a valid value (unlimited), so only fill when absent.
       if (doc.tiers[key] && !('weeklyTokenLimit' in doc.tiers[key])) {
         doc.tiers[key].weeklyTokenLimit = DEFAULTS.tiers[key]?.weeklyTokenLimit ?? null;
+        doc.markModified('tiers');
+        dirty = true;
+      }
+      // Backfill the weekly call-seconds limit for configs created before call
+      // metering. `null` (unlimited) is valid, so only fill when the key is absent.
+      if (doc.tiers[key] && !('weeklyCallSecondsLimit' in doc.tiers[key])) {
+        doc.tiers[key].weeklyCallSecondsLimit = DEFAULTS.tiers[key]?.weeklyCallSecondsLimit ?? null;
         doc.markModified('tiers');
         dirty = true;
       }

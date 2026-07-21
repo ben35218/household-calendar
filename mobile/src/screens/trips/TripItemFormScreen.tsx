@@ -6,8 +6,8 @@ import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { tripsApi, placesApi, TripItemType, TripItemAttachment, FormAssistField } from '../../api';
-import { sealNew, sealUpdate, openRecord, getHDK, newObjectId } from '../../lib/e2ee';
-import { encryptFileForUpload, decryptDownloadedFile } from '../../lib/attachments';
+import { sealNew, sealUpdate, openRecord, getHDK, newObjectId, loadResourceKeys, currentResourceKeyVersion, sealForResource } from '../../lib/e2ee';
+import { encryptFileForUpload, encryptFileForUploadResource, decryptDownloadedFile } from '../../lib/attachments';
 import { pickDocument } from '../../lib/media';
 import { uploadFile } from '../../lib/upload';
 import { API_URL } from '../../config';
@@ -111,7 +111,7 @@ type ShareRow = { householdId: string; name: string; included: boolean; amount: 
 // here the leg timezone is chosen explicitly.)
 export default function TripItemFormScreen() {
   const navigation = useNavigation<Nav>();
-  const accent = useCalendarColors().colors.vacations;
+  const accent = useCalendarColors().colors.trips;
   const { tripId, itemId, date } = useRoute<Rt>().params;
   const isEdit = !!itemId;
   const qc = useQueryClient();
@@ -292,9 +292,23 @@ export default function TripItemFormScreen() {
           location: form.location || undefined, ...common,
         };
       }
-      return isEdit
-        ? tripsApi.updateItem(tripId, itemId!, await sealUpdate('TripItem', itemId!, payload, TRIP_ITEM_ENC(payload)))
-        : tripsApi.addItem(tripId, await sealNew('TripItem', payload, TRIP_ITEM_ENC(payload)));
+      // Signal-parity D2: a shared trip's items seal under the TripKey (when this
+      // device holds it), else the HDK dual-write (the owner's reconcile migrates
+      // them later). `tripShared` is derived below from the loaded trip.
+      const sealItem = async (id: string, includeId: boolean) => {
+        if (tripShared && getHDK()) {
+          await loadResourceKeys('trip', tripId).catch(() => {});
+          if (currentResourceKeyVersion(tripId) > 0) {
+            const sealed = await sealForResource('trip', 'TripItem', id, tripId, TRIP_ITEM_ENC(payload));
+            if (sealed) return includeId ? { _id: id, ...payload, ...sealed } : { ...payload, ...sealed };
+          }
+        }
+        return includeId
+          ? await sealNew('TripItem', payload, TRIP_ITEM_ENC(payload))
+          : await sealUpdate('TripItem', id, payload, TRIP_ITEM_ENC(payload));
+      };
+      if (isEdit) return tripsApi.updateItem(tripId, itemId!, await sealItem(itemId!, false));
+      return tripsApi.addItem(tripId, await sealItem(await newObjectId(), true));
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['trips', tripId] });
@@ -324,13 +338,23 @@ export default function TripItemFormScreen() {
     mutationFn: async () => {
       const file = await pickDocument();
       if (!file) return null;
-      // E2EE (Phase 4c): private booking on an unshared trip + unlocked HDK →
-      // encrypt the bytes on-device and upload ciphertext + the wrapped file
-      // key. Shared bookings stay plaintext so other families can open them
-      // (the server refuses encrypted uploads there, §9.3).
-      if (getHDK() && !tripShared && form.sharing === 'private') {
+      // Encrypt the bytes on-device and upload ciphertext + the wrapped file key,
+      // wrapping the per-file key by whichever key the readers hold:
+      //   • shared_shared booking (one receipt every participant sees) → the
+      //     TripKey (§D2), so cross-household collaborators can open it;
+      //   • any other booking (private / per-family) → the HDK, since only the
+      //     owning family may download it.
+      if (getHDK()) {
         const attId = await newObjectId();
-        const sealed = await encryptFileForUpload('TripItemAttachment', attId, file.uri);
+        let sealed = null as Awaited<ReturnType<typeof encryptFileForUpload>>;
+        if (form.sharing === 'shared_shared' && tripShared) {
+          await loadResourceKeys('trip', tripId).catch(() => {});
+          if (currentResourceKeyVersion(tripId) > 0) {
+            sealed = await encryptFileForUploadResource('trip', 'TripItemAttachment', attId, tripId, file.uri);
+          }
+        } else {
+          sealed = await encryptFileForUpload('TripItemAttachment', attId, file.uri);
+        }
         if (sealed) {
           return uploadFile(attachmentsUrl, { uri: sealed.uri, name: `${attId}.bin`, type: 'application/octet-stream' }, 'file', {
             encrypted: true,
@@ -361,7 +385,9 @@ export default function TripItemFormScreen() {
       const name = att.filename && att.filename.includes('.')
         ? att.filename
         : `attachment${(att.fileType || '').includes('pdf') ? '.pdf' : ''}`;
-      const plainUri = await decryptDownloadedFile('TripItemAttachment', att._id, att.keyVersion, att.wrappedFileKey, dl.uri, name);
+      // A TripKey-wrapped file key (shared_shared receipt, §D2) unwraps with the
+      // Trip's resource key; an HDK-wrapped one ignores the resource arg.
+      const plainUri = await decryptDownloadedFile('TripItemAttachment', att._id, att.keyVersion, att.wrappedFileKey, dl.uri, name, tripId);
       if (!plainUri) throw new Error('Could not decrypt this attachment.');
       await Share.share({ url: plainUri });
     },

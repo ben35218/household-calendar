@@ -1,9 +1,9 @@
 const mongoose = require('mongoose');
-const { encFields } = require('./encFields');
+const { encFields, requiredUntilSealed } = require('./encFields');
 
 const itemSchema = new mongoose.Schema({
-  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
-  name: { type: String, required: true },
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: requiredUntilSealed },
+  name: { type: String, required: requiredUntilSealed },
   categoryId: { type: mongoose.Schema.Types.ObjectId, ref: 'Category' },
   propertyId: { type: mongoose.Schema.Types.ObjectId, ref: 'Property' },
   // The service professional (a type:'service' Person in the user's contacts)

@@ -1,17 +1,17 @@
 const mongoose = require('mongoose');
-const { encFields } = require('./encFields');
+const { encFields, requiredUntilSealed } = require('./encFields');
 
 const calendarEventSchema = new mongoose.Schema({
-  userId:      { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  userId:      { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: requiredUntilSealed },
   // Built-in event calendars, plus user-defined ones: the mobile Calendars →
   // Add Calendar screen mints `custom-<slug>` ids on-device.
   calendarType:{ type: String, required: true, match: /^(activities|appointments|custom-[a-z0-9]+)$/ },
-  title:       { type: String, required: true },
+  title:       { type: String, required: requiredUntilSealed },
   description: String,
   location:    String,
   placeId:     String,
   url:         String,
-  startDate:   { type: Date, required: true },
+  startDate:   { type: Date, required: requiredUntilSealed },
   endDate:     Date,
   allDay:      { type: Boolean, default: true },
   phone:       String,
@@ -32,6 +32,10 @@ const calendarEventSchema = new mongoose.Schema({
   // invitation (routes/invitations.js). Its presence switches the client's
   // Delete action to "Leave event" (which retires the invitation too).
   invitationId: { type: mongoose.Schema.Types.ObjectId, ref: 'EventInvitation' },
+  // Set when Calen's cancellation call got the business to confirm (services/
+  // phoneCalls.js). Plaintext status field, like alertAudience; the event stays
+  // on the calendar, marked cancelled.
+  cancelled: Boolean,
   recurrence: {
     freq:     { type: String, enum: ['daily', 'weekly', 'monthly', 'yearly'] },
     interval: { type: Number, default: 1 },

@@ -30,6 +30,7 @@ specs/
     people-contacts.md
     households-sharing.md
     auth-identity.md
+    guardian-recovery.md   # dual-control household-member recovery
     ai-assistant.md
     billing-plans.md
     notifications.md

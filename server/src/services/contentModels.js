@@ -13,7 +13,10 @@ const CONTENT_MODELS = {
   Trip:            require('../models/Trip'),
   TripItem:        require('../models/TripItem'),
   Item:            require('../models/Item'),
-  FoodInventory:   require('../models/FoodInventory'),
+  // Signal-parity D5 (thin collections).
+  OdometerLog:     require('../models/OdometerLog'),
+  RecipeSchedule:  require('../models/RecipeSchedule'),
+  Category:        require('../models/Category'),
 };
 
 module.exports = { CONTENT_MODELS };

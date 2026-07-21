@@ -5,8 +5,9 @@ import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useAuth } from '../../store/auth';
-import { peopleApi, householdApi, Person } from '../../api';
-import { openRecord, getHDK, sealNew } from '../../lib/e2ee';
+import { peopleApi, Person } from '../../api';
+import { openRecord } from '../../lib/e2ee';
+import { ensureSelfPerson } from '../../lib/selfPerson';
 import * as replica from '../../lib/replica';
 import { Card, Chip, RoundIconButton, CenteredLoader, EmptyState } from '../../components/ui';
 import { colors, spacing } from '../../theme';
@@ -21,14 +22,6 @@ const TABS: { key: TabKey; label: string }[] = [
   { key: 'friend', label: 'Friends' },
   { key: 'service', label: 'Professionals' },
 ];
-
-// Encrypted person content (mirrors PersonFormScreen); type stays plaintext for
-// roster grouping. birthday is encrypted now (§9.1 P6).
-const PERSON_ENC = (p: Record<string, unknown>) => ({
-  name: p.name, relationship: p.relationship, interests: p.interests,
-  notes: p.notes, address: p.address, phone: p.phone, email: p.email,
-  birthday: p.birthday,
-});
 
 // Contacts roster split across Family / Friends / Professionals tabs. The "You"
 // card lives under Family; the header "+" adds into the active tab.
@@ -83,25 +76,17 @@ export default function PeopleScreen() {
   });
 
   const qc = useQueryClient();
-  const { data: household } = useQuery({
-    queryKey: ['household'],
-    queryFn: async () => (await householdApi.get()).data,
-  });
 
-  // Post-drop the server no longer creates a plaintext self-record (ensureSelf
-  // no-ops once e2eeActive), so seed an *encrypted* one on first unlock. Dormant
-  // pre-drop and when locked — never writes a plaintext self-record.
+  // Fallback seed of the encrypted "You" Person (the primary seed runs at app
+  // boot — see hooks/useSelfPersonSeed). ensureSelfPerson guards on e2eeActive +
+  // a held key and no-ops once a self-record exists, so this is just a belt-and-
+  // suspenders retry for a session where boot seeding didn't land.
   React.useEffect(() => {
-    if (!people || !household?.e2eeActive || !getHDK()) return;
-    if (people.some((p) => p.accountId && String(p.accountId) === selfId)) return;
-    const name = [user?.firstName, user?.lastName].filter(Boolean).join(' ').trim() || user?.firstName || '';
-    if (!name) return;
-    (async () => {
-      const payload = { type: 'family', name, address: household.homeAddress || undefined };
-      await peopleApi.createSelf(await sealNew('Person', payload, PERSON_ENC(payload)));
-      qc.invalidateQueries({ queryKey: ['people'] });
-    })().catch(() => {});
-  }, [people, household, selfId, user, qc]);
+    if (!people || !user) return;
+    ensureSelfPerson(user).then((created) => {
+      if (created) qc.invalidateQueries({ queryKey: ['people'] });
+    });
+  }, [people, user, qc]);
 
   if (isLoading || !people) {
     return <CenteredLoader />;

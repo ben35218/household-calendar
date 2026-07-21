@@ -117,6 +117,85 @@ function computeNextDueDate(task, fromDate) {
   return null;
 }
 
+// Give a generated recurrence (from a template, a manual, or Ask Calen) a clean
+// anchor day so it doesn't land on an arbitrary date:
+//   • monthly or longer (months/years intervals, or calendar) → the 1st of the
+//     month it occurs in.
+//   • weekly → the same weekday it's created on.
+//   • daily → left alone (it just fires every N days).
+// User-authored recurrences (the Repeat screen) are never routed through here.
+function anchorRecurrence(recurrence, fromDate = new Date()) {
+  if (!recurrence || !recurrence.type) return recurrence;
+  const r = { ...recurrence };
+
+  if (r.type === 'calendar') {
+    r.dayOfMonth = 1;
+    return r;
+  }
+
+  if (r.type === 'interval') {
+    if (r.intervalUnit === 'months' || r.intervalUnit === 'years') {
+      r.dayOfMonth = 1;
+      // Anchor by calendar day, not an nth-weekday rule.
+      delete r.weekOfMonth;
+      delete r.dayOfWeek;
+    } else if (r.intervalUnit === 'weeks') {
+      r.dayOfWeek = new Date(fromDate).getDay();
+      delete r.weekOfMonth;
+      delete r.dayOfMonth;
+    }
+  }
+
+  return r;
+}
+
+// Seed the FIRST due date for a task created from a template. Interval templates
+// can carry an ideal `months` anchor (e.g. flush the water heater in September);
+// computeNextDueDate only honors that anchor for 'years', so here we start any
+// month-anchored interval on the next occurrence of that month. Cadence after
+// completion is unchanged — completions run back through computeNextDueDate, so
+// a "every 3 months" task still repeats quarterly from when it was last done.
+function seedDueDate(recurrence, fromDate = new Date()) {
+  const r = recurrence;
+  if (r && r.type === 'interval' && Array.isArray(r.months) && r.months.length) {
+    const today = startOfDay(new Date(fromDate));
+    const day = r.dayOfMonth || 1;
+    const m = r.months[0] - 1; // stored 1-based
+    let d = new Date(today.getFullYear(), m, day);
+    if (d.getTime() <= today.getTime()) d = new Date(today.getFullYear() + 1, m, day);
+    return d;
+  }
+  return computeNextDueDate({ recurrence: r }, fromDate);
+}
+
+// ── Mileage-based scheduling (vehicle tasks + odometer logs) ─────────────────
+
+// Average km/day from an array of odometer log entries ({ reading, recordedAt }).
+// null when there's not enough history (fewer than 2 logs or zero elapsed days).
+function avgKmPerDay(logs) {
+  if (!logs || logs.length < 2) return null;
+  const sorted = [...logs].sort((a, b) => new Date(a.recordedAt) - new Date(b.recordedAt));
+  const days = Math.floor(
+    (new Date(sorted[sorted.length - 1].recordedAt) - new Date(sorted[0].recordedAt)) / 86400000
+  );
+  if (days === 0) return null;
+  return (sorted[sorted.length - 1].reading - sorted[0].reading) / days;
+}
+
+// Estimate the calendar date a task will come due based on remaining km.
+function estimateDateFromKm(nextDueKm, currentKm, kmPerDay) {
+  if (!kmPerDay || kmPerDay <= 0) return null;
+  const remainingKm = nextDueKm - currentKm;
+  if (remainingKm <= 0) return new Date();
+  return addDays(new Date(), Math.ceil(remainingKm / kmPerDay));
+}
+
+// Next due km threshold after completing a mileage task at `serviceKm`.
+function computeNextDueKm(task, serviceKm) {
+  if (!task.intervalKm || serviceKm == null) return null;
+  return serviceKm + task.intervalKm;
+}
+
 // ── Recurring-event expansion (calendar events) ──────────────────────────────
 
 const WEEKDAY_KINDS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
@@ -332,7 +411,7 @@ function birthdayOccurrences(birthdayDate, fromDate, toDate) {
 function assembleCalendarData({
   events = [], tasks = [], chores = [], people = [],
   recipeSchedules = [], trips = [],
-  fromDate, toDate, selfId = null, groceryShoppingDay = 6,
+  fromDate, toDate, selfId = null, groceryShoppingDay = null,
   // 'weekly' | 'biweekly'; groceryAnchor (YYYY-MM-DD, a known shopping day)
   // fixes which alternating week is the shopping week.
   groceryFrequency = 'weekly', groceryAnchor = null,
@@ -392,8 +471,10 @@ function assembleCalendarData({
   // week, or every other week anchored to `groceryAnchor` — regardless of
   // whether meals are scheduled (mirrors the planner, which always badges the
   // grocery day). Local-midnight dates match the birthday/day-cell convention.
+  // Skipped entirely when no shopping day is configured (groceryShoppingDay ==
+  // null): a household hasn't set up a schedule, so nothing recurs.
   const groceryShopping = [];
-  {
+  if (groceryShoppingDay != null) {
     // First grocery weekday on or after `from` (UTC, matching the range bounds
     // and the toISOString date keys used throughout this engine).
     const g = new Date(Date.UTC(from.getUTCFullYear(), from.getUTCMonth(), from.getUTCDate()));
@@ -441,6 +522,11 @@ function assembleCalendarData({
 
 module.exports = {
   computeNextDueDate,
+  anchorRecurrence,
+  seedDueDate,
+  avgKmPerDay,
+  estimateDateFromKm,
+  computeNextDueKm,
   expandRecurringEvent,
   expandRecurringTaskChore,
   birthdayOccurrences,

@@ -16,9 +16,9 @@ import { outfitSuggestion } from '../../lib/outfit';
 import { useCalendarColors } from '../../lib/calendarPrefs';
 import { zonedParts, zonedTimeLabel } from '../../lib/tz';
 import TripTimeline from '../../components/TripTimeline';
-import AssistantIcon from '../../components/AssistantIcon';
+import CalenChatIcon from '../../components/CalenChatIcon';
 import { useAiEnabled } from '../../lib/privacyPrefs';
-import { openRecord, sealUpdate } from '../../lib/e2ee';
+import { openRecord, sealUpdate, getHDK, loadResourceKeys, currentResourceKeyVersion, sealForResource } from '../../lib/e2ee';
 import { useHorizontalSwipe } from '../../lib/useHorizontalSwipe';
 import { TripsStackParamList } from '../../navigation/TripsNavigator';
 import { colors, spacing } from '../../theme';
@@ -42,7 +42,7 @@ function eachDay(startISO: string, endISO: string): string[] {
 export default function TripDetailScreen() {
   const navigation = useNavigation<Nav>();
   const aiEnabled = useAiEnabled();
-  const accent = useCalendarColors().colors.vacations;
+  const accent = useCalendarColors().colors.trips;
   const { id } = useRoute<Rt>().params;
   const qc = useQueryClient();
   const [dayIndex, setDayIndex] = useState<number | null>(null); // null = grid view
@@ -57,15 +57,22 @@ export default function TripDetailScreen() {
   const trip = data ? { ...data.trip, items: data.items } : undefined;
   const tz = trip?.destinationTz || '';
 
-  // Status-only update. sealUpdate rebuilds the enc blob from the fields we
-  // pass, so re-seal the current decrypted enc fields (TRIP_ENC) or an E2EE
-  // trip would lose its name/destination/notes.
+  // Status-only update. The seal rebuilds the enc blob from the fields we pass, so
+  // re-seal the current decrypted content (name/destination/notes) or the trip
+  // would lose it. Signal-parity D2: a shared trip re-seals under its TripKey.
   const statusMut = useMutation({
     mutationFn: async (status: TripStatus) => {
       const dec: any = data ? await openRecord('Trip', data.trip as any) : {};
-      return tripsApi.update(id, await sealUpdate('Trip', id, { status }, {
-        name: dec.name, destination: dec.destination, notes: dec.notes,
-      }));
+      const content = { name: dec.name, destination: dec.destination, notes: dec.notes };
+      const shared = ((data?.trip?.sharedWithOutside?.length ?? 0) > 0) || ((data?.trip?.collaborators?.length ?? 0) > 0);
+      if (shared && getHDK()) {
+        await loadResourceKeys('trip', id).catch(() => {});
+        if (currentResourceKeyVersion(id) > 0) {
+          const sealed = await sealForResource('trip', 'Trip', id, id, content);
+          if (sealed) return tripsApi.update(id, { status, ...sealed });
+        }
+      }
+      return tripsApi.update(id, await sealUpdate('Trip', id, { status }, content));
     },
     onSuccess: () => qc.invalidateQueries({ queryKey: ['trips'] }),
     onError: (e: any) => {
@@ -342,8 +349,8 @@ export default function TripDetailScreen() {
           )}
         </KeyboardAwareScrollView>
         {aiEnabled && (
-          <Fab bg={accent} onPress={() => navigation.navigate('VacationAssistant', { tripId: id, tripName: trip?.name })}>
-            <AssistantIcon size={26} color="#fff" />
+          <Fab bg={accent} onPress={() => navigation.navigate('TripAssistant', { tripId: id, tripName: trip?.name })}>
+            <CalenChatIcon size={26} color="#fff" />
           </Fab>
         )}
       </View>
@@ -543,8 +550,8 @@ export default function TripDetailScreen() {
         ) : null}
       </KeyboardAwareScrollView>
       {aiEnabled && (
-        <Fab bg={accent} onPress={() => navigation.navigate('VacationAssistant', { tripId: id, tripName: trip?.name })}>
-          <AssistantIcon size={26} color="#fff" />
+        <Fab bg={accent} onPress={() => navigation.navigate('TripAssistant', { tripId: id, tripName: trip?.name })}>
+          <CalenChatIcon size={26} color="#fff" />
         </Fab>
       )}
     </View>

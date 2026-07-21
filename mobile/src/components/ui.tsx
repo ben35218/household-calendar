@@ -524,6 +524,7 @@ export function IconAvatar({
 export function CardRow({
   leading,
   title,
+  titleStyle,
   titleRight,
   subtitle,
   right,
@@ -532,6 +533,8 @@ export function CardRow({
 }: {
   leading?: React.ReactNode;
   title: string;
+  // Optional override for the title text (e.g. strike-through on a cancelled row).
+  titleStyle?: StyleProp<TextStyle>;
   titleRight?: React.ReactNode;
   subtitle?: string | React.ReactNode;
   right?: React.ReactNode;
@@ -543,7 +546,7 @@ export function CardRow({
       {leading}
       <View style={styles.cardRowText}>
         <View style={styles.cardRowTitleLine}>
-          <Text style={styles.cardRowTitle} numberOfLines={1}>{title}</Text>
+          <Text style={[styles.cardRowTitle, titleStyle]} numberOfLines={1}>{title}</Text>
           {titleRight}
         </View>
         {subtitle != null ? (

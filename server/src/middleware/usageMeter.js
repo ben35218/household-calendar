@@ -94,6 +94,14 @@ function nextTier(plan) {
   return i >= 0 && i < TIER_ORDER.length - 1 ? TIER_ORDER[i + 1] : null;
 }
 
+// Whether this caller is exempt from the weekly AI budgets. Admin accounts get
+// unlimited AI only while the admin-config toggle allows it (`admin.unlimitedAi`,
+// default true) — set it false in the admin app to meter admins like everyone
+// else. Usage is still tracked regardless; this only controls enforcement.
+function adminUnlimited(config, user) {
+  return user?.role === 'admin' && config?.admin?.unlimitedAi !== false;
+}
+
 // Pooled (paid-tier) usage a household has actually consumed this period: the raw
 // counter minus any baseline captured at a mid-week upgrade. The baseline only
 // exists for the period an upgrade landed in, so other periods pass through raw.
@@ -141,29 +149,99 @@ function enforcedTokens(req, period) {
   return effectiveTokens(req.household, period);
 }
 
-// Record tokens an AI call consumed. Always bumps BOTH the household pool
-// (fleet analytics + paid enforcement) and the per-user counter (free
+// Bump the weekly token counters by explicit ids. Always hits BOTH the household
+// pool (fleet analytics + paid enforcement) and the per-user counter (free
 // enforcement + per-user admin attribution — on paid plans the user counter is
 // analytics-only, enforcedTokens never reads it there). `action` gets a
-// per-action token split for analytics. Fire-and-forget; returns the token
-// count so handlers can echo `tokensUsed` back to the client.
-async function recordTokens(req, usage, action = null) {
-  const t = totalTokens(usage);
-  if (!t) return 0;
+// per-action token split for analytics. Fire-and-forget; returns the token count.
+function bumpTokenCounters({ householdId, userId, tokens, action = null }) {
+  if (!tokens) return 0;
   const period = currentPeriodKey();
-  const household = req.household;
-  const user = req.user;
-  if (household?._id) {
-    const inc = { [`usageTokens.${period}.tokens`]: t };
-    if (action) inc[`usageTokens.${period}.byAction.${action}`] = t;
-    Household.updateOne({ _id: household._id }, { $inc: inc })
+  if (householdId) {
+    const inc = { [`usageTokens.${period}.tokens`]: tokens };
+    if (action) inc[`usageTokens.${period}.byAction.${action}`] = tokens;
+    Household.updateOne({ _id: householdId }, { $inc: inc })
       .catch((err) => console.error('[recordTokens] household inc failed:', err.message));
   }
-  if (user?._id) {
-    User.updateOne({ _id: user._id }, { $inc: { [`usageTokens.${period}.tokens`]: t } })
+  if (userId) {
+    User.updateOne({ _id: userId }, { $inc: { [`usageTokens.${period}.tokens`]: tokens } })
       .catch((err) => console.error('[recordTokens] user inc failed:', err.message));
   }
-  return t;
+  return tokens;
+}
+
+// Record tokens an AI call consumed against the caller's weekly budget. Used by
+// the in-request path (patched Anthropic client / chat stream), so it reads the
+// scope off `req`. Returns the token count so handlers can echo `tokensUsed`.
+async function recordTokens(req, usage, action = null) {
+  return bumpTokenCounters({
+    householdId: req.household?._id,
+    userId: req.user?._id,
+    tokens: totalTokens(usage),
+    action,
+  });
+}
+
+// ── Call-time metering (the enforced weekly seconds budget for phone calls) ──
+// Phone calls are billed by Vapi per-minute, so they draw down a SEPARATE weekly
+// budget measured in connected seconds — not the token budget. Same scope model
+// as tokens: per-user on free, pooled household on paid.
+
+// Pooled (paid-tier) call seconds this period: raw minus any upgrade baseline.
+function effectiveCallSeconds(household, period) {
+  const raw = household?.usageCallSeconds?.[period]?.seconds || 0;
+  const base = household?.usageCallSecondsBaseline?.[period]?.seconds || 0;
+  return Math.max(0, raw - base);
+}
+
+// Call seconds enforced against this caller for the period: per-user on free,
+// pooled on paid. Accepts either a `req` or a bare `{ household, user }`.
+function enforcedCallSeconds({ household, user }, period) {
+  const plan = household?.plan || 'free';
+  if (plan === 'free') return user?.usageCallSeconds?.[period]?.seconds || 0;
+  return effectiveCallSeconds(household, period);
+}
+
+// Resolve the caller's weekly call-time budget status for the current period.
+// `limit == null` means unlimited; exempt admins are never blocked (see
+// `adminUnlimited`) but are still tracked. Shared by the meterCallSeconds guard,
+// the chat call_business pre-check, and the billing-status payload.
+async function callSecondsStatus({ household, user }) {
+  const plan = household?.plan || 'free';
+  const config = await getConfig();
+  const tier = config.tiers?.[plan] || config.tiers?.free || {};
+  const period = currentPeriodKey();
+  const limit = tier.weeklyCallSecondsLimit ?? null;
+  const used = enforcedCallSeconds({ household, user }, period);
+  const enforced = limit != null && !adminUnlimited(config, user);
+  return {
+    plan,
+    scope: plan === 'free' ? 'user' : 'household',
+    limit,                       // null = unlimited
+    used,
+    exceeded: enforced && used >= limit,
+    pct: limit ? Math.min(100, Math.round((used / limit) * 100)) : 0,
+    remaining: limit == null ? null : Math.max(0, limit - used),
+  };
+}
+
+// Record connected call seconds against the weekly budget. Bumps BOTH the
+// household pool (paid enforcement + fleet analytics) and the per-user counter
+// (free enforcement), keyed by explicit ids — phone calls settle during a lazy
+// refresh with no `req` in scope. Fire-and-forget; returns the seconds recorded.
+function recordCallSecondsById({ householdId, userId }, seconds) {
+  const s = Math.round(Number(seconds) || 0);
+  if (s <= 0) return 0;
+  const period = currentPeriodKey();
+  if (householdId) {
+    Household.updateOne({ _id: householdId }, { $inc: { [`usageCallSeconds.${period}.seconds`]: s } })
+      .catch((err) => console.error('[recordCallSeconds] household inc failed:', err.message));
+  }
+  if (userId) {
+    User.updateOne({ _id: userId }, { $inc: { [`usageCallSeconds.${period}.seconds`]: s } })
+      .catch((err) => console.error('[recordCallSeconds] user inc failed:', err.message));
+  }
+  return s;
 }
 
 function isUpgrade(oldPlan, newPlan) {
@@ -182,9 +260,11 @@ function upgradeBaselineUpdate(household, newPlan) {
   delete snapshot.breakdown;
   const tokenSnapshot = { ...(household?.usageTokens?.[period] || {}) };
   delete tokenSnapshot.byAction;
+  const callSecondsSnapshot = { ...(household?.usageCallSeconds?.[period] || {}) };
   return {
     usageBaseline: { [period]: snapshot },
     usageTokensBaseline: { [period]: tokenSnapshot },
+    usageCallSecondsBaseline: { [period]: callSecondsSnapshot },
   };
 }
 
@@ -217,8 +297,12 @@ function meter(action, surface = null) {
       // know a call's token cost AFTER it runs, so this is a pre-check on the
       // running total: once at/over budget, the NEXT AI call is blocked. Per-user
       // on free, pooled on paid.
+      //
+      // Admin accounts (internal team / testing) can be exempted from blocking
+      // regardless of plan via the admin-config toggle (`adminUnlimited`) — usage
+      // is still counted below so the admin analytics stay complete.
       const limit = tier.weeklyTokenLimit;
-      if (limit != null) {
+      if (limit != null && !adminUnlimited(config, user)) {
         const used = enforcedTokens(req, period);
         if (used >= limit) {
           // Count the refusal per user: repeated attempts after hitting the cap
@@ -290,6 +374,51 @@ function meter(action, surface = null) {
   };
 }
 
+// Pre-check the weekly call-time budget before placing an assistant phone call,
+// and count the placement on success. Used on the direct call-placement routes
+// (the chat call_business tool pre-checks inline via callSecondsStatus). Runs
+// AFTER requireAuth so req.household / req.user are set. The seconds a call
+// actually consumes are recorded later, when Vapi reports its duration
+// (services/phoneCalls → recordCallSecondsById), so this is a pre-check on the
+// running total: once at/over budget, the NEXT call is blocked.
+function meterCallSeconds() {
+  return async function guard(req, res, next) {
+    try {
+      const status = await callSecondsStatus({ household: req.household, user: req.user });
+      if (status.exceeded) {
+        const period = currentPeriodKey();
+        if (req.user?._id) {
+          User.updateOne({ _id: req.user._id }, { $inc: { [`usageBlocked.${period}.call`]: 1 } })
+            .catch((err) => console.error('[meterCallSeconds] blocked-attempt inc failed:', err.message));
+        }
+        return res.status(402).json({
+          error: 'You’ve used all your assistant call time for this week. Upgrade for more.',
+          code: 'CALL_SECONDS_EXCEEDED',
+          plan: status.plan,
+          scope: status.scope,
+          limit: status.limit,
+          used: status.used,
+          pct: status.pct,
+          upgradeTo: nextTier(status.plan),
+        });
+      }
+      // Count the placement on a 2xx (analytics; same shape as meter()'s counter).
+      res.on('finish', () => {
+        if (res.statusCode < 200 || res.statusCode >= 300) return;
+        const period = currentPeriodKey();
+        if (req.household?._id) {
+          Household.updateOne({ _id: req.household._id }, { $inc: { [`usage.${period}.call`]: 1 } })
+            .catch((err) => console.error('[meterCallSeconds] household increment failed:', err.message));
+        }
+      });
+      next();
+    } catch (err) {
+      console.error('[meterCallSeconds] error:', err.message);
+      next(); // fail open — never let a metering bug block a call
+    }
+  };
+}
+
 // In-process daily abuse guard for the Google Maps endpoints. Maps is available
 // on every tier (it's a fundamental feature), so this is NOT a product limit —
 // just a runaway-cost backstop keyed per household per UTC day. In-memory is
@@ -325,7 +454,9 @@ if (typeof mapsSweep.unref === 'function') mapsSweep.unref();
 
 module.exports = {
   meter, mapsGuard, getConfig, invalidateConfigCache, currentPeriodKey, nextPeriodResetAt,
-  nextTier, TIER_ORDER, effectivePeriodUsage, upgradeBaselineUpdate,
+  nextTier, TIER_ORDER, effectivePeriodUsage, upgradeBaselineUpdate, adminUnlimited,
   // Token metering
   recordTokens, totalTokens, effectiveTokens, enforcedTokens,
+  // Call-time metering
+  meterCallSeconds, recordCallSecondsById, effectiveCallSeconds, enforcedCallSeconds, callSecondsStatus,
 };

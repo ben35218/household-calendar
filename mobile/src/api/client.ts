@@ -1,6 +1,14 @@
 import axios from 'axios';
+import { Platform } from 'react-native';
+import * as Device from 'expo-device';
 import { API_URL } from '../config';
 import { getCachedToken, saveToken } from '../lib/secureToken';
+
+// Device identity headers (Signal-parity F2/F3): label this device's session
+// row so the Devices list is readable and new-device alerts say WHICH device.
+// Cosmetic only — never an auth factor.
+const DEVICE_NAME = Device.deviceName || Device.modelName || 'Unknown device';
+const DEVICE_PLATFORM = Platform.OS;
 
 // Mirrors client/src/services/api.js, adapted for React Native:
 //   - baseURL is the absolute API URL (no dev proxy on device)
@@ -12,6 +20,8 @@ const api = axios.create({ baseURL: API_URL });
 api.interceptors.request.use((config) => {
   const token = getCachedToken();
   if (token) config.headers.Authorization = `Bearer ${token}`;
+  config.headers['X-Device-Name'] = DEVICE_NAME;
+  config.headers['X-Device-Platform'] = DEVICE_PLATFORM;
   return config;
 });
 

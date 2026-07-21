@@ -4,21 +4,25 @@ import { Ionicons } from '@expo/vector-icons';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import { tasksApi, categoriesApi, itemsApi, settingsApi, householdApi, FormAssistField } from '../../api';
+import { computeNextDueDate } from '@household/calendar';
+import { tasksApi, itemsApi, settingsApi, householdApi, FormAssistField, Task } from '../../api';
 import { sealNew, sealUpdate, openRecord } from '../../lib/e2ee';
-
-// Encrypted task content (refs/dates/recurrence stay plaintext for the server).
-const TASK_ENC = (p: Record<string, unknown>) => ({
-  title: p.title, description: p.description,
-});
-import { Input, Select, Screen, DateField, NavField, useHeaderCheckButton, FormError, CenteredLoader } from '../../components/ui';
+import { TASK_ENC } from '../../lib/encSubsets';
+import { loadCategories } from '../../lib/categories';
+import { Input, Select, Screen, DateField, TimeField, NavField, useHeaderCheckButton, FormError, CenteredLoader } from '../../components/ui';
 import { form as fs, GroupCard, CardDivider } from '../../components/formStyles';
 import { useCalendarColors } from '../../lib/calendarPrefs';
+import { SUGGESTED_TASK_ICONS } from '../../lib/maintenanceCategories';
 import FormAssist from '../../components/FormAssist';
+import IconPicker from '../../components/IconPicker';
 import { useFormAssist } from '../../hooks/useFormAssist';
 import {
   recurrenceToRule,
   ruleToRecurrence,
+  recurrenceAssistFields,
+  recurrenceAssistCurrent,
+  patchTouchesRecurrence,
+  applyRecurrenceAssistPatch,
   ALERT_DAY_OPTIONS,
 } from '../../lib/recurrence';
 import { RepeatRule, EMPTY_REPEAT, repeatSummary } from '../../lib/eventRepeat';
@@ -33,10 +37,13 @@ interface TaskForm {
   title: string;
   categoryId: string | null;
   itemId: string | null;
+  // Bare MaterialCommunityIcons glyph; empty = fall back to the category icon.
+  icon: string;
   description: string;
   nextDueDate: string;
   reminderDaysBefore: number | null;
   alert2DaysBefore: number | null;
+  reminderTime: string;
   // Explicit alert recipients; empty = everyone in the household.
   alertUserIds: string[];
 }
@@ -45,10 +52,12 @@ const EMPTY: TaskForm = {
   title: '',
   categoryId: null,
   itemId: null,
+  icon: '',
   description: '',
   nextDueDate: '',
   reminderDaysBefore: 0,
   alert2DaysBefore: null,
+  reminderTime: '',
   alertUserIds: [],
 };
 
@@ -96,7 +105,8 @@ export default function TaskFormScreen() {
 
   const categoriesQ = useQuery({
     queryKey: ['categories', 'top'],
-    queryFn: async () => (await categoriesApi.list({ topLevel: true })).data,
+    // Decrypted (names are sealed content — Signal-parity D5).
+    queryFn: () => loadCategories({ topLevel: true }),
   });
   const itemsQ = useQuery({ queryKey: ['items', 'list'], queryFn: async () => (await itemsApi.list()).data });
   const settingsQ = useQuery({ queryKey: ['settings'], queryFn: async () => (await settingsApi.get()).data });
@@ -113,6 +123,11 @@ export default function TaskFormScreen() {
     enabled: isEdit,
   });
 
+  // The decrypted record backing an edit — spread under the update at seal time
+  // so content fields the form doesn't edit (instructions, estimates) survive
+  // re-sealing with the shared TASK_ENC subset.
+  const decryptedTask = React.useRef<Task | null>(null);
+
   // Hydrate the form once the existing task loads.
   useEffect(() => {
     if (!taskQ.data) return;
@@ -120,16 +135,19 @@ export default function TaskFormScreen() {
     (async () => {
     const t = await openRecord('MaintenanceTask', taskQ.data); // decrypt content over plaintext
     if (cancelled) return;
+    decryptedTask.current = t;
     const catId = t.categoryId && typeof t.categoryId === 'object' ? t.categoryId._id : (t.categoryId as string) || null;
     const itemId = t.itemId && typeof t.itemId === 'object' ? t.itemId._id : (t.itemId as string) || null;
     setForm({
       title: t.title ?? '',
       categoryId: catId,
       itemId,
+      icon: t.icon ?? '',
       description: t.description ?? '',
       nextDueDate: t.nextDueDate ? t.nextDueDate.slice(0, 10) : '',
       reminderDaysBefore: t.reminderDaysBefore ?? 0,
       alert2DaysBefore: t.alert2DaysBefore ?? null,
+      reminderTime: t.reminderTime ?? '',
       alertUserIds: (t.alertUserIds ?? []).map(String),
     });
     setRepeatRule(recurrenceToRule(t.recurrence));
@@ -144,21 +162,36 @@ export default function TaskFormScreen() {
       { name: 'title', type: 'text', label: 'Task Title' },
       { name: 'categoryId', type: 'select', label: 'Category', options: (categoriesQ.data ?? []).map((c) => ({ label: c.name, value: c._id })) },
       { name: 'itemId', type: 'select', label: 'Linked Item', options: (itemsQ.data ?? []).map((i) => ({ label: i.name, value: i._id })) },
+      {
+        name: 'icon',
+        type: 'select',
+        label: 'Icon',
+        description: 'The most fitting glyph for the task; leave unset to fall back to the category icon',
+        options: SUGGESTED_TASK_ICONS.map((n) => ({ label: n, value: n })),
+      },
       { name: 'description', type: 'text', label: 'Description' },
       { name: 'nextDueDate', type: 'date', label: 'Next Due Date' },
+      ...recurrenceAssistFields(),
+      { name: 'reminderDaysBefore', type: 'select', label: 'Alert', description: 'When to send the first reminder', options: ALERT_DAY_OPTIONS.map((o) => ({ label: o.label, value: o.value ?? -1 })) },
+      { name: 'alert2DaysBefore', type: 'select', label: 'Second alert', description: 'An optional second reminder', options: ALERT_DAY_OPTIONS.map((o) => ({ label: o.label, value: o.value ?? -1 })) },
     ],
     [categoriesQ.data, itemsQ.data]
   );
 
-  // Merge an AI patch into the form, coercing numeric fields to their string
-  // representation and marking the fields that actually changed for highlight.
+  // Merge an AI patch into the form: reassemble any repeat* keys into the
+  // RepeatRule, apply the -1 "No alert" sentinel, and mark changed fields.
   const applyPatch = (patch: Record<string, unknown>) => {
     const next: Partial<TaskForm> = {};
     const changedKeys: string[] = [];
+    if (patchTouchesRecurrence(patch)) {
+      setRepeatRule((prev) => applyRecurrenceAssistPatch(prev, patch));
+      changedKeys.push('recurrence');
+    }
     for (const [k, v] of Object.entries(patch)) {
       if (!(k in EMPTY)) continue;
-      if ((form as any)[k] !== v) changedKeys.push(k);
-      (next as any)[k] = v;
+      const val = (k === 'reminderDaysBefore' || k === 'alert2DaysBefore') && v === -1 ? null : v;
+      if ((form as any)[k] !== val) changedKeys.push(k);
+      (next as any)[k] = val;
     }
     setForm((f) => ({ ...f, ...next }));
     assist.mark(changedKeys);
@@ -168,9 +201,12 @@ export default function TaskFormScreen() {
     mutationFn: async () => {
       const payload: Record<string, unknown> = {
         title: form.title,
+        // Bare glyph or null so the app falls back to the category icon.
+        icon: form.icon || null,
         description: form.description,
         reminderDaysBefore: form.reminderDaysBefore,
         alert2DaysBefore: form.reminderDaysBefore == null ? null : form.alert2DaysBefore,
+        reminderTime: form.reminderDaysBefore == null ? null : (form.reminderTime || null),
         // Empty recipients = everyone; also reset alertAudience so a previously
         // "owner"-scoped task falls back to everyone rather than lingering.
         alertUserIds: form.reminderDaysBefore == null ? [] : form.alertUserIds,
@@ -180,12 +216,20 @@ export default function TaskFormScreen() {
       if (form.categoryId) payload.categoryId = form.categoryId;
       if (form.itemId) payload.itemId = form.itemId;
       if (form.nextDueDate) payload.nextDueDate = form.nextDueDate;
+      // Client-owned due-date lifecycle (Signal-parity D4): seed the first due
+      // date from the recurrence when the user didn't pick one — the server no
+      // longer computes it (it can't once the field is sealed).
+      if (!isEdit && !payload.nextDueDate && (payload.recurrence as { type?: string } | undefined)?.type !== 'one-time') {
+        const d = computeNextDueDate({ recurrence: payload.recurrence }, new Date());
+        if (d) payload.nextDueDate = d.toISOString();
+      }
       return isEdit
-        ? tasksApi.update(id!, await sealUpdate('MaintenanceTask', id!, payload, TASK_ENC(payload)))
+        ? tasksApi.update(id!, await sealUpdate('MaintenanceTask', id!, payload, TASK_ENC({ ...decryptedTask.current, ...payload })))
         : tasksApi.create(await sealNew('MaintenanceTask', payload, TASK_ENC(payload)));
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['tasks'] });
+      qc.invalidateQueries({ queryKey: ['calendar'] });
       navigation.goBack();
     },
     onError: (e: any) => setError(e.response?.data?.error || 'Save failed'),
@@ -239,7 +283,7 @@ export default function TaskFormScreen() {
         fields={assistFields}
         // Recurrence lives outside `form`; pass a readable summary so Calen
         // sees the schedule already set (context only — not an editable field).
-        current={{ ...form, recurrence: repeatSummary(repeatRule) }}
+        current={{ ...form, ...recurrenceAssistCurrent(repeatRule), recurrence: repeatSummary(repeatRule) }}
         onApply={applyPatch}
       />
 
@@ -291,6 +335,15 @@ export default function TaskFormScreen() {
       </GroupCard>
 
       <GroupCard>
+        <IconPicker
+          value={form.icon || undefined}
+          onChange={(name) => set({ icon: name })}
+          suggested={SUGGESTED_TASK_ICONS}
+          accent={accent}
+        />
+      </GroupCard>
+
+      <GroupCard>
         <DateField
           inlineLabel="Next Due Date"
           clearable
@@ -308,6 +361,7 @@ export default function TaskFormScreen() {
           inlineLabel="Repeat"
           value={repeatSummary(repeatRule)}
           onPress={openRepeatScreen}
+          highlight={assist.changed.has('recurrence')}
           containerStyle={fs.dtFieldWrap}
           fieldStyle={fs.rowField}
           valueStyle={fs.dtValue}
@@ -320,6 +374,7 @@ export default function TaskFormScreen() {
           value={form.reminderDaysBefore ?? undefined}
           options={ALERT_DAY_OPTIONS.map((o) => ({ label: o.label, value: o.value ?? -1 }))}
           onChange={(v) => set({ reminderDaysBefore: v === -1 ? null : (v as number) })}
+          highlight={assist.changed.has('reminderDaysBefore')}
           containerStyle={fs.dtFieldWrap}
           fieldStyle={fs.rowField}
           valueStyle={fs.dtValue}
@@ -333,10 +388,29 @@ export default function TaskFormScreen() {
               value={form.alert2DaysBefore ?? undefined}
               options={ALERT_DAY_OPTIONS.map((o) => ({ label: o.label, value: o.value ?? -1 }))}
               onChange={(v) => set({ alert2DaysBefore: v === -1 ? null : (v as number) })}
+              highlight={assist.changed.has('alert2DaysBefore')}
               containerStyle={fs.dtFieldWrap}
               fieldStyle={fs.rowField}
               valueStyle={fs.dtValue}
               chevronIcon="chevron-expand"
+            />
+          </>
+        ) : null}
+        {form.reminderDaysBefore != null ? (
+          <>
+            <CardDivider />
+            <TimeField
+              inlineLabel="Remind at"
+              clearable
+              placeholder="7:00 AM"
+              defaultValue="07:00"
+              value={form.reminderTime}
+              onChange={(v) => set({ reminderTime: v })}
+              highlight={assist.changed.has('reminderTime')}
+              containerStyle={fs.dtFieldWrap}
+              fieldStyle={fs.rowField}
+              valueStyle={fs.dtValue}
+              hideIcon
             />
           </>
         ) : null}

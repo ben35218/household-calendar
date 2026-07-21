@@ -6,22 +6,25 @@ import {
   ActivityIndicator,
   TouchableOpacity,
   RefreshControl,
+  ScrollView,
 } from 'react-native';
 import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Ionicons } from '@expo/vector-icons';
+import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { tasksApi, itemsApi, propertiesApi, TaskTemplate, LinkedRef } from '../../api';
-import { Input, SegmentedControl, Badge, SectionHeader, CenteredLoader } from '../../components/ui';
+import { createTaskFromTemplate } from '../../lib/taskTemplates';
+import { Input, Badge, SectionHeader, CenteredLoader, IconAvatar } from '../../components/ui';
 import { recurrenceLabelShort } from '../../lib/recurrence';
+import { diyBadge } from '../../lib/diy';
+import { categoryMeta, orderCategories, resolveTaskIcon } from '../../lib/maintenanceCategories';
 import { useCalendarColors } from '../../lib/calendarPrefs';
 import { MaintenanceStackParamList } from '../../navigation/MaintenanceNavigator';
 import { colors, radius, spacing } from '../../theme';
 
 type Nav = NativeStackNavigationProp<MaintenanceStackParamList, 'TaskTemplates'>;
 type Rt = RouteProp<MaintenanceStackParamList, 'TaskTemplates'>;
-type Filter = 'available' | 'all';
 
 export default function TaskTemplatesScreen() {
   const navigation = useNavigation<Nav>();
@@ -30,17 +33,11 @@ export default function TaskTemplatesScreen() {
   const accent = useCalendarColors().colors.maintenance;
   const qc = useQueryClient();
   const [search, setSearch] = useState('');
-  const [filter, setFilter] = useState<Filter>('available');
   // Multi-select flow: ids checked off before continuing to the review step.
   const [selected, setSelected] = useState<Set<string>>(new Set());
-  // Collapsed category names (tap a header to fold/unfold its templates).
-  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
-  const toggleCollapsed = (cat: string) =>
-    setCollapsed((prev) => {
-      const next = new Set(prev);
-      next.has(cat) ? next.delete(cat) : next.add(cat);
-      return next;
-    });
+  // Side-rail: which category's templates the right pane is showing. Null falls
+  // back to the first available category (see `activeCat` below).
+  const [activeCatState, setActiveCat] = useState<string | null>(null);
 
   useLayoutEffect(() => {
     if (isMulti) navigation.setOptions({ title: 'Select Tasks' });
@@ -85,12 +82,17 @@ export default function TaskTemplatesScreen() {
 
   // Single-tap flow: create one task and jump to it. When opened from an item,
   // link the new task to it (so the block scopes to that item's property).
+  // Instantiation is client-side now (Signal-parity D4): the template's task is
+  // built + sealed on-device and created through the ordinary POST /tasks.
   const create = useMutation({
-    mutationFn: (templateId: string) =>
-      tasksApi.fromTemplate(itemId ? { selections: [{ templateId, itemId }] } : { templateIds: [templateId] }),
-    onSuccess: (res) => {
+    mutationFn: async (templateId: string) => {
+      const tpl = templatesQ.data?.find((t) => t.id === templateId);
+      if (!tpl) throw new Error('Template not found');
+      return createTaskFromTemplate(tpl, itemId ? { itemId } : {});
+    },
+    onSuccess: (created) => {
       qc.invalidateQueries({ queryKey: ['tasks'] });
-      const created = res.data?.[0];
+      qc.invalidateQueries({ queryKey: ['calendar'] });
       if (created?._id) navigation.replace('TaskDetail', { id: created._id });
       else navigation.goBack();
     },
@@ -103,102 +105,162 @@ export default function TaskTemplatesScreen() {
       return next;
     });
 
-  const grouped = useMemo(() => {
+  // Templates available in this context (scoped to a category when browsing for a
+  // known item; hides ones already applied). Search + rail filter this further.
+  const available = useMemo(() => {
     let list = templatesQ.data ?? [];
-    // Scope to one category when browsing templates for a known item.
     if (categoryName) list = list.filter((t) => t.defaultCategoryName === categoryName);
-    if (filter === 'available') list = list.filter((t) => !usedIds.has(t.id));
-    if (search) {
-      const q = search.toLowerCase();
-      list = list.filter(
-        (t) => t.title.toLowerCase().includes(q) || t.defaultCategoryName?.toLowerCase().includes(q)
-      );
+    return list.filter((t) => !usedIds.has(t.id));
+  }, [templatesQ.data, usedIds, categoryName]);
+
+  // Category → count, ordered canonically, for the side rail.
+  const catCounts = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const t of available) {
+      const c = t.defaultCategoryName || 'General';
+      m.set(c, (m.get(c) ?? 0) + 1);
     }
-    const g: Record<string, TaskTemplate[]> = {};
-    for (const t of list) {
-      const cat = t.defaultCategoryName || 'General';
-      (g[cat] ||= []).push(t);
+    return m;
+  }, [available]);
+  const catNames = useMemo(() => orderCategories([...catCounts.keys()]), [catCounts]);
+
+  // Fall back to the first available category until one is tapped.
+  const activeCat = activeCatState && catNames.includes(activeCatState) ? activeCatState : catNames[0] ?? null;
+
+  const searching = search.trim().length > 0;
+  // While searching, span every category; otherwise show the active one only.
+  const sections = useMemo(() => {
+    if (searching) {
+      const q = search.trim().toLowerCase();
+      const g: Record<string, TaskTemplate[]> = {};
+      for (const t of available) {
+        if (!(t.title.toLowerCase().includes(q) || (t.defaultCategoryName || '').toLowerCase().includes(q))) continue;
+        (g[t.defaultCategoryName || 'General'] ||= []).push(t);
+      }
+      return orderCategories(Object.keys(g)).map((cat) => ({ cat, items: g[cat], showHeader: true }));
     }
-    return g;
-  }, [templatesQ.data, usedIds, filter, search, categoryName]);
+    const items = available.filter((t) => (t.defaultCategoryName || 'General') === activeCat);
+    return activeCat ? [{ cat: activeCat, items, showHeader: false }] : [];
+  }, [available, searching, search, activeCat]);
+
+  // A rail tap clears any search so its category filter actually takes effect.
+  const pickCategory = (cat: string) => { setSearch(''); setActiveCat(cat); };
 
   if (templatesQ.isLoading) {
     return <CenteredLoader />;
   }
 
+  const renderCard = (tpl: TaskTemplate) => {
+    const used = usedIds.has(tpl.id);
+    const busy = create.isPending && create.variables === tpl.id;
+    const checked = selected.has(tpl.id);
+    const diy = diyBadge(tpl.diy);
+    const cat = categoryMeta(tpl.defaultCategoryName || '');
+    return (
+      <TouchableOpacity
+        key={tpl.id}
+        style={[styles.card, checked && { borderColor: accent }, !isMulti && used && styles.cardUsed]}
+        disabled={isMulti ? false : used || create.isPending}
+        onPress={() => (isMulti ? toggle(tpl.id) : create.mutate(tpl.id))}
+        activeOpacity={0.7}
+      >
+        <IconAvatar
+          mdiIcon={resolveTaskIcon(tpl.icon, tpl.defaultCategoryName)}
+          bg={cat.color}
+          size={40}
+          style={styles.cardAvatar}
+        />
+        <View style={{ flex: 1 }}>
+          <Text style={styles.cardTitle}>{tpl.title}</Text>
+          <Text style={styles.cardSub}>{recurrenceLabelShort(tpl.recurrence)}</Text>
+          {used || diy ? (
+            <View style={styles.chipRow}>
+              {used ? <Badge label="In Use" color={colors.success} /> : null}
+              {diy ? <Badge label={diy.label} color={diy.color} /> : null}
+            </View>
+          ) : null}
+        </View>
+        {isMulti ? (
+          <Ionicons name={checked ? 'checkmark-circle' : 'ellipse-outline'} size={24} color={checked ? accent : colors.border} />
+        ) : busy ? (
+          <ActivityIndicator color={colors.primary} />
+        ) : !used ? (
+          <Ionicons name="add-circle-outline" size={24} color={colors.primary} />
+        ) : null}
+      </TouchableOpacity>
+    );
+  };
+
+  // The scrolling template pane (right side, or the whole width when there's no
+  // rail — i.e. browsing a single category for a known item).
+  const showRail = !categoryName && catNames.length > 1;
+  const activeMeta = activeCat ? categoryMeta(activeCat) : null;
+  const pane = (
+    <KeyboardAwareScrollView
+      bottomOffset={24}
+      keyboardShouldPersistTaps="handled"
+      style={styles.screen}
+      contentContainerStyle={styles.paneContent}
+      refreshControl={<RefreshControl refreshing={templatesQ.isRefetching} onRefresh={templatesQ.refetch} />}
+    >
+      {!searching && showRail && activeMeta ? (
+        <View style={styles.paneHeader}>
+          <MaterialCommunityIcons name={activeMeta.icon} size={20} color={activeMeta.color} />
+          <SectionHeader style={styles.paneHeaderText}>
+            {activeMeta.name} <Text style={styles.groupCount}>{sections[0]?.items.length ?? 0}</Text>
+          </SectionHeader>
+        </View>
+      ) : null}
+      {sections.length === 0 || sections.every((s) => s.items.length === 0) ? (
+        <Text style={styles.empty}>{searching ? 'No templates match your search.' : 'No templates left to add here.'}</Text>
+      ) : (
+        sections.map((s) => (
+          <View key={s.cat} style={styles.group}>
+            {s.showHeader ? (
+              <SectionHeader style={styles.groupTitle}>
+                {s.cat} <Text style={styles.groupCount}>{s.items.length}</Text>
+              </SectionHeader>
+            ) : null}
+            {s.items.map(renderCard)}
+          </View>
+        ))
+      )}
+    </KeyboardAwareScrollView>
+  );
+
   return (
     <View style={styles.screen}>
-      <KeyboardAwareScrollView bottomOffset={24} keyboardShouldPersistTaps="handled" style={styles.screen} contentContainerStyle={styles.content}
-        refreshControl={<RefreshControl refreshing={templatesQ.isRefetching} onRefresh={templatesQ.refetch} />}
-      >
-        <View style={styles.toolbar}>
-          <SegmentedControl<Filter>
-            value={filter}
-            onChange={setFilter}
-            options={[
-              { label: 'Available', value: 'available' },
-              { label: 'All', value: 'all' },
-            ]}
-          />
-        </View>
-        <Input placeholder="Search templates…" value={search} onChangeText={setSearch} />
+      <View style={styles.searchWrap}>
+        <Input placeholder="Search all templates…" value={search} onChangeText={setSearch} />
+      </View>
 
-        {Object.entries(grouped).map(([cat, items]) => {
-          const isCollapsed = collapsed.has(cat);
-          return (
-            <View key={cat} style={styles.group}>
-              <TouchableOpacity style={styles.groupHeader} activeOpacity={0.7} onPress={() => toggleCollapsed(cat)}>
-                <Ionicons
-                  name={isCollapsed ? 'chevron-forward' : 'chevron-down'}
-                  size={16}
-                  color={colors.textMuted}
-                  style={styles.groupChevron}
-                />
-                <SectionHeader style={styles.groupTitle}>
-                  {cat} <Text style={styles.groupCount}>{items.length}</Text>
-                </SectionHeader>
-              </TouchableOpacity>
-              {isCollapsed
-                ? null
-                : items.map((tpl) => {
-                    const used = usedIds.has(tpl.id);
-                    const busy = create.isPending && create.variables === tpl.id;
-                    const checked = selected.has(tpl.id);
-                    return (
-                      <TouchableOpacity
-                        key={tpl.id}
-                        style={[styles.card, checked && { borderColor: accent }, !isMulti && used && styles.cardUsed]}
-                        disabled={isMulti ? false : used || create.isPending}
-                        onPress={() => (isMulti ? toggle(tpl.id) : create.mutate(tpl.id))}
-                        activeOpacity={0.7}
-                      >
-                        <View style={{ flex: 1 }}>
-                          <Text style={styles.cardTitle}>{tpl.title}</Text>
-                          <Text style={styles.cardSub}>{recurrenceLabelShort(tpl.recurrence)}</Text>
-                          {used ? (
-                            <View style={styles.chipRow}>
-                              <Badge label="In Use" color={colors.success} />
-                            </View>
-                          ) : null}
-                        </View>
-                        {isMulti ? (
-                          <Ionicons
-                            name={checked ? 'checkmark-circle' : 'ellipse-outline'}
-                            size={24}
-                            color={checked ? accent : colors.border}
-                          />
-                        ) : busy ? (
-                          <ActivityIndicator color={colors.primary} />
-                        ) : !used ? (
-                          <Ionicons name="add-circle-outline" size={24} color={colors.primary} />
-                        ) : null}
-                      </TouchableOpacity>
-                    );
-                  })}
-            </View>
-          );
-        })}
-      </KeyboardAwareScrollView>
+      {showRail ? (
+        <View style={styles.body}>
+          <View style={styles.rail}>
+            <ScrollView keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false} contentContainerStyle={styles.railContent}>
+              {catNames.map((cat) => {
+                const meta = categoryMeta(cat);
+                const isActive = !searching && cat === activeCat;
+                return (
+                  <TouchableOpacity
+                    key={cat}
+                    style={[styles.railItem, isActive && { backgroundColor: meta.color + '22', borderColor: meta.color }]}
+                    activeOpacity={0.7}
+                    onPress={() => pickCategory(cat)}
+                  >
+                    <MaterialCommunityIcons name={meta.icon} size={22} color={isActive ? meta.color : colors.textMuted} />
+                    <Text style={[styles.railLabel, isActive && { color: colors.text }]} numberOfLines={1}>{meta.short}</Text>
+                    <Text style={styles.railCount}>{catCounts.get(cat)}</Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </ScrollView>
+          </View>
+          {pane}
+        </View>
+      ) : (
+        pane
+      )}
 
       {isMulti ? (
         <View style={styles.footer}>
@@ -218,13 +280,32 @@ export default function TaskTemplatesScreen() {
   );
 }
 
+const RAIL_WIDTH = 88;
+
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: colors.background },
-  content: { padding: spacing.md },
-  toolbar: { marginBottom: spacing.md },
+  searchWrap: { paddingHorizontal: spacing.md, paddingTop: spacing.md },
+  body: { flex: 1, flexDirection: 'row' },
+  // Left category rail.
+  rail: { width: RAIL_WIDTH, borderRightWidth: 1, borderRightColor: colors.border },
+  railContent: { paddingVertical: spacing.md, paddingHorizontal: spacing.sm, gap: spacing.sm },
+  railItem: {
+    alignItems: 'center',
+    paddingVertical: spacing.sm,
+    paddingHorizontal: 4,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: 'transparent',
+    gap: 4,
+  },
+  railLabel: { fontSize: 11, fontWeight: '600', color: colors.textMuted, textAlign: 'center' },
+  railCount: { fontSize: 10, color: colors.textMuted },
+  // Right (or full-width) template pane.
+  paneContent: { padding: spacing.md },
+  paneHeader: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: spacing.sm },
+  paneHeaderText: { flex: 1 },
+  empty: { fontSize: 14, color: colors.textMuted, textAlign: 'center', marginTop: spacing.xl },
   group: { marginBottom: spacing.lg },
-  groupHeader: { flexDirection: 'row', alignItems: 'center' },
-  groupChevron: { marginRight: 6, marginBottom: spacing.sm },
   groupTitle: { flex: 1 },
   groupCount: { color: colors.textMuted, fontWeight: '600' },
   card: {
@@ -238,6 +319,7 @@ const styles = StyleSheet.create({
     marginBottom: spacing.sm,
   },
   cardUsed: { opacity: 0.6 },
+  cardAvatar: { marginRight: spacing.md },
   cardTitle: { fontSize: 15, fontWeight: '600', color: colors.text },
   cardSub: { fontSize: 13, color: colors.textMuted, marginTop: 2 },
   chipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: spacing.sm },

@@ -1,22 +1,25 @@
 import React, { useEffect, useState } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
+import { View, Text } from 'react-native';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import { choresApi, peopleApi, settingsApi, FormAssistField } from '../../api';
+import { computeNextDueDate } from '@household/calendar';
+import { choresApi, peopleApi, settingsApi, FormAssistField, Chore } from '../../api';
 import { sealNew, sealUpdate, openRecord } from '../../lib/e2ee';
-
-// Encrypted chore content (assignedTo/icon/dates stay plaintext).
-const CHORE_ENC = (p: Record<string, unknown>) => ({ title: p.title, instructions: p.instructions });
+import { CHORE_ENC } from '../../lib/encSubsets';
 import { useAuth } from '../../store/auth';
-import { Input, Select, Screen, SectionTitle, DateField, NavField, useHeaderCheckButton, FormError, CenteredLoader } from '../../components/ui';
+import { Input, Select, Screen, DateField, TimeField, NavField, useHeaderCheckButton, FormError, CenteredLoader } from '../../components/ui';
 import { form as fs, GroupCard, CardDivider } from '../../components/formStyles';
 import FormAssist from '../../components/FormAssist';
+import IconPicker from '../../components/IconPicker';
 import { useFormAssist } from '../../hooks/useFormAssist';
 import {
   recurrenceToRule,
   ruleToRecurrence,
+  recurrenceAssistFields,
+  recurrenceAssistCurrent,
+  patchTouchesRecurrence,
+  applyRecurrenceAssistPatch,
   ALERT_DAY_OPTIONS,
   AUDIENCE_OPTIONS,
   mdiName,
@@ -25,18 +28,29 @@ import { RepeatRule, EMPTY_REPEAT, repeatSummary } from '../../lib/eventRepeat';
 import { useRepeatDraft, clearRepeatDraft } from '../../lib/repeatDraft';
 import { useCalendarColors } from '../../lib/calendarPrefs';
 import { MaintenanceStackParamList } from '../../navigation/MaintenanceNavigator';
-import { colors, radius, spacing } from '../../theme';
 
 type Nav = NativeStackNavigationProp<MaintenanceStackParamList, 'ChoreForm'>;
 type Rt = RouteProp<MaintenanceStackParamList, 'ChoreForm'>;
 
 // Ported from ChoreFormView's CHORE_ICONS (mdi- prefix stripped for RN).
 const CHORE_ICONS = [
-  'broom', 'washing-machine', 'dishwasher', 'trash-can', 'recycle', 'shower',
-  'toilet', 'flower', 'leaf', 'grass', 'wrench', 'window-closed',
-  'food-fork-drink', 'cart', 'car', 'dog', 'bed', 'sofa', 'fridge',
-  'lightbulb', 'water', 'bucket', 'spray', 'vacuum', 'microwave', 'fire',
-  'mailbox-outline', 'pill', 'garage',
+  // Cleaning & indoor
+  'broom', 'vacuum', 'spray-bottle', 'bucket', 'washing-machine', 'tumble-dryer',
+  'dishwasher', 'trash-can', 'recycle', 'shower', 'toilet', 'bed', 'sofa',
+  'window-closed', 'iron',
+  // Kitchen & appliances
+  'fridge', 'stove', 'microwave', 'coffee-maker', 'kettle', 'food-fork-drink',
+  // Outdoor & grounds
+  'flower', 'leaf', 'grass', 'pine-tree', 'shovel', 'mower', 'sprinkler-variant',
+  'fence', 'saw-blade', 'grill', 'pool', 'hot-tub', 'snowflake',
+  // Home systems & repair
+  'wrench', 'hammer', 'screwdriver', 'tools', 'ladder', 'format-paint',
+  'lightbulb', 'water', 'fire', 'garage', 'home-roof', 'air-filter',
+  'smoke-detector', 'fire-extinguisher', 'solar-panel',
+  // Vehicles
+  'car', 'oil', 'car-battery', 'tire', 'ev-station', 'fuel',
+  // Errands & misc
+  'cart', 'dog', 'mailbox-outline', 'pill',
 ];
 
 interface ChoreFormState {
@@ -47,6 +61,7 @@ interface ChoreFormState {
   nextDueDate: string;
   reminderDaysBefore: number | null;
   alert2DaysBefore: number | null;
+  reminderTime: string;
   alertAudience: string;
 }
 
@@ -58,6 +73,7 @@ const EMPTY: ChoreFormState = {
   nextDueDate: '',
   reminderDaysBefore: 0,
   alert2DaysBefore: null,
+  reminderTime: '',
   alertAudience: 'everyone',
 };
 
@@ -92,7 +108,12 @@ export default function ChoreFormScreen() {
     assist.clear(Object.keys(patch));
   };
 
-  const peopleQ = useQuery({ queryKey: ['people'], queryFn: async () => (await peopleApi.list()).data });
+  // Names are sealed Person content — decrypt so the assignee options read as
+  // names, not ciphertext (and to match the shared ['people'] cache elsewhere).
+  const peopleQ = useQuery({
+    queryKey: ['people'],
+    queryFn: async () => Promise.all((await peopleApi.list()).data.map((p) => openRecord('Person', p))),
+  });
   const settingsQ = useQuery({ queryKey: ['settings'], queryFn: async () => (await settingsApi.get()).data });
   const memberCount = settingsQ.data?.householdMemberCount ?? 1;
 
@@ -104,20 +125,38 @@ export default function ChoreFormScreen() {
       label: p.accountId && String(p.accountId) === myId ? `${p.name} (You)` : p.name,
     }));
 
+  const alertOptions = ALERT_DAY_OPTIONS.map((o) => ({ label: o.label, value: o.value ?? -1 }));
   const assistFields: FormAssistField[] = [
     { name: 'title', type: 'text', label: 'Chore title' },
     { name: 'instructions', type: 'text', label: 'Instructions' },
+    {
+      name: 'icon',
+      type: 'select',
+      label: 'Icon',
+      description: 'The most fitting glyph for the chore',
+      options: CHORE_ICONS.map((n) => ({ label: n, value: `mdi-${n}` })),
+    },
     { name: 'assignedTo', type: 'select', label: 'Assigned to', options: familyOptions },
     { name: 'nextDueDate', type: 'date', label: 'Next due date' },
+    ...recurrenceAssistFields(),
+    { name: 'reminderDaysBefore', type: 'select', label: 'Alert', description: 'When to send the first reminder', options: alertOptions },
+    { name: 'alert2DaysBefore', type: 'select', label: 'Second alert', description: 'An optional second reminder', options: alertOptions },
+    { name: 'alertAudience', type: 'select', label: 'Alert who', description: 'Who receives the alerts', options: AUDIENCE_OPTIONS },
   ];
 
   const applyPatch = (patch: Record<string, unknown>) => {
     const next: Partial<ChoreFormState> = {};
     const changedKeys: string[] = [];
+    if (patchTouchesRecurrence(patch)) {
+      setRepeatRule((prev) => applyRecurrenceAssistPatch(prev, patch));
+      changedKeys.push('recurrence');
+    }
     for (const [k, v] of Object.entries(patch)) {
       if (!(k in EMPTY)) continue;
-      if ((form as any)[k] !== v) changedKeys.push(k);
-      (next as any)[k] = v;
+      // The two alert selects use -1 as the "No alert" sentinel; state holds null.
+      const val = (k === 'reminderDaysBefore' || k === 'alert2DaysBefore') && v === -1 ? null : v;
+      if ((form as any)[k] !== val) changedKeys.push(k);
+      (next as any)[k] = val;
     }
     setForm((f) => ({ ...f, ...next }));
     assist.mark(changedKeys);
@@ -129,12 +168,17 @@ export default function ChoreFormScreen() {
     enabled: isEdit,
   });
 
+  // The decrypted record backing an edit — spread under the update at seal time
+  // so content fields the form doesn't edit survive the shared CHORE_ENC subset.
+  const decryptedChore = React.useRef<Chore | null>(null);
+
   useEffect(() => {
     if (!choreQ.data) return;
     let cancelled = false;
     (async () => {
     const c = await openRecord('Chore', choreQ.data); // decrypt content over plaintext
     if (cancelled) return;
+    decryptedChore.current = c;
     const assignedTo =
       typeof c.assignedTo === 'object' && c.assignedTo ? c.assignedTo._id ?? null : (c.assignedTo as string) ?? null;
     setForm({
@@ -145,12 +189,24 @@ export default function ChoreFormScreen() {
       nextDueDate: c.nextDueDate ? c.nextDueDate.slice(0, 10) : '',
       reminderDaysBefore: c.reminderDaysBefore ?? 0,
       alert2DaysBefore: c.alert2DaysBefore ?? null,
+      reminderTime: c.reminderTime ?? '',
       alertAudience: c.alertAudience ?? 'everyone',
     });
     setRepeatRule(recurrenceToRule(c.recurrence));
     })();
     return () => { cancelled = true; };
   }, [choreQ.data]);
+
+  // A new chore drafted by the Chores assistant: seed the form so the user can
+  // review and save it. Only on a fresh form (no id); runs once.
+  const prefill = useRoute<Rt>().params?.prefill as Record<string, any> | undefined;
+  useEffect(() => {
+    if (isEdit || !prefill) return;
+    if (prefill.title != null) set({ title: String(prefill.title) });
+    if (prefill.instructions != null) set({ instructions: String(prefill.instructions) });
+    if (prefill.recurrence) setRepeatRule(recurrenceToRule(prefill.recurrence));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const save = useMutation({
     mutationFn: async () => {
@@ -161,16 +217,24 @@ export default function ChoreFormScreen() {
         assignedTo: form.assignedTo || null,
         reminderDaysBefore: form.reminderDaysBefore,
         alert2DaysBefore: form.reminderDaysBefore == null ? null : form.alert2DaysBefore,
+        reminderTime: form.reminderDaysBefore == null ? null : (form.reminderTime || null),
         alertAudience: form.alertAudience,
         recurrence: ruleToRecurrence(repeatRule),
       };
       if (form.nextDueDate) payload.nextDueDate = form.nextDueDate;
+      // Client-owned due-date lifecycle (Signal-parity D4): seed the first due
+      // date from the recurrence when the user didn't pick one.
+      if (!isEdit && !payload.nextDueDate && (payload.recurrence as { type?: string } | undefined)?.type !== 'one-time') {
+        const d = computeNextDueDate({ recurrence: payload.recurrence }, new Date());
+        if (d) payload.nextDueDate = d.toISOString();
+      }
       return isEdit
-        ? choresApi.update(id!, await sealUpdate('Chore', id!, payload, CHORE_ENC(payload)))
+        ? choresApi.update(id!, await sealUpdate('Chore', id!, payload, CHORE_ENC({ ...decryptedChore.current, ...payload })))
         : choresApi.create(await sealNew('Chore', payload, CHORE_ENC(payload)));
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['chores'] });
+      qc.invalidateQueries({ queryKey: ['calendar'] });
       navigation.goBack();
     },
     onError: (e: any) => setError(e.response?.data?.error || 'Save failed'),
@@ -206,7 +270,7 @@ export default function ChoreFormScreen() {
         formType="household chore"
         placeholder={'Describe the chore, e.g. "take out the recycling every Sunday, assign to Alex"'}
         fields={assistFields}
-        current={{ ...form, recurrence: repeatSummary(repeatRule) }}
+        current={{ ...form, ...recurrenceAssistCurrent(repeatRule), recurrence: repeatSummary(repeatRule) }}
         onApply={applyPatch}
       />
 
@@ -218,54 +282,13 @@ export default function ChoreFormScreen() {
           containerStyle={fs.headField}
           style={[fs.headInput, assist.changed.has('title') && fs.headInputHighlight]}
         />
-      </GroupCard>
-
-      <SectionTitle>Instructions</SectionTitle>
-      <Input
-        value={form.instructions}
-        onChangeText={(v) => set({ instructions: v })}
-        multiline
-        placeholder="Add instructions…"
-        style={fs.notes}
-        highlight={assist.changed.has('instructions')}
-      />
-
-      <GroupCard>
-        <Select
-          inlineLabel="Assigned to"
-          clearable
-          placeholder="Unassigned"
-          value={form.assignedTo ?? undefined}
-          options={familyOptions}
-          onChange={(v) => set({ assignedTo: (v as string) ?? null })}
-          highlight={assist.changed.has('assignedTo')}
-          containerStyle={fs.dtFieldWrap}
-          fieldStyle={fs.rowField}
-          valueStyle={fs.dtValue}
-          chevronIcon="chevron-expand"
+        <CardDivider />
+        <IconPicker
+          value={mdiName(form.icon)}
+          onChange={(name) => set({ icon: `mdi-${name}` })}
+          suggested={CHORE_ICONS}
+          accent={accent}
         />
-      </GroupCard>
-
-      <SectionTitle>Icon</SectionTitle>
-      <GroupCard>
-        <View style={styles.iconGrid}>
-          {CHORE_ICONS.map((name) => {
-            const selected = mdiName(form.icon) === name;
-            return (
-              <TouchableOpacity
-                key={name}
-                style={[styles.iconOption, selected && { backgroundColor: accent, borderColor: accent }]}
-                onPress={() => set({ icon: `mdi-${name}` })}
-              >
-                <MaterialCommunityIcons
-                  name={name as any}
-                  size={22}
-                  color={selected ? '#fff' : colors.textMuted}
-                />
-              </TouchableOpacity>
-            );
-          })}
-        </View>
       </GroupCard>
 
       <GroupCard>
@@ -286,19 +309,36 @@ export default function ChoreFormScreen() {
           inlineLabel="Repeat"
           value={repeatSummary(repeatRule)}
           onPress={openRepeatScreen}
+          highlight={assist.changed.has('recurrence')}
           containerStyle={fs.dtFieldWrap}
           fieldStyle={fs.rowField}
           valueStyle={fs.dtValue}
         />
       </GroupCard>
 
-      <SectionTitle>Alerts</SectionTitle>
+      <GroupCard>
+        <Select
+          inlineLabel="Assigned to"
+          clearable
+          placeholder="Unassigned"
+          value={form.assignedTo ?? undefined}
+          options={familyOptions}
+          onChange={(v) => set({ assignedTo: (v as string) ?? null })}
+          highlight={assist.changed.has('assignedTo')}
+          containerStyle={fs.dtFieldWrap}
+          fieldStyle={fs.rowField}
+          valueStyle={fs.dtValue}
+          chevronIcon="chevron-expand"
+        />
+      </GroupCard>
+
       <GroupCard>
         <Select
           inlineLabel="Alert"
           value={form.reminderDaysBefore ?? undefined}
           options={ALERT_DAY_OPTIONS.map((o) => ({ label: o.label, value: o.value ?? -1 }))}
           onChange={(v) => set({ reminderDaysBefore: v === -1 ? null : (v as number) })}
+          highlight={assist.changed.has('reminderDaysBefore')}
           containerStyle={fs.dtFieldWrap}
           fieldStyle={fs.rowField}
           valueStyle={fs.dtValue}
@@ -312,10 +352,29 @@ export default function ChoreFormScreen() {
               value={form.alert2DaysBefore ?? undefined}
               options={ALERT_DAY_OPTIONS.map((o) => ({ label: o.label, value: o.value ?? -1 }))}
               onChange={(v) => set({ alert2DaysBefore: v === -1 ? null : (v as number) })}
+              highlight={assist.changed.has('alert2DaysBefore')}
               containerStyle={fs.dtFieldWrap}
               fieldStyle={fs.rowField}
               valueStyle={fs.dtValue}
               chevronIcon="chevron-expand"
+            />
+          </>
+        ) : null}
+        {form.reminderDaysBefore != null ? (
+          <>
+            <CardDivider />
+            <TimeField
+              inlineLabel="Remind at"
+              clearable
+              placeholder="7:00 AM"
+              defaultValue="07:00"
+              value={form.reminderTime}
+              onChange={(v) => set({ reminderTime: v })}
+              highlight={assist.changed.has('reminderTime')}
+              containerStyle={fs.dtFieldWrap}
+              fieldStyle={fs.rowField}
+              valueStyle={fs.dtValue}
+              hideIcon
             />
           </>
         ) : null}
@@ -327,6 +386,7 @@ export default function ChoreFormScreen() {
               value={form.alertAudience}
               options={AUDIENCE_OPTIONS}
               onChange={(v) => set({ alertAudience: (v as string) ?? 'everyone' })}
+              highlight={assist.changed.has('alertAudience')}
               containerStyle={fs.dtFieldWrap}
               fieldStyle={fs.rowField}
               valueStyle={fs.dtValue}
@@ -336,21 +396,16 @@ export default function ChoreFormScreen() {
         ) : null}
       </GroupCard>
 
+      <Input
+        value={form.instructions}
+        onChangeText={(v) => set({ instructions: v })}
+        multiline
+        placeholder="Add instructions…"
+        style={fs.notes}
+        highlight={assist.changed.has('instructions')}
+      />
+
       <FormError>{error}</FormError>
     </Screen>
   );
 }
-
-
-const styles = StyleSheet.create({
-  iconGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, padding: 14 },
-  iconOption: {
-    width: 44,
-    height: 44,
-    borderRadius: radius.sm,
-    borderWidth: 1,
-    borderColor: colors.border,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-});

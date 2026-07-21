@@ -1,5 +1,5 @@
 const mongoose = require('mongoose');
-const { encFields } = require('./encFields');
+const { encFields, requiredUntilSealed } = require('./encFields');
 
 const attachmentSchema = new mongoose.Schema({
   storageKey:    { type: String, required: true },   // random on-disk filename
@@ -8,10 +8,13 @@ const attachmentSchema = new mongoose.Schema({
   fileSizeBytes: Number,
   householdId:   { type: mongoose.Schema.Types.ObjectId, ref: 'Household' }, // uploader's family (private unless one shared bill)
   uploadedAt:    { type: Date, default: Date.now },
-  // E2EE (Phase 4c): on private bookings the file on disk can be AEAD ciphertext,
-  // with the per-file key wrapped to the HDK. Shared bookings stay plaintext so
-  // other families can open them (same boundary as §9.3 shared trips). fileType
-  // then holds the *plaintext* mimetype for the client to restore after decrypt.
+  // E2EE (Phase 4c + Signal-parity D2): the file on disk can be AEAD ciphertext
+  // with the per-file key wrapped by whichever key the readers hold — the HDK for
+  // a private / per-family booking (only the owning family downloads it), or the
+  // TripKey for a shared_shared booking's one shared receipt (every participant
+  // downloads it). The wrap's ks discriminator ('trip' vs absent) tells the
+  // client which key to unwrap with; fileType holds the *plaintext* mimetype for
+  // the client to restore after decrypt. See docs/SIGNAL-PARITY-PLAN.md §D2.
   encrypted:      Boolean,
   wrappedFileKey: String,
   keyVersion:     Number,
@@ -21,7 +24,7 @@ const tripItemSchema = new mongoose.Schema({
   userId:       { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
   tripId:       { type: mongoose.Schema.Types.ObjectId, ref: 'Trip', required: true },
   type:         { type: String, enum: ['flight', 'hotel', 'car-rental', 'restaurant', 'activity', 'transit', 'other'], required: true },
-  title:        { type: String, required: true },
+  title:        { type: String, required: requiredUntilSealed },
   start:        { type: Date, required: true },   // wall-clock at destination
   end:          Date,                             // optional (hotels: check-out; flights: arrival)
   location:     String,

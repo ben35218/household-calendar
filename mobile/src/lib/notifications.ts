@@ -35,10 +35,15 @@ const ALERT_HOUR = 7;      // local 7am for day-based alerts (mirrors the server
 
 interface Reminder { at: Date; title: string; body: string; }
 
-// yyyy-mm-dd at a local wall-clock hour.
-function atLocalHour(dateStr: string, hour: number): Date {
+// yyyy-mm-dd at a local wall-clock time (minute defaults to 0).
+function atLocalHour(dateStr: string, hour: number, minute = 0): Date {
   const [y, m, d] = dateStr.split('-').map(Number);
-  return new Date(y, m - 1, d, hour, 0, 0, 0);
+  return new Date(y, m - 1, d, hour, minute, 0, 0);
+}
+// A chore's `HH:mm` reminder time → {hour, minute}; falls back to ALERT_HOUR:00.
+function alertHourMinute(reminderTime?: string | null): { hour: number; minute: number } {
+  const m = /^(\d{1,2}):(\d{2})/.exec(reminderTime ?? '');
+  return m ? { hour: Number(m[1]), minute: Number(m[2]) } : { hour: ALERT_HOUR, minute: 0 };
 }
 function dateStrMinusDays(dateStr: string, days: number): string {
   const d = atLocalHour(dateStr, 0);
@@ -46,14 +51,16 @@ function dateStrMinusDays(dateStr: string, days: number): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
-// Day-based alert(s) for a task/chore: (dueDate − reminderDaysBefore) at 7am,
-// plus the optional second offset. Mirrors scheduler.js `alertsToday`.
-function pushDayAlerts(out: Reminder[], item: { nextDueDate?: string; reminderDaysBefore?: number | null; alert2DaysBefore?: number | null; title: string }, body: string, now: number) {
+// Day-based alert(s) for a task/chore: (dueDate − reminderDaysBefore) at the
+// item's reminderTime (falling back to 7am), plus the optional second offset.
+// Mirrors scheduler.js `alertsToday`.
+function pushDayAlerts(out: Reminder[], item: { nextDueDate?: string; reminderDaysBefore?: number | null; alert2DaysBefore?: number | null; reminderTime?: string | null; title: string }, body: string, now: number) {
   if (!item.nextDueDate) return;
   const dueStr = item.nextDueDate.slice(0, 10);
+  const { hour, minute } = alertHourMinute(item.reminderTime);
   for (const off of [item.reminderDaysBefore, item.alert2DaysBefore]) {
     if (off == null) continue;
-    const at = atLocalHour(dateStrMinusDays(dueStr, off), ALERT_HOUR);
+    const at = atLocalHour(dateStrMinusDays(dueStr, off), hour, minute);
     if (at.getTime() > now) out.push({ at, title: item.title, body });
   }
 }

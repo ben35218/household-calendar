@@ -20,6 +20,13 @@ services:
       - type: rewrite
         source: /privacy
         destination: /privacy.html
+    headers:
+      # Apple's associated-domains CDN requires the AASA file be served as JSON.
+      # It has no extension, so pin the type (webcredentials = passkey sign-in /
+      # Face ID unlock; the file lists <TeamID>.<bundleId> for the mobile app).
+      - path: /.well-known/apple-app-site-association
+        name: Content-Type
+        value: application/json
 
   - type: web
     name: household-calendar-api

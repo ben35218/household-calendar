@@ -11,9 +11,10 @@ const express = require('express');
 const mongoose = require('mongoose');
 const Household = require('../models/Household');
 const User = require('../models/User');
+const PhoneCall = require('../models/PhoneCall');
 const MonetizationConfig = require('../models/MonetizationConfig');
 const { requireAuth, requireAdmin } = require('../middleware/auth');
-const { getConfig, currentPeriodKey, nextPeriodResetAt, effectivePeriodUsage, upgradeBaselineUpdate, enforcedTokens } = require('../middleware/usageMeter');
+const { getConfig, currentPeriodKey, nextPeriodResetAt, effectivePeriodUsage, upgradeBaselineUpdate, enforcedTokens, callSecondsStatus, adminUnlimited } = require('../middleware/usageMeter');
 
 const router = express.Router();
 
@@ -142,11 +143,19 @@ router.get('/status', async (req, res) => {
       : effectivePeriodUsage(req.household, period);
 
     // Token budget is the enforced metric. Report used / limit / % for the gauge.
-    const weeklyTokenLimit = tiers[plan]?.weeklyTokenLimit ?? null;
+    // Exempt admin accounts aren't metered (see usageMeter / adminUnlimited), so
+    // surface them as unlimited here too — otherwise the gauge would show a cap
+    // they never hit.
+    const weeklyTokenLimit = adminUnlimited(config, req.user) ? null : (tiers[plan]?.weeklyTokenLimit ?? null);
     const tokensUsed = enforcedTokens(req, period);
     const tokenPct = weeklyTokenLimit
       ? Math.min(100, Math.round((tokensUsed / weeklyTokenLimit) * 100))
       : 0;
+
+    // Assistant call-time budget — the separate enforced metric for phone calls,
+    // in connected seconds (admins unlimited, same as tokens). Drives its own
+    // gauge alongside the token gauge.
+    const callBudget = await callSecondsStatus({ household: req.household, user: req.user });
 
     // Subscription lifecycle (paid plans only): renewal/cancellation/billing
     // state maintained by the RevenueCat webhook, plus who bought it.
@@ -173,9 +182,13 @@ router.get('/status', async (req, res) => {
     // aren't baselined at a mid-week upgrade (only the household pool is), so
     // these are relative shares, not a reconciliation against tokensUsed.
     let members;
+    // User ids whose activity counts toward this view: just this user on free
+    // (per-user allowance), the whole household on a shared paid pool.
+    let scopeUserIds = req.user?._id ? [req.user._id] : [];
     if (!perUser && req.household) {
       const users = await User.find({ householdId: req.household._id })
         .select('firstName lastName usageTokens');
+      scopeUserIds = users.map((u) => u._id);
       members = users
         .map((u) => ({
           userId: u._id,
@@ -185,6 +198,20 @@ router.get('/status', async (req, res) => {
         .sort((a, b) => b.tokens - a.tokens);
     }
 
+    // Assistant phone calls placed this week — a distinct AI feature surfaced
+    // separately from chat/scan/etc. Calls are metered by their own weekly
+    // call-time budget (see callBudget above / callSecondsStatus); this "By
+    // feature" row shows a placement COUNT from PhoneCall. Period start = one week
+    // before the next weekly reset.
+    const periodStart = new Date(nextPeriodResetAt().getTime() - 7 * 24 * 60 * 60 * 1000);
+    const callCount = await PhoneCall.countDocuments({
+      userId: { $in: scopeUserIds },
+      createdAt: { $gte: periodStart },
+    }).catch(() => 0);
+    // Fold the call count into the per-action breakdown so it renders as its own
+    // "By feature" row, without mutating the stored analytics usage document.
+    const usageWithCalls = callCount > 0 ? { ...usage, call: callCount } : usage;
+
     res.json({
       plan,
       planLabel: tiers[plan]?.label || plan,
@@ -192,8 +219,12 @@ router.get('/status', async (req, res) => {
       tokensUsed,
       weeklyTokenLimit,     // null = unlimited
       tokenPct,             // 0–100 (0 when unlimited)
-      // Per-action counts (analytics / legacy usage list).
-      usage,
+      // Assistant call-time budget (seconds) — the enforced metric for phone calls.
+      callSecondsUsed: callBudget.used,
+      weeklyCallSecondsLimit: callBudget.limit,   // null = unlimited
+      callSecondsPct: callBudget.pct,             // 0–100 (0 when unlimited)
+      // Per-action counts (analytics / legacy usage list), plus assistant calls.
+      usage: usageWithCalls,
       usageScope: perUser ? 'user' : 'household',
       quotas: tiers[plan]?.quotas || {},
       resetsAt: nextPeriodResetAt().toISOString(),
@@ -207,6 +238,7 @@ router.get('/status', async (req, res) => {
         price: tiers[key]?.price ?? 0,
         quotas: tiers[key]?.quotas || {},
         weeklyTokenLimit: tiers[key]?.weeklyTokenLimit ?? null,
+        weeklyCallSecondsLimit: tiers[key]?.weeklyCallSecondsLimit ?? null,
       })),
     });
   } catch (err) {

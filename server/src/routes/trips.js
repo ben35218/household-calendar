@@ -7,15 +7,16 @@ const { simpleParser } = require('mailparser');
 const Trip = require('../models/Trip');
 const TripItem = require('../models/TripItem');
 const TripInvitation = require('../models/TripInvitation');
+const ResourceKeyEnvelope = require('../models/ResourceKeyEnvelope');
 const User = require('../models/User');
 const Household = require('../models/Household');
 const { requireAuth } = require('../middleware/auth');
+const { requireAiEnabled } = require('../middleware/aiConsent');
 const { rateLimit } = require('../middleware/rateLimit');
 const { meter } = require('../middleware/usageMeter');
 const { activity } = require('../middleware/activity');
 const { isObjectId, pickRecordEnc } = require('../services/householdKey');
-const { plaintextCreateBlocked, E2EE_REQUIRED_MESSAGE } = require('../services/e2eePolicy');
-const { DROP_FIELDS } = require('../services/dropReadiness');
+const { plaintextCreateBlocked, E2EE_REQUIRED_MESSAGE, stripSealedContent, stripSealedDoc } = require('../services/e2eePolicy');
 const { isTripShared } = require('../services/tripSharing');
 const { sendTripShareInvitation } = require('../services/mailer');
 const { normalizePhone } = require('../services/phone');
@@ -98,10 +99,17 @@ function accessFilter(req) {
 function ownerFilter(req) {
   return { userId: { $in: req.scopeIds } };
 }
+// Whether the requester's household owns this trip — gates who may serve/mint/
+// rotate the household-wrapped TripKey (Signal-parity D2). Unlike D1's calendars
+// (creator-only), any member of the owning household manages the TripKey: trips
+// are household-scoped, every member holds the HDK, and the compare-and-set on
+// tripKeyVersion makes concurrent mints safe.
+const ownsTrip = (trip, req) => req.scopeIds.some((id) => String(id) === String(trip.userId));
 // Verify the user can access the trip; responds 404 and returns null if not.
 async function requireTripAccess(req, res) {
-  // sharedWithOutside/collaborators must ride along: the item write guards call
-  // isTripShared(trip) on this object to keep a shared trip's items plaintext.
+  // sharedWithOutside/collaborators must ride along: the item create route calls
+  // isTripShared(trip) to decide whether the E2EE mandate applies (a shared trip
+  // may degrade to a plaintext write pre-TripKey; §D2).
   const trip = await Trip.findOne({ _id: req.params.id, ...accessFilter(req) })
     .select('_id userId sharedWithOutside collaborators').lean();
   if (!trip) { res.status(404).json({ error: 'Trip not found' }); return null; }
@@ -683,10 +691,14 @@ router.post('/', activity('tripCreated'), async (req, res) => {
     if (plaintextCreateBlocked(req.household, enc.enc)) {
       return res.status(400).json({ error: E2EE_REQUIRED_MESSAGE });
     }
-    const trip = await Trip.create({
+    const data = {
       ...(isObjectId(req.body._id) ? { _id: req.body._id } : {}),
       userId: req.user._id, ...pick(req.body, TRIP_FIELDS), ...enc,
-    });
+    };
+    // Steady-state write rule: a sealed (private) trip stores no plaintext
+    // content. A brand-new trip is never shared yet, so it always carries enc.
+    stripSealedContent('Trip', req.household, data);
+    const trip = await Trip.create(data);
     res.status(201).json(trip);
   } catch (err) {
     res.status(400).json({ error: err.message });
@@ -698,19 +710,19 @@ router.put('/:id', async (req, res) => {
     let enc;
     try { enc = pickRecordEnc(req.body); }
     catch (msg) { return res.status(400).json({ error: msg }); }
-    // A shared trip must stay plaintext-readable for cross-household collaborators
-    // (§9.3) — never let an edit re-introduce ciphertext. If this trip is shared,
-    // drop the incoming enc and clear any that lingered.
-    let unset;
-    if (enc.enc) {
-      const existing = await Trip.findOne({ _id: req.params.id, ...accessFilter(req) })
-        .select('sharedWithOutside collaborators').lean();
-      if (existing && isTripShared(existing)) { enc = {}; unset = { enc: 1, keyVersion: 1 }; }
-    }
+    // Signal-parity D2: a shared trip seals under its TripKey (enc.ks === 'trip')
+    // rather than staying plaintext — so an edit keeps its ciphertext like any
+    // other record; the client picks the TripKey vs HDK seal. No shared-trip
+    // enc-strip anymore.
     const set = { ...pick(req.body, TRIP_FIELDS), ...enc };
+    // Steady-state write rule: a sealed trip (TripKey or HDK) re-stores no
+    // plaintext content (name/destination/notes ride in enc). The plaintext lane
+    // (a legacy shared trip not yet migrated to a TripKey) writes without enc, so
+    // this is a no-op there and its plaintext survives until the owner reconciles.
+    stripSealedContent('Trip', req.household, set);
     const trip = await Trip.findOneAndUpdate(
       { _id: req.params.id, ...accessFilter(req) },
-      unset ? { $set: set, $unset: unset } : set,
+      set,
       { new: true },
     );
     if (!trip) return res.status(404).json({ error: 'Not found' });
@@ -727,6 +739,8 @@ router.delete('/:id', async (req, res) => {
     const items = await TripItem.find({ tripId: trip._id }).lean();
     unlinkAttachments(items);
     await TripItem.deleteMany({ tripId: trip._id });
+    // Signal-parity D2: the TripKey envelopes die with the trip.
+    await ResourceKeyEnvelope.deleteMany({ resourceType: 'trip', resourceKey: String(trip._id) }).catch(() => {});
     res.json({ message: 'Deleted' });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -746,18 +760,19 @@ router.post('/:id/items', async (req, res) => {
       tripId: trip._id,
     });
     applyItemBody(item, req.body, req.user.householdId);
-    // A shared trip stays plaintext-readable for collaborators (§9.3): never seal
-    // its items. Private-trip items keep the client's ciphertext as usual, and
-    // under the mandate must carry it.
+    // Signal-parity D2: a shared trip's items seal under the TripKey (enc.ks ===
+    // 'trip'); private-trip items seal under the HDK. Either way the client sends
+    // ciphertext, which stripSealedDoc's write rule strips the plaintext for. The
+    // mandate (plaintextCreateBlocked) is enforced only on UNSHARED trips, so a
+    // shared trip degrades to a plaintext write when a client can't yet provision
+    // the TripKey (graceful degrade, same as D1's calendars).
     try {
-      if (isTripShared(trip)) { item.enc = undefined; item.keyVersion = undefined; }
-      else {
-        const enc = pickRecordEnc(req.body);
-        if (plaintextCreateBlocked(req.household, enc.enc)) {
-          return res.status(400).json({ error: E2EE_REQUIRED_MESSAGE });
-        }
-        Object.assign(item, enc);
+      const enc = pickRecordEnc(req.body);
+      if (!isTripShared(trip) && plaintextCreateBlocked(req.household, enc.enc)) {
+        return res.status(400).json({ error: E2EE_REQUIRED_MESSAGE });
       }
+      Object.assign(item, enc);
+      stripSealedDoc('TripItem', req.household, item);
     } catch (msg) { return res.status(400).json({ error: msg }); }
     await item.save();
     res.status(201).json(item);
@@ -778,10 +793,12 @@ router.put('/:id/items/:itemId', async (req, res) => {
       return res.status(403).json({ error: 'Only the household that created this booking can make it private' });
     }
     const removedKeys = applyItemBody(item, req.body, req.user.householdId);
-    // A shared trip's items stay plaintext (§9.3); private-trip items keep enc.
+    // Signal-parity D2: a shared trip's items seal under the TripKey (enc.ks ===
+    // 'trip'); private-trip items under the HDK. stripSealedDoc strips the
+    // plaintext for either. A legacy plaintext-lane item (no enc) survives untouched.
     try {
-      if (isTripShared(trip)) { item.enc = undefined; item.keyVersion = undefined; }
-      else Object.assign(item, pickRecordEnc(req.body));
+      Object.assign(item, pickRecordEnc(req.body));
+      stripSealedDoc('TripItem', req.household, item);
     } catch (msg) { return res.status(400).json({ error: msg }); }
     await item.save();
     // Unlink files of families that were dropped from the booking.
@@ -856,15 +873,14 @@ router.post('/:id/items/:itemId/attachments', attachmentUpload.single('file'), a
       fs.unlink(path.join(uploadDir, req.file.filename), () => {});
       return res.status(404).json({ error: 'Booking not found' });
     }
-    // E2EE (Phase 4c): the client may upload ciphertext + the wrapped per-file
-    // key and a client-minted _id (the file key's AAD binds to it). Only private
-    // bookings on unshared trips may be encrypted — everyone else on a shared
-    // booking/trip holds no HDK and must be able to open the file (§9.3).
+    // E2EE (Phase 4c + Signal-parity D2): the client may upload ciphertext + the
+    // wrapped per-file key and a client-minted _id (the file key's AAD binds to
+    // it). The wrap is under whichever key the file's readers hold — the HDK for a
+    // private / per-family booking, or the TripKey for a shared_shared booking's
+    // one shared receipt (the wrap envelope's ks tells the client which). The
+    // server is blind to that choice; it only stores the opaque wrappedFileKey, so
+    // encrypted uploads are now allowed on shared bookings too (§9.3 lane retired).
     const encrypted = req.body.encrypted === 'true' || req.body.encrypted === true;
-    if (encrypted && (isTripShared(trip) || (item.sharing && item.sharing !== 'private'))) {
-      fs.unlink(path.join(uploadDir, req.file.filename), () => {});
-      return res.status(409).json({ error: 'Shared bookings keep readable attachments — upload without encryption.' });
-    }
     if (encrypted && !req.body.wrappedFileKey) {
       fs.unlink(path.join(uploadDir, req.file.filename), () => {});
       return res.status(400).json({ error: 'wrappedFileKey required for an encrypted attachment' });
@@ -1006,7 +1022,7 @@ async function buildDraft(p) {
   return draft;
 }
 
-router.post('/:id/items/from-confirmation', meter('scan'), memoryUpload.single('file'), async (req, res) => {
+router.post('/:id/items/from-confirmation', meter('scan'), requireAiEnabled, memoryUpload.single('file'), async (req, res) => {
   try {
     const trip = await Trip.findOne({ _id: req.params.id, ...accessFilter(req) }).lean();
     if (!trip) return res.status(404).json({ error: 'Trip not found' });
@@ -1075,17 +1091,6 @@ router.post('/:id/items/from-confirmation', meter('scan'), memoryUpload.single('
 // each removed email revokes the invitation and unseats the collaborator. The
 // recipient accepts from their Invitations inbox to become a collaborator.
 
-// Whitelist a client-decrypted record's content fields for the decrypt-on-share
-// re-write. DROP_FIELDS is the authoritative encrypt-subset map (mirrors what the
-// client seals), so this writes back exactly what the drop had nulled.
-function pickPlaintextForShare(collection, src) {
-  const out = {};
-  for (const f of DROP_FIELDS[collection] || []) {
-    if (src && src[f] !== undefined) out[f] = src[f];
-  }
-  return out;
-}
-
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 // Canonical key for an outside-share entry (email or phone), used to dedupe and
@@ -1115,10 +1120,19 @@ function normalizeRecipients(list) {
 // phone); removed ones are revoked (invitation deleted, accepted collaborator
 // unseated). Never throws — sharing bookkeeping must not fail the save that
 // triggered it.
-async function syncTripInvitations(trip, prevEntries, req) {
+//
+// `snapshot` = the plaintext { tripName, destination } for the invitation display
+// row. Signal-parity D2: a shared trip's name/destination are sealed under the
+// TripKey, so the server can't read them off the Trip — the owner's device passes
+// them for the invitee's inbox (a bounded disclosure to the person being granted
+// access, never written back to the Trip). Falls back to the trip's own plaintext
+// (a non-e2ee / not-yet-migrated trip).
+async function syncTripInvitations(trip, prevEntries, req, snapshot = {}) {
   const prev = new Map((prevEntries || []).map((e) => [entryKey(e), e]));
   const next = new Map((trip.sharedWithOutside || []).map((e) => [entryKey(e), e]));
   const fromName = [req.user.firstName, req.user.lastName].filter(Boolean).join(' ');
+  const tripName = snapshot.tripName || trip.name || 'Our trip';
+  const destination = snapshot.destination || trip.destination;
 
   for (const [key, entry] of next) {
     if (prev.has(key)) continue;
@@ -1134,14 +1148,13 @@ async function syncTripInvitations(trip, prevEntries, req) {
         toPhone: entry.phone || undefined,
         toUserId: recipient?._id,
         tripId: trip._id,
-        tripName: trip.name || 'Our trip',
-        destination: trip.destination,
+        tripName,
+        destination,
       });
       // Phone invites carry no email — the owner's device texts them.
       if (entry.email) {
         sendTripShareInvitation({
-          toEmail: entry.email, fromName, tripName: trip.name || 'Our trip',
-          destination: trip.destination, hasAccount: !!recipient,
+          toEmail: entry.email, fromName, tripName, destination, hasAccount: !!recipient,
         });
       }
     } catch (err) {
@@ -1149,6 +1162,7 @@ async function syncTripInvitations(trip, prevEntries, req) {
     }
   }
 
+  let revoked = false;
   for (const [key, entry] of prev) {
     if (next.has(key)) continue;
     try {
@@ -1160,56 +1174,43 @@ async function syncTripInvitations(trip, prevEntries, req) {
       if (inv?.toUserId) {
         await Trip.updateOne({ _id: trip._id }, { $pull: { collaborators: inv.toUserId } });
       }
+      revoked = true;
     } catch (err) {
       console.error('[trips] invitation revoke failed:', err.message);
     }
   }
+  // Signal-parity D2: an outside party losing access means the TripKey must rotate
+  // so their wrapped key opens nothing further — flag it for the owning
+  // household's next unlocked session (which rotates + re-seals). Only meaningful
+  // once a TripKey exists (tripKeyVersion > 0).
+  if (revoked && (trip.tripKeyVersion || 0) > 0) {
+    await Trip.updateOne({ _id: trip._id }, { $set: { tripKeyRotationPending: true } }).catch(() => {});
+  }
 }
 
-// Set the trip's outside-share emails. Household (owner) only. On an E2EE-active
-// household, the first outside email flips the trip from ciphertext to the
-// plaintext a collaborator can read (§9.3): the owner's device posts the
-// decrypted trip + items, which we re-write as plaintext, clearing `enc`.
+// Set the trip's outside-share emails. Household (owner) only. Signal-parity D2:
+// sharing no longer flips the trip to plaintext (the `409 decrypt_required` lane
+// is retired). The trip + its items stay sealed and migrate onto a TripKey on the
+// owning household's next unlocked session (GET /trips/keys/pending → mint + wrap
+// + re-seal). Because the Trip's name/destination are sealed, the client passes a
+// plaintext { tripName, destination } snapshot for the invitation display rows.
 router.put('/:id/share', async (req, res) => {
   try {
     const existing = await Trip.findOne({ _id: req.params.id, ...ownerFilter(req) })
-      .select('sharedWithOutside collaborators').lean();
+      .select('sharedWithOutside collaborators tripKeyVersion name destination').lean();
     if (!existing) return res.status(404).json({ error: 'Not found' });
 
-    const prevEntries = existing.sharedWithOutside || [];
-    const prevKeys = new Set(prevEntries.map((e) => entryKey(e)));
     // Accept `recipients: [{email?|phone?}]` (new) or `emails: string[]` (legacy).
     const nextEntries = normalizeRecipients(req.body?.recipients ?? req.body?.emails);
-    const addingNew = nextEntries.some((e) => !prevKeys.has(entryKey(e)));
-
-    if (req.household?.e2eeActive && !isTripShared(existing) && addingNew) {
-      const decrypted = req.body?.decrypted;
-      if (!decrypted || typeof decrypted.trip !== 'object') {
-        return res.status(409).json({
-          error: 'decrypt_required',
-          message: 'This trip is end-to-end encrypted. Confirm to make it readable for the people you share it with.',
-        });
-      }
-      // Re-write the trip and each item as plaintext, dropping their ciphertext.
-      await Trip.updateOne(
-        { _id: existing._id },
-        { $set: pickPlaintextForShare('Trip', decrypted.trip), $unset: { enc: 1, keyVersion: 1 } },
-      );
-      for (const it of Array.isArray(decrypted.items) ? decrypted.items : []) {
-        if (!isObjectId(String(it?._id || ''))) continue;
-        await TripItem.updateOne(
-          { _id: it._id, tripId: existing._id },
-          { $set: pickPlaintextForShare('TripItem', it), $unset: { enc: 1, keyVersion: 1 } },
-        );
-      }
-    }
+    const snapshot = { tripName: req.body?.tripName, destination: req.body?.destination };
 
     const trip = await Trip.findOneAndUpdate(
       { _id: existing._id },
       { $set: { sharedWithOutside: nextEntries } },
       { new: true },
     ).lean();
-    await syncTripInvitations(trip, prevEntries, req);
+    // Carry the prior tripKeyVersion so the revoke-rotation flag fires correctly.
+    await syncTripInvitations({ ...trip, tripKeyVersion: existing.tripKeyVersion }, existing.sharedWithOutside || [], req, snapshot);
     res.json({ sharedWithOutside: trip.sharedWithOutside });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1217,7 +1218,9 @@ router.put('/:id/share', async (req, res) => {
 });
 
 // Disable sharing — clears every outside email + collaborator and deletes the
-// invitations. Household only.
+// invitations. Household only. Signal-parity D2: flag a TripKey rotation so the
+// removed parties' wraps open nothing (the trip's own records re-seal onto the
+// fresh version + HDK-lazy on the owner's next unlock).
 router.delete('/:id/share', async (req, res) => {
   try {
     const trip = await Trip.findOneAndUpdate(
@@ -1227,6 +1230,9 @@ router.delete('/:id/share', async (req, res) => {
     );
     if (!trip) return res.status(404).json({ error: 'Not found' });
     await TripInvitation.deleteMany({ tripId: trip._id }).catch(() => {});
+    if ((trip.tripKeyVersion || 0) > 0) {
+      await Trip.updateOne({ _id: trip._id }, { $set: { tripKeyRotationPending: true } }).catch(() => {});
+    }
     res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1234,13 +1240,18 @@ router.delete('/:id/share', async (req, res) => {
 });
 
 // Stop collaborating on a shared trip (a guest removes themselves). Also retires
-// their invitation so they aren't shown as a pending collaborator.
+// their invitation so they aren't shown as a pending collaborator, and flags the
+// TripKey for rotation so their wrap is superseded (D2).
 router.post('/:id/leave-share', async (req, res) => {
   try {
     await Trip.updateOne({ _id: req.params.id }, { $pull: { collaborators: req.user._id } });
     await TripInvitation.updateOne(
       { tripId: req.params.id, toUserId: req.user._id },
       { $set: { status: 'declined', respondedAt: new Date() } },
+    ).catch(() => {});
+    await Trip.updateOne(
+      { _id: req.params.id, tripKeyVersion: { $gt: 0 } },
+      { $set: { tripKeyRotationPending: true } },
     ).catch(() => {});
     res.json({ ok: true });
   } catch (err) {
@@ -1250,7 +1261,7 @@ router.post('/:id/leave-share', async (req, res) => {
 
 // Remove a specific collaborator. Household only. Pulls them from collaborators,
 // drops their email from the share list, and deletes their invitation (so the
-// revoke is complete and they can't be re-seated).
+// revoke is complete and they can't be re-seated). Flags a TripKey rotation (D2).
 router.delete('/:id/collaborators/:userId', async (req, res) => {
   try {
     const inv = await TripInvitation.findOneAndDelete({ tripId: req.params.id, toUserId: req.params.userId });
@@ -1263,7 +1274,169 @@ router.delete('/:id/collaborators/:userId', async (req, res) => {
       { new: true },
     );
     if (!trip) return res.status(404).json({ error: 'Not found' });
+    if ((trip.tripKeyVersion || 0) > 0) {
+      await Trip.updateOne({ _id: trip._id }, { $set: { tripKeyRotationPending: true } }).catch(() => {});
+    }
     res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── TripKeys (Signal-parity D2: per-resource content keys) ───────────────────
+// A shared trip's Trip + TripItems (+ shared_shared attachments) seal under a
+// TripKey (not the household HDK), wrapped to the owning household (via its HDK)
+// and to each accepted collaborator (via their identity key). The server is blind
+// to the key — it only ferries opaque `ResourceKeyEnvelope` rows (resourceType
+// 'trip', resourceKey = the Trip _id), exactly like D1's calendars. See §D2.
+
+// Loose shape check for a wrapped-key blob (server never verifies crypto).
+const isWrappedKey = (v) => typeof v === 'string' && v.length > 0 && v.length < 8192;
+
+// Persist a batch of collaborator wraps for one TripKey version. Only seats wraps
+// for users who are actually collaborators on the trip (defense in depth: the
+// owner can't hand the key to an arbitrary account). Returns the count.
+async function writeTripMemberWraps(tripId, keyVersion, members, wrappedByUserId) {
+  if (!Array.isArray(members) || !members.length) return 0;
+  const trip = await Trip.findById(tripId, 'collaborators').lean();
+  const collabIds = new Set((trip?.collaborators || []).map((c) => String(c)));
+  let n = 0;
+  for (const m of members) {
+    if (!m || !isWrappedKey(m.wrappedKey) || !collabIds.has(String(m.userId))) continue;
+    await ResourceKeyEnvelope.updateOne(
+      { resourceType: 'trip', resourceKey: String(tripId), keyVersion, recipient: 'member', userId: m.userId },
+      { $set: { wrappedKey: m.wrappedKey, wrappedByUserId } },
+      { upsert: true },
+    );
+    n++;
+  }
+  return n;
+}
+
+// The owner's background wrap-on-approve work list: for every shared trip their
+// household owns, the accepted collaborators still missing a member wrap at the
+// current TripKey version (their identityPublicKey included so the client can seal
+// to it), plus trips flagged for a revoke-rotation. Registered before /:id-shaped
+// routes can't shadow it (distinct two-segment literal path).
+router.get('/keys/pending', async (req, res) => {
+  try {
+    const owned = await Trip.find({ userId: { $in: req.scopeIds } })
+      .select('_id collaborators sharedWithOutside tripKeyVersion tripKeyRotationPending').lean();
+    // Shared trips need a TripKey; a trip flagged for a revoke-rotation stays on
+    // the list even after its last outside party left (so the owner still rotates
+    // it, locking out the removed party's key).
+    const shared = owned.filter((t) => isTripShared(t) || t.tripKeyRotationPending);
+    const out = [];
+    for (const trip of shared) {
+      const collabIds = (trip.collaborators || []).map((c) => c);
+      const version = trip.tripKeyVersion || 0;
+      const wrapped = version
+        ? new Set((await ResourceKeyEnvelope.find({
+            resourceType: 'trip', resourceKey: String(trip._id), keyVersion: version, recipient: 'member',
+          }).distinct('userId')).map(String))
+        : new Set();
+      const missing = collabIds.filter((id) => !wrapped.has(String(id)));
+      const needsMint = version === 0; // never provisioned — mint v1 first
+      if (!needsMint && !missing.length && !trip.tripKeyRotationPending) continue;
+      const users = await User.find(
+        { _id: { $in: collabIds }, identityPublicKey: { $exists: true, $ne: null } },
+        '_id identityPublicKey',
+      ).lean();
+      const byId = new Map(users.map((u) => [String(u._id), u.identityPublicKey]));
+      const missingSet = new Set(missing.map(String));
+      out.push({
+        tripId: String(trip._id),
+        currentKeyVersion: version,
+        needsMint,
+        rotationPending: !!trip.tripKeyRotationPending,
+        collaborators: collabIds
+          .map((id) => ({ userId: id, identityPublicKey: byId.get(String(id)) || null }))
+          .filter((c) => c.identityPublicKey),
+        missingMembers: users
+          .filter((u) => missingSet.has(String(u._id)))
+          .map((u) => ({ userId: u._id, identityPublicKey: u.identityPublicKey })),
+      });
+    }
+    res.json(out);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// The TripKey envelopes the caller can use for a trip: the household wrap (their
+// household owns the trip) and/or their own member wrap (they're a collaborator).
+router.get('/:id/keys', async (req, res) => {
+  try {
+    const trip = await Trip.findOne({ _id: req.params.id, ...accessFilter(req) }).select('_id userId').lean();
+    if (!trip) return res.status(404).json({ error: 'Trip not found' });
+    const owns = ownsTrip(trip, req);
+    const or = [];
+    if (owns) or.push({ recipient: 'household', resourceKey: String(trip._id) });
+    or.push({ recipient: 'member', resourceKey: String(trip._id), userId: req.user._id });
+    const envelopes = await ResourceKeyEnvelope.find({ resourceType: 'trip', $or: or }).lean();
+    const fresh = await Trip.findById(trip._id, 'tripKeyVersion').lean();
+    res.json({
+      tripId: String(trip._id),
+      currentKeyVersion: fresh?.tripKeyVersion || 0,
+      household: envelopes
+        .filter((e) => e.recipient === 'household')
+        .map((e) => ({ keyVersion: e.keyVersion, hdkVersion: e.hdkVersion, wrappedKey: e.wrappedKey })),
+      member: envelopes
+        .filter((e) => e.recipient === 'member')
+        .map((e) => ({ keyVersion: e.keyVersion, wrappedKey: e.wrappedKey })),
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Owner mints or rotates the TripKey. `keyVersion` must be the trip's current
+// `tripKeyVersion + 1` (compare-and-set, so concurrent mints can't both win).
+// Carries the household wrap (required) and any collaborator wraps this session
+// could produce. Used at first-share (v1) and on revoke/un-share (vN+1 + re-seal).
+router.post('/:id/keys', async (req, res) => {
+  try {
+    const trip = await Trip.findOne({ _id: req.params.id, ...ownerFilter(req) }).select('_id userId tripKeyVersion').lean();
+    if (!trip) return res.status(404).json({ error: 'Trip not found' });
+    const { keyVersion, household, members } = req.body || {};
+    const current = trip.tripKeyVersion || 0;
+    if (keyVersion !== current + 1) {
+      return res.status(409).json({ error: 'Key version moved — please retry', currentKeyVersion: current });
+    }
+    if (!household || !isWrappedKey(household.wrappedKey) || !Number.isInteger(household.hdkVersion)) {
+      return res.status(400).json({ error: 'A household-wrapped TripKey is required' });
+    }
+    // Compare-and-set the trip's version so only one mint from `current` wins.
+    const claimed = await Trip.findOneAndUpdate(
+      { _id: trip._id, tripKeyVersion: current },
+      { $set: { tripKeyVersion: keyVersion, tripKeyRotationPending: false } },
+    );
+    if (!claimed) return res.status(409).json({ error: 'Key already rotated — please retry' });
+
+    await ResourceKeyEnvelope.updateOne(
+      { resourceType: 'trip', resourceKey: String(trip._id), keyVersion, recipient: 'household' },
+      { $set: { householdId: req.user.householdId, hdkVersion: household.hdkVersion, wrappedKey: household.wrappedKey, wrappedByUserId: req.user._id } },
+      { upsert: true },
+    );
+    await writeTripMemberWraps(trip._id, keyVersion, members, req.user._id);
+    res.status(201).json({ ok: true, keyVersion });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Owner adds collaborator wraps at the current version (the async approve-on-
+// device step — no rotation).
+router.post('/:id/keys/members', async (req, res) => {
+  try {
+    const trip = await Trip.findOne({ _id: req.params.id, ...ownerFilter(req) }).select('_id tripKeyVersion').lean();
+    if (!trip) return res.status(404).json({ error: 'Trip not found' });
+    const { keyVersion, members } = req.body || {};
+    if (keyVersion !== (trip.tripKeyVersion || 0)) {
+      return res.status(409).json({ error: 'Key version moved — please retry', currentKeyVersion: trip.tripKeyVersion || 0 });
+    }
+    const n = await writeTripMemberWraps(trip._id, keyVersion, members, req.user._id);
+    res.json({ ok: true, wrapped: n });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

@@ -1,0 +1,38 @@
+To: crypt@bis.doc.gov, enc@nsa.gov
+Subject: Encryption Self-Classification Report — [Your Company Legal Name] — 2026
+
+To Whom It May Concern,
+
+Pursuant to Section 742.15(c) of the Export Administration Regulations (EAR),
+please find attached the annual self-classification report for mass-market
+encryption item(s) self-classified under License Exception ENC, Section
+740.17(b)(1). The report is provided in the format specified in Supplement
+No. 8 to Part 742, as a comma-separated values (.csv) file.
+
+Company / point-of-contact information:
+
+  Company legal name:   [Your Company Legal Name]
+  Mailing address:      [Street, City, State, ZIP, Country]
+  Point of contact:     [Full Name]
+  Title:                [Title, e.g. Owner / Developer]
+  Email:                benpolk1@gmail.com
+  Phone:                [Phone number]
+
+Product summary:
+
+  The product is a consumer household-management mobile application
+  ("Household Calendar") distributed via the Apple App Store. It provides
+  optional end-to-end encryption of user content (calendar, contacts,
+  household records) on the user's device. Encryption is implemented using
+  the open-source libsodium library employing standard, published algorithms
+  (XChaCha20-Poly1305 / XSalsa20-Poly1305 for symmetric encryption,
+  Curve25519 for key agreement, BLAKE2b for hashing). The item is
+  self-classified under ECCN 5D992.c as mass-market encryption software.
+
+Please contact me at the email above with any questions.
+
+Respectfully,
+
+[Full Name]
+[Title]
+[Your Company Legal Name]

@@ -47,12 +47,45 @@ const passkeyCredentialSchema = new mongoose.Schema({
 const userSchema = new mongoose.Schema({
   email:             { type: String, required: true, unique: true, lowercase: true },
   passwordHash:      { type: String, required: true },
+  // Whether the user knows a real password. Passwordless signups still carry a
+  // `passwordHash` (a random on-device secret that wraps the E2EE envelope), so
+  // presence of the hash can't tell us this — this flag can. Drives the unlock
+  // UI: offer the password factor only when true. Legacy accounts default true;
+  // set false on passwordless registration, true again if a password is ever set.
+  hasPassword:       { type: Boolean, default: true },
+  // True when the E2EE `password` factor can no longer decrypt the private key
+  // because the login password was reset (forgot-password): the factor envelope
+  // is still wrapped under the OLD password, so the NEW one won't unwrap it. The
+  // server can't re-wrap (it never holds the key), so the unlock UI must stop
+  // offering the password factor and steer the user to their recovery code /
+  // passkey. Cleared once the client re-wraps the factor under the new password
+  // (PUT /keys/factors with a `password` factor). See docs/PASSWORDLESS-E2EE-PLAN.md.
+  e2eePasswordStale: { type: Boolean, default: false },
 
   // Forgot-password reset code: bcrypt hash of a short-lived 6-digit code sent
   // by email. Attempts are counted so the code can't be brute-forced.
   resetCodeHash:      { type: String },
   resetCodeExpiresAt: { type: Date },
   resetCodeAttempts:  { type: Number, default: 0 },
+  // Registration-lock analog (Signal-parity F1): a reset from an UNKNOWN device
+  // on a protected account doesn't apply immediately — it opens this hold
+  // window (with loud notifications) and only completes after it elapses.
+  // Cleared on completion, cancel, or a known-device reset.
+  resetHoldUntil:     { type: Date },
+
+  // Device sessions (Signal-parity F2). Every issued JWT carries the subdoc id
+  // of one of these rows (`sid`); a row's removal revokes that token on its
+  // next request. Sid-less tokens predate the registry and are upgraded on the
+  // sliding refresh. Capped (oldest dropped) in services/sessions.js.
+  sessions: {
+    type: [new mongoose.Schema({
+      deviceName: { type: String, default: 'Unknown device' },
+      platform:   { type: String, default: '' },
+      createdAt:  { type: Date, default: Date.now },
+      lastSeenAt: { type: Date, default: Date.now },
+    })],
+    default: [],
+  },
 
   // Passkey sign-in credentials (WebAuthn public halves). See schema above.
   passkeyCredentials: { type: [passkeyCredentialSchema], default: [] },
@@ -64,6 +97,22 @@ const userSchema = new mongoose.Schema({
   wrappedPrivateKey: { type: [factorEnvelopeSchema], default: [] },
   keyEnrolledAt:     { type: Date },
   keySchemaVersion:  { type: Number, default: 1 },
+  // Set once the user has confirmed a non-password recovery factor (saved their
+  // recovery code and/or enrolled a passkey). Gates the §5 password retirement:
+  // we never remove the password factor until this is set, so no account is left
+  // with the password as its sole unlock. See docs/PASSWORDLESS-E2EE-PLAN.md §2.
+  recoverySetupAt:   { type: Date },
+  // Optional dual-control guardian recovery (specs/features/guardian-recovery.md).
+  // `outer` is the identity private key under TWO locks — a 4-digit PIN (inner,
+  // Argon2id) then an anonymous sealed box to the guardian's identity key — so the
+  // server (and the guardian alone) can't open it. Server stores it blind; set
+  // when armed, cleared on disarm / guardian removal / key change.
+  guardianRecovery: {
+    guardianUserId:    { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    guardianFingerprint: { type: String }, // safety number of the guardian key at arm time
+    outer:             { type: String },   // opaque sealed blob; never server-readable
+    armedAt:           { type: Date },
+  },
   // Access role. 'admin' unlocks the monetization/admin web app surfaces.
   role:              { type: String, enum: ['user', 'admin'], default: 'user', index: true },
   householdId:       { type: mongoose.Schema.Types.ObjectId, ref: 'Household' }, // family the user belongs to
@@ -83,6 +132,10 @@ const userSchema = new mongoose.Schema({
   // Set by a client that schedules reminders on-device (Phase 5): the server
   // reminder cron then skips this user to avoid double-notifying. See §7.
   localReminders:    { type: Boolean, default: false },
+  // Server-side mirror of the device's AI consent toggle (synced via /settings).
+  // middleware/aiConsent.js refuses AI routes when false, so a bypassed client
+  // can't ship content to the model for a user who turned AI off.
+  aiEnabled:         { type: Boolean, default: true },
   // Last app version this user reported (§9 readiness gate: the whole-household
   // migration requires every member on a compatible app before the drop).
   clientVersion:     { type: String },
@@ -104,39 +157,27 @@ const userSchema = new mongoose.Schema({
   // Per-user weekly TOKEN usage (the enforced metric on the FREE tier):
   // { 'YYYY-MM-DD': { tokens } } where tokens = input+output+cache read+write.
   usageTokens: { type: mongoose.Schema.Types.Mixed, default: () => ({}) },
+  // Per-user weekly assistant CALL-TIME usage in connected seconds (the enforced
+  // metric on the FREE tier): { 'YYYY-MM-DD': { seconds } }. See usageMeter.
+  usageCallSeconds: { type: mongoose.Schema.Types.Mixed, default: () => ({}) },
   // AI calls refused with 402 after the weekly budget was exhausted:
   // { 'YYYY-MM-DD': { action: count } }. Analytics-only — feeds the admin
   // AI-usage abuse view (hammering the API after the cap is the signal).
   usageBlocked: { type: mongoose.Schema.Types.Mixed, default: () => ({}) },
 
-  // ── Storage mode + cloud-purge lifecycle (Phase 6, §4.1/§6) ──────────────
-  // Server-authoritative mirror of the device "store on this device only" pref.
-  // Only settable to 'local' when the user is solo (§6.1). Going local schedules
-  // a 7-day purge of this user's cloud ciphertext, with an undo window.
-  storageMode:              { type: String, enum: ['cloud', 'local'], default: 'cloud' },
-  cloudDeletionScheduledAt: { type: Date, default: null },
-  cloudDeletionState:       { type: String, enum: ['none', 'scheduled', 'purged'], default: 'none' },
-  // Proof the download-first local copy verified before we ever scheduled a
-  // deletion (§6.2 step 3): the server never schedules against an unverified
-  // replica. `manifestHash` is over the user's record ids/updatedAt.
-  localReplicaVerifiedAt:   { type: Date, default: null },
-  localReplicaManifestHash: { type: String, default: '' },
   timezone:          { type: String, default: 'America/Toronto' },
   homeAddress:       { type: String, default: '' },
   lat:               { type: Number },
   lon:               { type: Number },
   interests:           [{ type: String, trim: true }],
   aboutMe:             { type: String, trim: true },
-  groceryShoppingDay:  { type: Number, default: 6 },  // 0=Sun...6=Sat, default Saturday
+  // null = unset; new users don't get a default shopping day (they configure it).
+  groceryShoppingDay:  { type: Number, default: null },  // 0=Sun...6=Sat, null=unset
   // Shopping cadence (see Household.js); kept on User for pre-household fallback.
   groceryFrequency:    { type: String, enum: ['weekly', 'biweekly'], default: 'weekly' },
   groceryAnchor:       { type: String, default: null },
   grocerySections:     { type: [String], default: () => ['Produce', 'Deli', 'Bakery', 'Meat & Seafood', 'Dairy', 'Frozen', 'Pantry', 'Other'] },
 }, { timestamps: true, toJSON: { virtuals: true } });
-
-// Sparse index for the 7-day cloud-purge sweep (§4.1) — only scheduled users
-// carry a date, so the cron scans a tiny set.
-userSchema.index({ cloudDeletionScheduledAt: 1 }, { sparse: true });
 
 // Convenience getter so existing code using req.user.name keeps working
 userSchema.virtual('name').get(function () {

@@ -19,6 +19,7 @@ import {
   tierBenefits,
   recommendedTierKey,
   priceLine,
+  humanCallSeconds,
   PERIOD_LABEL,
   type CatalogTier,
 } from './shared';
@@ -70,6 +71,18 @@ export default function ComparePlansScreen() {
               <Text style={styles.benefitText}>{b}</Text>
             </View>
           ))}
+          {/* Assistant call-time allowance — a separate weekly budget from the AI
+              token allowance, sourced live from the server catalog. */}
+          {tier.weeklyCallSecondsLimit !== undefined ? (
+            <View style={styles.benefitRow}>
+              <Ionicons name="call-outline" size={16} color={colors.success} />
+              <Text style={styles.benefitText}>
+                {tier.weeklyCallSecondsLimit == null
+                  ? 'Unlimited assistant phone calls'
+                  : `${humanCallSeconds(tier.weeklyCallSecondsLimit)} of assistant phone calls each week`}
+              </Text>
+            </View>
+          ) : null}
         </View>
 
         {tierPackages.length > 1 ? (

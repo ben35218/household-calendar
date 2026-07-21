@@ -1,9 +1,11 @@
-// Integration tests for trip sharing by email invitation + §9.3 decrypt-on-share:
-// adding an outside email to an E2EE trip requires the owner's device to post the
-// decrypted content (409 decrypt_required otherwise), the server re-writes it
-// plaintext + clears enc, and steady-state write guards keep a shared trip's
-// records plaintext. Accepting the invitation makes the recipient a collaborator.
-// Real app + in-memory MongoDB.
+// Integration tests for trip sharing under Signal-parity D2 (per-resource
+// TripKeys replace the §9.3 decrypt-on-share plaintext lane). Sharing a sealed
+// trip is now allowed with NO `409 decrypt_required` — the trip stays sealed and
+// migrates onto a TripKey on the owner's next unlock; the client passes a
+// plaintext { tripName } snapshot only for the invitation display row. A shared
+// trip's records seal under the TripKey (enc.ks === 'trip'), which strips the
+// plaintext content columns unconditionally. Accepting the invitation makes the
+// recipient a collaborator. Real app + in-memory MongoDB.
 const { test, before, after } = require('node:test');
 const assert = require('node:assert/strict');
 const {
@@ -44,87 +46,68 @@ async function setupSealedTrip() {
   return { owner, tripId: trip._id, itemId: item._id };
 }
 
-const DECRYPTED = {
-  trip: { name: 'Ski Week', destination: 'Whistler', notes: 'bring the good skis' },
-  items: [{ title: 'Hotel Alpina', location: 'Whistler Village', notes: 'late checkout' }],
-};
-
-test('adding an outside email to a sealed trip without decrypted content → 409', async () => {
+test('sharing a sealed trip is allowed with NO 409 — the trip stays sealed (D2)', async () => {
   const { owner, tripId } = await setupSealedTrip();
   const res = await request().put(`/api/trips/${tripId}/share`)
-    .set('Authorization', owner.auth).send({ emails: ['gil@example.com'] });
-  assert.equal(res.status, 409);
-  assert.equal(res.body.error, 'decrypt_required');
-});
-
-test('decrypt-on-share re-writes trip + items as plaintext, clears enc, sets the share list', async () => {
-  const { owner, tripId, itemId } = await setupSealedTrip();
-
-  const res = await request().put(`/api/trips/${tripId}/share`)
     .set('Authorization', owner.auth)
-    .send({
-      emails: ['gil@example.com'],
-      decrypted: {
-        trip: DECRYPTED.trip,
-        items: [{ _id: String(itemId), ...DECRYPTED.items[0] }],
-      },
-    });
+    .send({ recipients: [{ email: 'gil@example.com' }], tripName: 'Ski Week', destination: 'Whistler' });
   assert.equal(res.status, 200);
   assert.deepEqual(res.body.sharedWithOutside.map((e) => e.email), ['gil@example.com']);
 
+  // The trip is NOT flipped to plaintext — its content stays sealed (enc intact,
+  // name still nulled), to be re-sealed under a TripKey by the owner's reconcile.
   const trip = await Trip.findById(tripId).lean();
-  assert.equal(trip.name, 'Ski Week');
-  assert.equal(trip.destination, 'Whistler');
-  assert.equal(trip.enc, undefined);
-  assert.equal(trip.keyVersion, undefined);
-
-  const item = await TripItem.findById(itemId).lean();
-  assert.equal(item.title, 'Hotel Alpina');
-  assert.equal(item.location, 'Whistler Village');
-  assert.equal(item.enc, undefined);
-
-  // Re-saving the same share list needs no decrypted content (already shared).
-  const again = await request().put(`/api/trips/${tripId}/share`)
-    .set('Authorization', owner.auth).send({ emails: ['gil@example.com'] });
-  assert.equal(again.status, 200);
+  assert.equal(trip.name, undefined, 'trip name is not reintroduced as plaintext');
+  assert.ok(trip.enc && trip.enc.ct, 'trip keeps its ciphertext');
 });
 
-test('steady-state guards: edits to a shared trip and its items never re-introduce enc', async () => {
-  const { owner, tripId, itemId } = await setupSealedTrip();
-  await request().put(`/api/trips/${tripId}/share`)
+test('the invitation display row uses the client-passed tripName snapshot (sealed name)', async () => {
+  const { owner, tripId } = await setupSealedTrip();
+  const guest = await registerUser({ firstName: 'Gil' });
+  const share = await request().put(`/api/trips/${tripId}/share`)
     .set('Authorization', owner.auth)
-    .send({
-      emails: ['gil@example.com'],
-      decrypted: { trip: { name: 'Ski Week', destination: 'Whistler', notes: '' }, items: [{ _id: String(itemId), title: 'Hotel Alpina' }] },
-    });
+    .send({ recipients: [{ email: guest.user.email }], tripName: 'Ski Week', destination: 'Whistler' });
+  assert.equal(share.status, 200);
 
-  // Trip edit carrying ciphertext (a stale client sealing out of habit) → the
-  // plaintext update lands, the enc is dropped.
-  const put = await request().put(`/api/trips/${tripId}`)
+  const inbox = await request().get('/api/trips/invitations').set('Authorization', guest.auth);
+  const invite = inbox.body.find((i) => i.status === 'pending');
+  assert.ok(invite, 'guest sees a pending invitation');
+  assert.equal(invite.tripName, 'Ski Week', 'snapshot name (not the sealed Trip.name) is shown');
+  assert.equal(invite.destination, 'Whistler');
+});
+
+test('TripKey-sealed records strip plaintext unconditionally (enc.ks === trip)', async () => {
+  // A NON-e2eeActive owner: a trip-scoped seal must still strip the plaintext
+  // content columns (the whole point of D2 — no plaintext feed for collaborators),
+  // exactly like D1's cal-scoped events.
+  const owner = await registerUser({ firstName: 'Wes' });
+  const trip = await Trip.create({
+    userId: owner.user._id, name: 'placeholder', destination: 'placeholder',
+    sharedWithOutside: [{ email: 'pat@example.com' }], tripKeyVersion: 1,
+  });
+
+  // Create a booking sealed under the TripKey — title/location/notes are stripped
+  // even though the household is not e2eeActive.
+  const created = await request().post(`/api/trips/${trip._id}/items`)
     .set('Authorization', owner.auth)
-    .send({ name: 'Ski Week 2026', enc: fakeEnc(), keyVersion: 1 });
+    .send({ type: 'hotel', title: 'Hotel Alpina', location: 'Village', notes: 'late checkout', start: '2026-08-01', keyVersion: 1, enc: { ...fakeEnc(), ks: 'trip' } });
+  assert.equal(created.status, 201);
+  assert.equal(created.body.title, undefined, 'title stripped');
+  assert.equal(created.body.location, undefined, 'location stripped');
+  assert.equal(created.body.enc.ks, 'trip');
+  assert.equal(created.body.keyVersion, 1);
+
+  // Editing the Trip itself under the TripKey never PERSISTS the incoming
+  // plaintext name/destination — the write rule strips them from the update, so
+  // the client-sent plaintext never lands (any lingering value is the drop's job
+  // to null, not this write's).
+  const put = await request().put(`/api/trips/${trip._id}`)
+    .set('Authorization', owner.auth)
+    .send({ name: 'Ski Week 2026', destination: 'Whistler', keyVersion: 1, enc: { ...fakeEnc(), ks: 'trip' } });
   assert.equal(put.status, 200);
-  const trip = await Trip.findById(tripId).lean();
-  assert.equal(trip.name, 'Ski Week 2026');
-  assert.equal(trip.enc, undefined);
-
-  // Same for editing an existing booking…
-  const itemPut = await request().put(`/api/trips/${tripId}/items/${itemId}`)
-    .set('Authorization', owner.auth)
-    .send({ type: 'hotel', title: 'Hotel Alpina — upgraded', start: '2026-08-01', enc: fakeEnc(), keyVersion: 1 });
-  assert.equal(itemPut.status, 200);
-  const item = await TripItem.findById(itemId).lean();
-  assert.equal(item.title, 'Hotel Alpina — upgraded');
-  assert.equal(item.enc, undefined);
-
-  // …and for creating a new booking on the shared trip.
-  const itemPost = await request().post(`/api/trips/${tripId}/items`)
-    .set('Authorization', owner.auth)
-    .send({ type: 'activity', title: 'Zipline', start: '2026-08-03', enc: fakeEnc(), keyVersion: 1 });
-  assert.equal(itemPost.status, 201);
-  const created = await TripItem.findById(itemPost.body._id).lean();
-  assert.equal(created.title, 'Zipline');
-  assert.equal(created.enc, undefined);
+  assert.notEqual(put.body.name, 'Ski Week 2026', 'the incoming plaintext name is not persisted');
+  assert.notEqual(put.body.destination, 'Whistler', 'the incoming plaintext destination is not persisted');
+  assert.equal(put.body.enc.ks, 'trip');
 });
 
 test('a private trip in a non-E2EE household shares directly (no decrypt step)', async () => {
@@ -139,7 +122,7 @@ test('a private trip in a non-E2EE household shares directly (no decrypt step)',
   assert.deepEqual(res.body.sharedWithOutside.map((e) => e.email), ['friend@example.com']);
 });
 
-test('invite → accept makes a collaborator; trip shows on their calendar (expanded + raw)', async () => {
+test('invite → accept makes a collaborator; the shared trip shows in their trip list', async () => {
   const owner = await registerUser({ firstName: 'Hana' });
   const guest = await registerUser({ firstName: 'Gil' });
   const trip = await Trip.create({
@@ -161,19 +144,17 @@ test('invite → accept makes a collaborator; trip shows on their calendar (expa
   assert.equal(accept.status, 200);
   assert.equal(String(accept.body.tripId), String(trip._id));
 
-  const range = 'from=2027-01-01&to=2027-03-31';
-  const cal = await request().get(`/api/calendar?${range}`).set('Authorization', guest.auth);
-  assert.equal(cal.status, 200);
-  assert.deepEqual(cal.body.trips.map(t => t.name), ['Japan']);
+  // The calendar aggregate is assembled client-side now (C3b); a collaborator's
+  // access to the shared trip is served by the trip list (the client overlays it
+  // on the calendar via lib/calendarData.loadTrips).
+  const list = await request().get('/api/trips').set('Authorization', guest.auth);
+  assert.equal(list.status, 200);
+  assert.deepEqual(list.body.map(t => t.name), ['Japan']);
 
-  const raw = await request().get(`/api/calendar/raw?${range}`).set('Authorization', guest.auth);
-  assert.equal(raw.status, 200);
-  assert.deepEqual(raw.body.trips.map(t => t.name), ['Japan']);
-
-  // A stranger's calendar stays empty.
+  // A stranger sees no shared trips.
   const other = await registerUser({ firstName: 'Uma' });
-  const none = await request().get(`/api/calendar?${range}`).set('Authorization', other.auth);
-  assert.deepEqual(none.body.trips, []);
+  const none = await request().get('/api/trips').set('Authorization', other.auth);
+  assert.deepEqual(none.body, []);
 });
 
 test('share by phone resolves to the account with that number; they can accept', async () => {

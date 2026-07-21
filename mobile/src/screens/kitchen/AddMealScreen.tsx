@@ -5,7 +5,8 @@ import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { recipesApi, recipeScheduleApi, Recipe } from '../../api';
-import { openRecord } from '../../lib/e2ee';
+import { openRecord, sealNew } from '../../lib/e2ee';
+import { RECIPE_SCHEDULE_ENC } from '../../lib/encSubsets';
 import * as replica from '../../lib/replica';
 import { useCalendarColors } from '../../lib/calendarPrefs';
 import { KitchenStackParamList } from '../../navigation/KitchenNavigator';
@@ -59,7 +60,12 @@ export default function AddMealScreen() {
   });
 
   const schedule = useMutation({
-    mutationFn: (recipeId: string) => recipeScheduleApi.schedule({ recipeId, scheduledDate: date }),
+    // Sealed create (Signal-parity D5): schedule notes are content, so every
+    // entry carries an enc blob for the write-guard.
+    mutationFn: async (recipeId: string) => {
+      const payload = { recipeId, scheduledDate: date };
+      return recipeScheduleApi.schedule(await sealNew('RecipeSchedule', payload, RECIPE_SCHEDULE_ENC(payload)));
+    },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['recipe-schedule'] });
       qc.invalidateQueries({ queryKey: ['grocery-list'] });

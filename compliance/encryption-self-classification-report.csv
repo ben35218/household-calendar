@@ -1,0 +1,2 @@
+Manufacturer,Product Name,Model/Version,ECCN,Authorization Paragraph,Item Type,Encryption Algorithms,Key Lengths (bits),Brief Description,Non-proprietary Reference/URL
+[Your Company Legal Name],Household Calendar,1.0.0,5D992.c,740.17(b)(1),Mobile application (software),ChaCha20-Poly1305; XSalsa20-Poly1305; Curve25519 (X25519); BLAKE2b,256,Consumer household-management iOS app with optional end-to-end encryption of user content on device via libsodium,https://householdcalendar.com

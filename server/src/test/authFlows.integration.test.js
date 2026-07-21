@@ -99,6 +99,34 @@ test('reset: expired code is rejected', async () => {
   assert.equal(res.status, 400);
 });
 
+// ── Account deletion (Apple 5.1.1(v)) ─────────────────────────────────────────
+
+test('delete account: password account must confirm its password', async () => {
+  const { user, auth } = await registerUser({ email: 'deleteme@example.com', password: 'right-password-1' });
+
+  const missing = await request().delete('/api/auth/account').set('Authorization', auth).send({});
+  assert.equal(missing.status, 400, 'no password → 400');
+
+  const wrong = await request().delete('/api/auth/account').set('Authorization', auth).send({ password: 'nope-1234' });
+  assert.equal(wrong.status, 401, 'wrong password → 401');
+  assert.ok(await User.findById(user._id), 'still exists after failed attempts');
+
+  const ok = await request().delete('/api/auth/account').set('Authorization', auth).send({ password: 'right-password-1' });
+  assert.equal(ok.status, 200);
+  assert.equal(await User.findById(user._id), null, 'user is gone');
+});
+
+test('delete account: passwordless account deletes on session token alone', async () => {
+  // A passkey/OAuth account: `hasPassword` false, `passwordHash` a secret the
+  // user never knows. It must still be able to delete itself (no password).
+  const { user, auth } = await registerUser({ email: 'nopass@example.com' });
+  await User.updateOne({ _id: user._id }, { hasPassword: false });
+
+  const res = await request().delete('/api/auth/account').set('Authorization', auth).send({});
+  assert.equal(res.status, 200, 'no password required');
+  assert.equal(await User.findById(user._id), null, 'user is gone');
+});
+
 // ── Sliding session refresh ───────────────────────────────────────────────────
 
 test('requireAuth: token past half-life gets X-Refreshed-Token; fresh token does not', async () => {

@@ -7,7 +7,7 @@ export const CALENDAR_COLORS: Record<string, string> = {
   appointments: '#7B1FA2',
   chores: '#F57C00',
   recipes: '#00897B',
-  vacations: '#5E35B1',
+  trips: '#5E35B1',
   birthdays: '#E91E63',
   'canadian-holidays': '#D32F2F',
 };
@@ -86,7 +86,7 @@ export function itemsForDate(data: CalendarData | undefined, dateStr: string): D
 
   const trips = (data.trips ?? [])
     .filter((t) => (t.ranges ?? []).some((r) => dateStr >= localDate(r.start) && dateStr <= localDate(r.end)))
-    .map((t) => ({ id: t.id, name: t.name, color: t.color || colorOf('vacations'), status: t.status }));
+    .map((t) => ({ id: t.id, name: t.name, color: t.color || colorOf('trips'), status: t.status }));
 
   const birthdays = (data.birthdays ?? []).filter((b) => localDate(b.date) === dateStr).map((b) => ({ id: b.id, name: b.name }));
 
@@ -108,6 +108,22 @@ export function dayDots(data: CalendarData | undefined, dateStr: string, max = 4
   return dots.slice(0, max);
 }
 
+// One scheduled meal on a calendar cell — just enough to route the meal icon.
+export type RecipeCell = { recipeId?: string };
+
+// Where the month grid's meal icon leads: straight to the recipe when the day
+// has a single scheduled meal (with a known recipe), otherwise the day view so
+// the user can pick from several — mirroring the task icon's aggregate tap.
+export type RecipeIconTarget =
+  | { screen: 'RecipeDetail'; params: { id: string } }
+  | { screen: 'CalendarDay'; params: { date: string } };
+export function recipeIconTarget(recipes: RecipeCell[], date: string): RecipeIconTarget {
+  const only = recipes.length === 1 ? recipes[0].recipeId : undefined;
+  return only
+    ? { screen: 'RecipeDetail', params: { id: only } }
+    : { screen: 'CalendarDay', params: { date } };
+}
+
 // Multi-day spanning bars (trips + multi-day events) for one week row. Each bar
 // is lane-packed so overlapping spans stack. Mirrors the web's trip/event bars.
 export interface WeekBar {
@@ -118,6 +134,7 @@ export interface WeekBar {
   endCol: number;
   lane: number;
   tripId?: string; // set for trip bars so tapping one opens the trip
+  eventId?: string; // set for multi-day event bars so tapping one opens the event
 }
 
 export function weekBars(data: CalendarData | undefined, weekDates: string[], maxLanes = 2): WeekBar[] {
@@ -130,18 +147,18 @@ export function weekBars(data: CalendarData | undefined, weekDates: string[], ma
     return weekDates.indexOf(dateStr);
   };
 
-  const spans: { color: string; label: string; start: string; end: string; tripId?: string }[] = [];
+  const spans: { color: string; label: string; start: string; end: string; tripId?: string; eventId?: string }[] = [];
   for (const t of data.trips ?? []) {
     for (const r of t.ranges ?? []) {
       const s = localDate(r.start);
       const e = localDate(r.end);
-      if (e >= weekStart && s <= weekEnd) spans.push({ color: t.color || colorOf('vacations'), label: t.name, start: s, end: e, tripId: t.id });
+      if (e >= weekStart && s <= weekEnd) spans.push({ color: t.color || colorOf('trips'), label: t.name, start: s, end: e, tripId: t.id });
     }
   }
   for (const ev of data.events ?? []) {
     const s = eventDate(ev, ev.startDate);
     const e = ev.endDate ? eventDate(ev, ev.endDate) : s;
-    if (e > s && e >= weekStart && s <= weekEnd) spans.push({ color: eventColor(ev), label: ev.title, start: s, end: e });
+    if (e > s && e >= weekStart && s <= weekEnd) spans.push({ color: eventColor(ev), label: ev.title, start: s, end: e, eventId: ev._id });
   }
 
   spans.sort((a, b) => (a.start < b.start ? -1 : 1));
@@ -153,7 +170,7 @@ export function weekBars(data: CalendarData | undefined, weekDates: string[], ma
     let lane = laneEnds.findIndex((end) => startCol > end);
     if (lane === -1) { lane = laneEnds.length; laneEnds.push(endCol); }
     else laneEnds[lane] = endCol;
-    if (lane < maxLanes) bars.push({ key: `${sp.label}-${sp.start}-${lane}`, color: sp.color, label: sp.label, startCol, endCol, lane, tripId: sp.tripId });
+    if (lane < maxLanes) bars.push({ key: `${sp.label}-${sp.start}-${lane}`, color: sp.color, label: sp.label, startCol, endCol, lane, tripId: sp.tripId, eventId: sp.eventId });
   }
   return bars;
 }

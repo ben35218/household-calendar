@@ -4,6 +4,7 @@ const Household = require('../models/Household');
 const Person = require('../models/Person');
 const { requireAuth } = require('../middleware/auth');
 const { pickRecordEnc } = require('../services/householdKey');
+const { stripSealedContent } = require('../services/e2eePolicy');
 const { normalizePhone } = require('../services/phone');
 
 const router = express.Router();
@@ -17,7 +18,8 @@ router.use(requireAuth);
 // travelling or out-of-town member gets correct timing regardless of the
 // household's default zone.
 const SHARED   = ['homeAddress', 'groceryShoppingDay', 'groceryFrequency', 'groceryAnchor', 'grocerySections', 'reminderLeadDays'];
-const PERSONAL = ['firstName', 'lastName', 'birthday', 'timezone', 'phone'];
+// aiEnabled mirrors the device's AI consent toggle (middleware/aiConsent.js).
+const PERSONAL = ['firstName', 'lastName', 'birthday', 'timezone', 'phone', 'aiEnabled'];
 
 router.get('/', async (req, res) => {
   const u = req.user;
@@ -31,6 +33,7 @@ router.get('/', async (req, res) => {
     firstName: u.firstName, lastName: u.lastName, birthday: u.birthday,
     phone: u.phone || '',
     timezone: u.timezone,
+    aiEnabled: u.aiEnabled !== false,
     // shared (household)
     homeAddress: hh.homeAddress,
     groceryShoppingDay: hh.groceryShoppingDay, grocerySections: hh.grocerySections,
@@ -68,6 +71,12 @@ router.put('/', async (req, res) => {
     // Encrypted home-location blob (§9.1 P5), when the client sealed it.
     try { Object.assign(hhUpdate, pickRecordEnc(req.body)); }
     catch (msg) { return res.status(400).json({ error: msg }); }
+    // Steady-state write rule: an e2eeActive household stores only the sealed
+    // blob — never the plaintext homeAddress (C2) nor the geocoords derived from
+    // it (the drop nulls lat/lon with it). The name lives in the blob too but
+    // isn't set on this route.
+    if (hhUpdate.enc?.ct && req.household?.e2eeActive) { delete hhUpdate.lat; delete hhUpdate.lon; }
+    stripSealedContent('Household', req.household, hhUpdate);
 
     const [user] = await Promise.all([
       Object.keys(userUpdate).length
@@ -78,22 +87,10 @@ router.put('/', async (req, res) => {
         : Promise.resolve(),
     ]);
 
-    // Keep the user's self-record in the People roster in sync with their
-    // account identity (name / birthday / home address). Post-drop the client
-    // maintains the *encrypted* self-Person, so the server skips this to avoid
-    // writing plaintext content onto an encrypted record.
-    if (!req.household?.e2eeActive) {
-      const self = await Person.ensureSelf(user);
-      if (self) {
-        const selfUpdate = {};
-        if (userUpdate.firstName !== undefined || userUpdate.lastName !== undefined) {
-          selfUpdate.name = [user.firstName, user.lastName].filter(Boolean).join(' ').trim() || user.firstName;
-        }
-        if (userUpdate.birthday !== undefined) selfUpdate.birthday = user.birthday;
-        if (hhUpdate.homeAddress !== undefined) selfUpdate.address = hhUpdate.homeAddress;
-        if (Object.keys(selfUpdate).length) await Person.updateOne({ _id: self._id }, { $set: selfUpdate });
-      }
-    }
+    // Signal-parity C3b: the self-Person lives in the unified opaque store, which
+    // the client seeds + maintains ENCRYPTED (createSelf via /records). The server
+    // no longer creates or syncs a plaintext self-Person here — doing so would mint
+    // a plaintext straggler that blocks the born-encrypted drop.
 
     res.json(user);
   } catch (err) {

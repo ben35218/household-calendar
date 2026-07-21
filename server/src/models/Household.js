@@ -2,7 +2,10 @@ const mongoose = require('mongoose');
 const { encFields } = require('./encFields');
 
 const householdSchema = new mongoose.Schema({
-  name:     { type: String, required: true },
+  // Content since Signal-parity C2: sealed into the household-settings blob
+  // (`enc`, with homeAddress) and nulled at the §9 drop. Admin/support then
+  // identify households by id (see the C2 runbook note in the plan doc).
+  name:     { type: String },
   ownerId:  { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
   // Current Household Data Key version. 0 = no HDK minted yet; the owner mints
   // v1 (self-wrapped envelope) on first unlock. Bumped on lazy rotation (Phase 7).
@@ -14,23 +17,31 @@ const householdSchema = new mongoose.Schema({
   // via POST /household/key/rotate, which clears the flag. Historical records
   // stay at their old version and remain readable by whoever holds that envelope.
   keyRotationPending: { type: Boolean, default: false },
+  // When the current HDK version was minted (rotation or v1). Drives B2's
+  // periodic-rotation cron (Signal-parity plan): a version older than
+  // KEY_ROTATION_INTERVAL_DAYS gets keyRotationPending flagged so the next
+  // unlocked member rotates — bounding how much ciphertext any one key covers.
+  lastKeyRotationAt: { type: Date },
   // Per-household "plaintext is dead" signal. Flips true only at the §9 plaintext
   // drop, after which the server must not create readable content (the client
   // seeds encrypted records instead). Gates Person.ensureSelf + the onboarding
   // self-Person seed. Defaults false → identical pre-drop behavior.
   e2eeActive: { type: Boolean, default: false },
-  // Exempts this household from *mandatory* E2EE enforcement. E2EE is required for
-  // all new households (they're born encrypted); exempt households — QA/test
-  // accounts and the pre-mandate users grandfathered at rollout — may run without
-  // it. Independent of e2eeActive (an exempt household can still opt into E2EE).
-  // Enforcement also always bypasses when NODE_ENV === 'test'.
-  e2eeExempt: { type: Boolean, default: false },
+  // The DROP_FIELDS schema version this household's plaintext was last nulled at
+  // (services/dropReadiness.DROP_FIELDS_VERSION). A committed drop stamps the
+  // current version; a household dropped under an OLDER version still has the
+  // newer content columns in plaintext and must run the re-seal + re-drop
+  // backfill (scripts/reDropPlaintext.js). 0 = pre-versioning / never dropped.
+  dropFieldsVersion: { type: Number, default: 0 },
   // Shared (household-level) settings — moved off User in Phase 3.
   timezone:           { type: String, default: 'America/Toronto' },
   homeAddress:        { type: String, default: '' },
   lat:                { type: Number },
   lon:                { type: Number },
-  groceryShoppingDay: { type: Number, default: 6 },  // 0=Sun…6=Sat
+  // null = no shopping day configured yet. New households start unset so no
+  // recurring grocery-shopping marker appears on the calendar until a member
+  // picks a day in the grocery schedule.
+  groceryShoppingDay: { type: Number, default: null },  // 0=Sun…6=Sat, null=unset
   // Shopping cadence; for 'biweekly', groceryAnchor (YYYY-MM-DD, any known
   // shopping day) fixes which alternating week is the shopping week.
   groceryFrequency:   { type: String, enum: ['weekly', 'biweekly'], default: 'weekly' },
@@ -72,6 +83,13 @@ const householdSchema = new mongoose.Schema({
   // Token equivalent of `usageBaseline`: snapshot of usageTokens[period] captured
   // at a mid-week upgrade so the pooled token budget restarts fresh at 0.
   usageTokensBaseline: { type: mongoose.Schema.Types.Mixed, default: () => ({}) },
+  // Pooled (paid-tier) weekly assistant CALL-TIME usage, in connected seconds:
+  // { 'YYYY-MM-DD': { seconds } }. Separate budget from tokens (calls are billed
+  // per-minute by Vapi). Recorded from the call's duration when it ends.
+  usageCallSeconds: { type: mongoose.Schema.Types.Mixed, default: () => ({}) },
+  // Snapshot of usageCallSeconds[period] at a mid-week upgrade so the pooled
+  // call-time budget restarts fresh at 0 (mirrors usageTokensBaseline).
+  usageCallSecondsBaseline: { type: mongoose.Schema.Types.Mixed, default: () => ({}) },
   // Content-blind feature-activity counters for the admin analytics/adoption
   // views: { 'YYYY-MM-DD': { eventCreated, choreCreated, taskCompleted, ... } }.
   // Same shape/keying as `usage` but for non-AI actions; records only that an

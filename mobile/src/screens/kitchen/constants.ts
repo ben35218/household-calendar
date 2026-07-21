@@ -17,7 +17,9 @@ export const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 export const DAY_NAMES_FULL = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 
 // One-line summary of the schedule for cards/badges: "Every week on Saturday".
-export function scheduleSummary(day: number, frequency: GroceryFrequency): string {
+// day == null means no shopping day is configured yet.
+export function scheduleSummary(day: number | null, frequency: GroceryFrequency): string {
+  if (day == null) return 'Not set — tap to choose a shopping day';
   return `${frequency === 'biweekly' ? 'Every 2 weeks' : 'Every week'} on ${DAY_NAMES_FULL[day]}`;
 }
 

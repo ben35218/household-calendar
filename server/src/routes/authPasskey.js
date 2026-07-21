@@ -25,8 +25,11 @@ const {
 const { isoBase64URL } = require('@simplewebauthn/server/helpers');
 const crypto = require('crypto');
 const User = require('../models/User');
+const AuditLog = require('../models/AuditLog');
 const { requireAuth, signToken } = require('../middleware/auth');
 const { rateLimit } = require('../middleware/rateLimit');
+const { alertHousehold, securityAlert } = require('../services/securityAlerts');
+const { createSession } = require('../services/sessions');
 
 const router = express.Router();
 
@@ -112,6 +115,14 @@ router.post('/register', requireAuth, async (req, res) => {
       },
     ];
     await user.save();
+    await AuditLog.create({
+      userId: user._id, householdId: user.householdId, event: 'passkey_signin_added',
+    });
+    securityAlert(alertHousehold(user.householdId, {
+      title: 'Security change',
+      body: `A passkey that can sign in to ${user.firstName}'s account was added. If this wasn't ${user.firstName}, review Security now.`,
+      tag: `passkey-${user._id}`,
+    }));
     res.status(201).json({ credentialId });
   } catch (e) {
     res.status(400).json({ error: e.message });
@@ -197,8 +208,9 @@ router.post('/login', assertLimiter, async (req, res) => {
     cred.counter = authenticationInfo.newCounter;
     await user.save();
 
+    const sid = await createSession(user._id, req);
     res.json({
-      token: signToken(String(user._id)),
+      token: signToken(String(user._id), sid),
       user: { _id: user._id, email: user.email, firstName: user.firstName, lastName: user.lastName, role: user.role },
     });
   } catch (e) {

@@ -1,7 +1,7 @@
 ---
 title: Calendar & events
 status: current
-last-verified: b242e6c (2026-07-20)
+last-verified: 797df57 (2026-07-21)
 code:
   - mobile/src/screens/calendar/
   - mobile/src/lib/calendar.ts
@@ -45,8 +45,63 @@ and printing. It is also the anchor for the calendar AI assistant.
 - **Travel time** (`travelMinutes`, `travelDistanceKm`) may be attached so an
   event's reminder accounts for getting there.
 - **Cancellation via AI call:** when Calen's cancellation call gets a business to
-  confirm, the event is marked `cancelled` and stays on the calendar. See
-  [ai-assistant.md](ai-assistant.md).
+  confirm, the user resolves the outcome **from the event view itself** — the
+  event stays on the calendar (faded/struck) until they **delete** it. The event
+  view surfaces the conclusion in context (the business called + the call
+  summary). The Event Action screen's **"Share my contact details if asked"**
+  switch (default off) controls whether the AI caller may give the user's
+  phone/email for identity checks. See [ai-assistant.md](ai-assistant.md).
+- **Resolved events are dimmed on every calendar surface** (month grid, agenda,
+  day view): a **confirmed-cancelled** event renders faded with a strike-through
+  title; an event with a **confirmed reschedule not yet applied** to its time
+  renders faded (no strike) as a "still at the old time, needs updating" cue. Both
+  signals are **derived from the household's recent calls** (the server can't set
+  a flag under E2EE), not stored on the event, and both **clear when the call
+  notice is acknowledged** — Dismiss on the event view or OK in Invitations
+  (one shared `acknowledged` flag) — returning the event to a normal appearance.
+  A **hand-set** `cancelled` flag (from the "couldn't confirm → mark cancelled"
+  path) persists until the event is deleted.
+
+### Views (month display density)
+
+The calendar home is a **single month surface** rendered at one of four
+densities, chosen from a view switcher — the left-most of the three floating
+buttons in the top-right cluster (search + add are the other two). The switcher
+button's glyph reflects the active mode; tapping it opens an **anchored dropdown
+popover** (not a bottom sheet — this is the one deliberate exception to the
+bottom-sheet picker convention, to mirror Apple Calendar) listing the modes with
+a checkmark on the active one and a divider isolating **List**. The choice is
+**persisted device-local** (`hc_month_density`, `lib/calendarPrefs` →
+`useMonthDensity`); default is **Details**.
+
+- **Compact** — a uniform short row per week; each day shows the day number and a
+  row of up to four coloured **dots** (one per source: each spanning span
+  covering the day, each single-day event, and one per maintenance/chore/meal
+  group). No text, no bars. The whole month fits with room to spare.
+- **Stacked** — each single-day item renders as a thin **coloured bar** (no
+  text); multi-day events and trips render as the overlaid spanning bars.
+  Week-row height grows with the busiest day.
+- **Details** — the full month grid: event **chips** (title + start time),
+  labelled spanning bars, and the maintenance/chore/meal/grocery icon row. This
+  is the pre-switcher behavior.
+- **List** — a compact single-month grid (dots per day, like Compact) with the
+  **tapped day's events listed below** (as compact cards). Only the visible
+  month's days are shown (leading/trailing days of adjacent months are blanked).
+  The grid is an **interactive vertical carousel**: dragging scrolls continuously
+  into the adjacent month (up reveals the start of the next month, down the end of
+  the previous), and on release it **snaps to a full month** — past a distance/
+  velocity threshold it commits to the adjacent month, otherwise it springs back.
+  Tapping a day fills the list. Entering List **re-centres on today** — the current
+  month with today selected and circled in the primary colour — rather than
+  resuming the last browsed month. This mode **replaced the former standalone
+  "events" agenda view** (a full-screen infinite agenda toggled by a list button),
+  which has been removed.
+
+Compact/Stacked/Details share one continuously-scrolling grid layer; List is a
+separate layer. The switcher crossfades between the grid family and List; the
+shared floating chrome (avatar, switcher/search/add, Today, Calendars/
+Invitations/Assistant) never moves. The single **Today** button re-centres
+whichever layer is active.
 
 ### Custom calendars
 

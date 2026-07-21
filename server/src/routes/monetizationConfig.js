@@ -17,7 +17,7 @@ const { requireAuth, requireAdmin } = require('../middleware/auth');
 const router = express.Router();
 router.use(requireAuth, requireAdmin);
 
-const EDITABLE = ['tiers', 'costs', 'models', 'activity', 'fees', 'guards'];
+const EDITABLE = ['tiers', 'costs', 'models', 'activity', 'fees', 'guards', 'admin'];
 
 router.get('/', async (_req, res) => {
   try {

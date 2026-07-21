@@ -221,4 +221,49 @@ router.post('/route-leg', async (req, res) => {
   }
 });
 
+// Proxy a Google Maps image (Static Maps or Street View) so the API key stays
+// server-side and the app can load it in an <Image>. `kind` picks the endpoint.
+// Location is an address string (`q`) or lat/lng. Returns the image bytes, or
+// 404 when Street View has no panorama (return_error_code) so the client can
+// hide the thumbnail.
+async function proxyMapImage(kind, req, res) {
+  const apiKey = process.env.GOOGLE_PLACES_API_KEY;
+  if (!apiKey) return res.status(503).json({ error: 'Google Maps API key not configured' });
+
+  const { q, lat, lng } = req.query;
+  const hasCoords = Number.isFinite(Number(lat)) && Number.isFinite(Number(lng));
+  const location = hasCoords ? `${Number(lat)},${Number(lng)}` : (typeof q === 'string' ? q.trim() : '');
+  if (!location) return res.status(400).json({ error: 'q or lat/lng required' });
+
+  // Cap the requested size to Google's free-tier limits (640×640 before scale).
+  const w = Math.min(Math.max(parseInt(req.query.w, 10) || 600, 100), 640);
+  const h = Math.min(Math.max(parseInt(req.query.h, 10) || 300, 100), 640);
+
+  let url;
+  if (kind === 'streetview') {
+    url = `https://maps.googleapis.com/maps/api/streetview?size=${w}x${h}`
+      + `&location=${encodeURIComponent(location)}&fov=80&return_error_code=true&key=${apiKey}`;
+  } else {
+    const zoom = Math.min(Math.max(parseInt(req.query.zoom, 10) || 15, 1), 20);
+    url = `https://maps.googleapis.com/maps/api/staticmap?size=${w}x${h}&scale=2&zoom=${zoom}`
+      + `&center=${encodeURIComponent(location)}`
+      + `&markers=${encodeURIComponent(`color:red|${location}`)}&key=${apiKey}`;
+  }
+
+  try {
+    const img = await axios.get(url, { responseType: 'arraybuffer' });
+    res.setHeader('Content-Type', img.headers['content-type'] || 'image/png');
+    res.setHeader('Cache-Control', 'private, max-age=86400');
+    res.send(Buffer.from(img.data));
+  } catch (err) {
+    // Street View with no panorama returns 404 (return_error_code); pass it
+    // through so the client hides the thumbnail rather than showing a placeholder.
+    const status = err.response?.status || 500;
+    res.status(status === 404 ? 404 : 502).json({ error: 'map image unavailable' });
+  }
+}
+
+router.get('/staticmap', (req, res) => proxyMapImage('staticmap', req, res));
+router.get('/streetview', (req, res) => proxyMapImage('streetview', req, res));
+
 module.exports = router;

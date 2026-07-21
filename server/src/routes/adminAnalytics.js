@@ -8,14 +8,14 @@
 //   GET /api/admin/analytics/usage?weeks=8        → fleet AI-usage series + chat surfaces
 //   GET /api/admin/analytics/activity?weeks=8     → fleet feature-activity + adoption
 //   GET /api/admin/analytics/retention?weeks=8    → still-active by signup cohort
-//   GET /api/admin/analytics/tokens?weeks=8       → per-user token usage + abuse flags
+//   GET /api/admin/analytics/tokens?weeks=8       → per-user token + call-time usage + abuse flags
 
 const express = require('express');
 const User = require('../models/User');
 const Household = require('../models/Household');
 const { requireAuth, requireAdmin } = require('../middleware/auth');
 const {
-  getConfig, currentPeriodKey, nextPeriodResetAt, enforcedTokens,
+  getConfig, currentPeriodKey, nextPeriodResetAt, enforcedTokens, enforcedCallSeconds,
 } = require('../middleware/usageMeter');
 const {
   AI_ACTIONS, ACTIVITY_ACTIONS,
@@ -145,8 +145,8 @@ router.get('/tokens', async (req, res) => {
     const periods = periodKeysBack(period, weeks);
 
     const [users, households, config] = await Promise.all([
-      User.find({}, 'email firstName lastName householdId lastActiveAt usageTokens usageBlocked').lean(),
-      Household.find({}, 'name plan usageTokens usageTokensBaseline').lean(),
+      User.find({}, 'email firstName lastName householdId lastActiveAt usageTokens usageBlocked usageCallSeconds').lean(),
+      Household.find({}, 'name plan usageTokens usageTokensBaseline usageCallSeconds usageCallSecondsBaseline').lean(),
       getConfig(),
     ]);
     const hhById = Object.fromEntries(households.map((h) => [String(h._id), h]));
@@ -160,6 +160,13 @@ router.get('/tokens', async (req, res) => {
       // free, the household's pooled effective tokens on paid.
       const used = enforcedTokens({ user: u, household: hh }, period);
       const blocked = blockedCount(u.usageBlocked, period);
+      // Assistant call-time (separate enforced budget, in seconds). `callSeconds`
+      // is this user's OWN counter (fleet-summable without double-counting a
+      // pooled household); `callSecondsUsed` is what enforcement compares against
+      // the limit — the user's own on free, the pooled household total on paid.
+      const callSeconds = u.usageCallSeconds?.[period]?.seconds || 0;
+      const callSecondsUsed = enforcedCallSeconds({ user: u, household: hh }, period);
+      const callSecondsLimit = config.tiers?.[plan]?.weeklyCallSecondsLimit ?? null;
       return {
         _id: u._id,
         email: u.email,
@@ -173,6 +180,10 @@ router.get('/tokens', async (req, res) => {
         series,
         used, limit,
         pctOfLimit: limit ? Math.min(999, Math.round((used / limit) * 100)) : null,
+        callSeconds,
+        callSecondsUsed,
+        callSecondsLimit,
+        callPctOfLimit: callSecondsLimit ? Math.min(999, Math.round((callSecondsUsed / callSecondsLimit) * 100)) : null,
         blocked,
         flags: abuseFlags({ series, used, limit, blocked }),
       };
@@ -185,6 +196,7 @@ router.get('/tokens', async (req, res) => {
       items,
       fleet: {
         tokensThisPeriod: items.reduce((n, r) => n + r.tokens, 0),
+        callSecondsThisPeriod: items.reduce((n, r) => n + r.callSeconds, 0),
         blockedThisPeriod: items.reduce((n, r) => n + r.blocked, 0),
         flaggedUsers: items.filter((r) => r.flags.length).length,
       },

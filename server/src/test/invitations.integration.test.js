@@ -6,29 +6,39 @@
 // Real app + in-memory MongoDB.
 const { test, before, after } = require('node:test');
 const assert = require('node:assert/strict');
-const { startDb, stopDb, request, registerUser } = require('./harness');
+const { startDb, stopDb, request, registerUser, enrollKeys, b64u, fakeEnc } = require('./harness');
+const mongoose = require('mongoose');
 
-const CalendarEvent = require('../models/CalendarEvent');
+// Signal-parity C3b: events live in the unified opaque `Record` store.
+const Record = require('../models/Record');
+const EventInvitation = require('../models/EventInvitation');
 
 before(startDb);
 after(stopDb);
 
-// A sender with one plain calendar event; returns the invite payload the mobile
-// client would post (client-supplied plaintext snapshot alongside the eventId).
+// A sender with one event in the opaque store (stand-in ciphertext); returns the
+// invite payload the mobile client posts (its decrypted plaintext snapshot
+// alongside the eventId — the server can't read the sealed source).
 async function setupSenderWithEvent() {
   const sender = await registerUser({ firstName: 'Ada', lastName: 'Sender' });
-  const res = await request().post('/api/calendar/events')
+  const res = await request().post('/api/records')
     .set('Authorization', sender.auth)
-    .send({
-      calendarType: 'activities', title: 'Lake day', location: 'Sandbanks',
-      description: 'Bring sunscreen', startDate: '2026-08-15T12:00:00.000Z', allDay: true,
-    });
+    .send({ enc: fakeEnc(), keyVersion: 1 });
   assert.equal(res.status, 201);
   const snapshot = {
     title: 'Lake day', location: 'Sandbanks', description: 'Bring sunscreen',
     startDate: '2026-08-15T12:00:00.000Z', allDay: true, calendarType: 'activities',
   };
   return { sender, eventId: res.body._id, snapshot };
+}
+
+// C3b: the recipient seals its OWN independent copy of the event (invitationId
+// folded inside the ciphertext) and accept stores it as an opaque Record. Send a
+// client-minted _id + stand-in ciphertext.
+function acceptSealed(invId, auth, body = {}) {
+  return request().post(`/api/invitations/${invId}/accept`)
+    .set('Authorization', auth)
+    .send({ _id: new mongoose.Types.ObjectId().toString(), enc: fakeEnc(), keyVersion: 1, ...body });
 }
 
 test('invite a registered user → pending invitation, resolved recipient, no duplicates on resend', async () => {
@@ -63,20 +73,19 @@ test('accept copies the event onto the recipient calendar and moves the invite t
     .send({ eventId, email: recipient.user.email, event: snapshot });
   const invId = sent.body.invitation._id;
 
-  const res = await request().post(`/api/invitations/${invId}/accept`).set('Authorization', recipient.auth);
+  const res = await acceptSealed(invId, recipient.auth);
   assert.equal(res.status, 200);
   assert.equal(res.body.invitation.status, 'accepted');
-  assert.equal(String(res.body.event.userId), String(recipient.user._id));
-  assert.equal(res.body.event.title, 'Lake day');
+
+  // The copy is an opaque Record the recipient owns (content sealed inside enc).
+  const copy = await Record.findById(res.body.event._id).lean();
+  assert.equal(String(copy.userId), String(recipient.user._id));
+  assert.ok(copy.enc?.ct);
 
   // The copy is independent — the sender's original is untouched.
-  const original = await CalendarEvent.findById(eventId).lean();
+  const original = await Record.findById(eventId).lean();
   assert.equal(String(original.userId), String(sender.user._id));
   assert.notEqual(String(original._id), String(res.body.event._id));
-
-  // The recipient can read their copy through the normal calendar API.
-  const mine = await request().get(`/api/calendar/events/${res.body.event._id}`).set('Authorization', recipient.auth);
-  assert.equal(mine.status, 200);
 
   // Replying twice is rejected, and the invite now lives in Replied.
   const twice = await request().post(`/api/invitations/${invId}/decline`).set('Authorization', recipient.auth);
@@ -96,7 +105,8 @@ test('decline records the reply without creating an event', async () => {
     .set('Authorization', recipient.auth);
   assert.equal(res.status, 200);
   assert.equal(res.body.invitation.status, 'declined');
-  const copies = await CalendarEvent.find({ userId: recipient.user._id, title: 'Lake day' }).lean();
+  // Decline creates no copy — the recipient owns no Record.
+  const copies = await Record.find({ userId: recipient.user._id }).lean();
   assert.equal(copies.length, 0);
 });
 
@@ -155,8 +165,9 @@ test('organizer invitee list: visible in event scope only, tracks the accept lin
   assert.equal(denied.status, 404);
 
   const inv = sent.body.find((i) => i.toEmail === recipient.user.email);
-  const accepted = await request().post(`/api/invitations/${inv._id}/accept`).set('Authorization', recipient.auth);
-  assert.equal(String(accepted.body.event.invitationId), String(inv._id));
+  const accepted = await acceptSealed(inv._id, recipient.auth);
+  // The invitationId now rides INSIDE the sealed copy; the linkage is tracked on
+  // the invitation's acceptedEventId (asserted below), not on the opaque row.
   const viaCopy = await request().get('/api/invitations/sent')
     .query({ eventId: accepted.body.event._id }).set('Authorization', recipient.auth);
   assert.equal(viaCopy.status, 200);
@@ -179,18 +190,19 @@ test('leave deletes the recipient copy and retires the invitation to left', asyn
   const early = await request().post(`/api/invitations/${inv._id}/leave`).set('Authorization', recipient.auth);
   assert.equal(early.status, 400);
 
-  const accepted = await request().post(`/api/invitations/${inv._id}/accept`).set('Authorization', recipient.auth);
+  const accepted = await acceptSealed(inv._id, recipient.auth);
   const copyId = accepted.body.event._id;
 
   const left = await request().post(`/api/invitations/${inv._id}/leave`).set('Authorization', recipient.auth);
   assert.equal(left.status, 200);
   assert.equal(left.body.invitation.status, 'left');
-  assert.equal(await CalendarEvent.findById(copyId), null);
+  // C3b: the copy is tombstoned (deleted flag) so the delete propagates via sync.
+  assert.equal((await Record.findById(copyId).lean()).deleted, true);
 
   // The organizer's list still records the invitee (as left); the original stays.
   const sent = await request().get('/api/invitations/sent').query({ eventId }).set('Authorization', sender.auth);
   assert.equal(sent.body[0].status, 'left');
-  assert.notEqual(await CalendarEvent.findById(eventId), null);
+  assert.notEqual((await Record.findById(eventId).lean()).deleted, true);
 });
 
 test('organizer revoke removes the invitation — and the copy if it was accepted', async () => {
@@ -215,37 +227,34 @@ test('organizer revoke removes the invitation — and the copy if it was accepte
   const again = (await request().post('/api/invitations')
     .set('Authorization', sender.auth)
     .send({ eventId, email: recipient.user.email, event: snapshot })).body.invitation;
-  const accepted = await request().post(`/api/invitations/${again._id}/accept`).set('Authorization', recipient.auth);
+  const accepted = await acceptSealed(again._id, recipient.auth);
   await request().delete(`/api/invitations/${again._id}`).set('Authorization', sender.auth);
-  assert.equal(await CalendarEvent.findById(accepted.body.event._id), null);
+  // C3b: the recipient's copy is tombstoned by the organizer's revoke.
+  assert.equal((await Record.findById(accepted.body.event._id).lean()).deleted, true);
 });
 
-test('an invited copy is read-only for the recipient — leave is the only exit; the original stays editable', async () => {
+test('an invited copy is the recipient-owned opaque record; leave is the sanctioned exit; the original is untouched', async () => {
+  // C3b: event content is sealed, so the "invited copies are read-only" rule is
+  // now enforced CLIENT-side (the form flips Delete→Leave on the `invitationId`
+  // sealed inside the copy) — the server no longer gates edits on a plaintext
+  // event. What the server still guarantees: the copy belongs to the recipient,
+  // leave tombstones it, and the organizer's original is independent.
   const { sender, eventId, snapshot } = await setupSenderWithEvent();
   const recipient = await registerUser();
   const inv = (await request().post('/api/invitations')
     .set('Authorization', sender.auth)
     .send({ eventId, email: recipient.user.email, event: snapshot })).body.invitation;
-  const accepted = await request().post(`/api/invitations/${inv._id}/accept`).set('Authorization', recipient.auth);
+  const accepted = await acceptSealed(inv._id, recipient.auth);
   const copyId = accepted.body.event._id;
 
-  const edit = await request().put(`/api/calendar/events/${copyId}`)
-    .set('Authorization', recipient.auth).send({ title: 'Hijacked' });
-  assert.equal(edit.status, 403);
-  const del = await request().delete(`/api/calendar/events/${copyId}`).set('Authorization', recipient.auth);
-  assert.equal(del.status, 403);
-  assert.equal((await CalendarEvent.findById(copyId).lean()).title, 'Lake day');
+  const copy = await Record.findById(copyId).lean();
+  assert.equal(String(copy.userId), String(recipient.user._id));
 
-  // The organizer's household still edits (and could delete) the original.
-  const orig = await request().put(`/api/calendar/events/${eventId}`)
-    .set('Authorization', sender.auth).send({ title: 'Lake day (moved)' });
-  assert.equal(orig.status, 200);
-  assert.equal(orig.body.title, 'Lake day (moved)');
-
-  // Leave still works — the sanctioned way out for the invitee.
+  // Leave tombstones the copy; the sender's original record is unaffected.
   const left = await request().post(`/api/invitations/${inv._id}/leave`).set('Authorization', recipient.auth);
   assert.equal(left.status, 200);
-  assert.equal(await CalendarEvent.findById(copyId), null);
+  assert.equal((await Record.findById(copyId).lean()).deleted, true);
+  assert.notEqual((await Record.findById(eventId).lean()).deleted, true);
 });
 
 test('phone invite: normalized number, no account resolution, no duplicates on resend', async () => {
@@ -328,6 +337,131 @@ test('guard rails: self-invite, same-household recipient, bad email, out-of-scop
   assert.match(sameHouse.body.error, /household/);
 });
 
+// ── D3: encrypted snapshot when the recipient is a known account ──────────────
+
+test('D3 lookup: resolves an invited email → keys for an enrolled account, withheld for a housemate, none for a stranger', async () => {
+  const sender = await registerUser({ firstName: 'Ada' });
+  const recipient = await registerUser({ firstName: 'Ben' });
+  await enrollKeys(recipient.auth);
+
+  // A cross-household account with enrolled keys hands back the public key.
+  const hit = await request().get('/api/invitations/lookup')
+    .query({ email: recipient.user.email.toUpperCase() }).set('Authorization', sender.auth);
+  assert.equal(hit.status, 200);
+  assert.equal(hit.body.userExists, true);
+  assert.ok(hit.body.identityPublicKey);
+
+  // An account with no enrolled keys → exists but nothing to seal to.
+  const noKeys = await registerUser();
+  const cold = await request().get('/api/invitations/lookup')
+    .query({ email: noKeys.user.email }).set('Authorization', sender.auth);
+  assert.equal(cold.body.userExists, true);
+  assert.equal(cold.body.identityPublicKey, null);
+
+  // A stranger email → no account.
+  const miss = await request().get('/api/invitations/lookup')
+    .query({ email: 'nobody@example.com' }).set('Authorization', sender.auth);
+  assert.deepEqual(miss.body, { userExists: false, identityPublicKey: null });
+
+  // Bad email → 400.
+  const bad = await request().get('/api/invitations/lookup')
+    .query({ email: 'not-an-email' }).set('Authorization', sender.auth);
+  assert.equal(bad.status, 400);
+
+  // A member of the caller's own household never leaks keys through this surface.
+  const housemate = await registerUser();
+  await enrollKeys(housemate.auth);
+  const User = require('../models/User');
+  await User.updateOne({ _id: housemate.user._id }, { $set: { householdId: sender.user.householdId } });
+  const same = await request().get('/api/invitations/lookup')
+    .query({ email: housemate.user.email }).set('Authorization', sender.auth);
+  assert.equal(same.body.userExists, true);
+  assert.equal(same.body.identityPublicKey, null);
+});
+
+test('D3 sealed invite: a known account stores the sealed blob and NO plaintext; the .ics degrades to 404', async () => {
+  const { sender, eventId } = await setupSenderWithEvent();
+  const recipient = await registerUser();
+  await enrollKeys(recipient.auth);
+  const sealedEvent = b64u(120); // opaque to the server — the client's sealed box
+
+  const res = await request().post('/api/invitations')
+    .set('Authorization', sender.auth)
+    .send({ eventId, email: recipient.user.email, sealedEvent });
+  assert.equal(res.status, 201);
+  assert.equal(res.body.userExists, true);
+  assert.equal(res.body.invitation.sealedEvent, sealedEvent);
+  // No plaintext snapshot reaches the store.
+  const row = await EventInvitation.findById(res.body.invitation._id).lean();
+  assert.equal(row.sealedEvent, sealedEvent);
+  assert.ok(!row.event || !row.event.title);
+
+  // The recipient sees it in their inbox (they decrypt on-device).
+  const inbox = await request().get('/api/invitations').set('Authorization', recipient.auth);
+  assert.equal(inbox.body.find((i) => String(i._id) === String(row._id)).sealedEvent, sealedEvent);
+
+  // No server-rendered .ics for a sealed invite.
+  const ics = await request().get(`/api/invitations/${row._id}/ics`).set('Authorization', recipient.auth);
+  assert.equal(ics.status, 404);
+});
+
+test('D3 sealed invite: rejected when the address has no keys to seal to', async () => {
+  const { sender, eventId } = await setupSenderWithEvent();
+  const bad = await request().post('/api/invitations')
+    .set('Authorization', sender.auth)
+    .send({ eventId, email: 'keyless@example.com', sealedEvent: b64u(120) });
+  assert.equal(bad.status, 400);
+  assert.match(bad.body.error, /keys/);
+});
+
+test('D3 accept: a sealed invite takes the recipient-supplied snapshot to build the copy', async () => {
+  const { sender, eventId } = await setupSenderWithEvent();
+  const recipient = await registerUser();
+  await enrollKeys(recipient.auth);
+  const inv = (await request().post('/api/invitations')
+    .set('Authorization', sender.auth)
+    .send({ eventId, email: recipient.user.email, sealedEvent: b64u(120) })).body.invitation;
+
+  // Accepting without the client-sealed copy (_id + enc) has nothing to store.
+  const empty = await request().post(`/api/invitations/${inv._id}/accept`).set('Authorization', recipient.auth);
+  assert.equal(empty.status, 400);
+
+  // With the on-device sealed copy, the recipient's opaque Record is created.
+  const accepted = await acceptSealed(inv._id, recipient.auth);
+  assert.equal(accepted.status, 200);
+  const copy = await Record.findById(accepted.body.event._id).lean();
+  assert.equal(String(copy.userId), String(recipient.user._id));
+  assert.ok(copy.enc?.ct);
+});
+
+test('D3 lazily-claimed upgrade: the recipient re-seals a plaintext invite to itself, dropping the plaintext', async () => {
+  const { sender, eventId, snapshot } = await setupSenderWithEvent();
+  const email = 'late-sealer@example.com';
+  // Sent before the recipient had an account → stored plaintext (unavoidable).
+  const inv = (await request().post('/api/invitations')
+    .set('Authorization', sender.auth)
+    .send({ eventId, email, event: snapshot })).body.invitation;
+  assert.equal(inv.event.title, 'Lake day');
+
+  const recipient = await registerUser({ email });
+  await enrollKeys(recipient.auth);
+  // Claim the invite (sets toUserId), then upgrade it to a sealed blob.
+  await request().get('/api/invitations').set('Authorization', recipient.auth);
+  const sealedEvent = b64u(120);
+  const up = await request().post(`/api/invitations/${inv._id}/seal`)
+    .set('Authorization', recipient.auth).send({ sealedEvent });
+  assert.equal(up.status, 200);
+
+  const row = await EventInvitation.findById(inv._id).lean();
+  assert.equal(row.sealedEvent, sealedEvent);
+  assert.ok(!row.event || !row.event.title); // plaintext hard-dropped
+  // A stranger can't seal someone else's invitation.
+  const stranger = await registerUser();
+  const denied = await request().post(`/api/invitations/${inv._id}/seal`)
+    .set('Authorization', stranger.auth).send({ sealedEvent: b64u(120) });
+  assert.equal(denied.status, 404);
+});
+
 test('guest list: invitees see who else is invited unless the organizer turns it off', async () => {
   const { sender, eventId, snapshot } = await setupSenderWithEvent();
   const recipient = await registerUser();
@@ -357,30 +491,27 @@ test('guest list: invitees see who else is invited unless the organizer turns it
   const denied = await request().get(`/api/invitations/${inv._id}/guests`).set('Authorization', stranger.auth);
   assert.equal(denied.status, 404);
 
-  // An event predating the flag (field absent) reads as visible.
-  await CalendarEvent.updateOne({ _id: eventId }, { $unset: { guestListVisible: '' } });
+  // An invitation predating the flag (field absent) reads as visible.
+  await EventInvitation.updateOne({ _id: inv._id }, { $unset: { guestListVisible: '' } });
   const legacy = await request().get(`/api/invitations/${inv._id}/guests`).set('Authorization', recipient.auth);
   assert.equal(legacy.body.visible, true);
 
-  // The organizer flips guestListVisible off → the list goes dark.
-  const off = await request().put(`/api/calendar/events/${eventId}`)
-    .set('Authorization', sender.auth).send({ guestListVisible: false });
-  assert.equal(off.status, 200);
-  assert.equal(off.body.guestListVisible, false);
+  // C3b: guestListVisible is a SEALED event field, so the organizer's device
+  // stamps it onto each invitation (here via a resend, which refreshes in place).
+  // Off → the list goes dark.
+  await request().post('/api/invitations')
+    .set('Authorization', sender.auth)
+    .send({ eventId, email: recipient.user.email, event: snapshot, guestListVisible: false });
   const hidden = await request().get(`/api/invitations/${inv._id}/guests`).set('Authorization', recipient.auth);
   assert.equal(hidden.status, 200);
   assert.deepEqual(hidden.body, { visible: false, guests: [] });
 
   // Back on — and RSVP statuses ride along once the recipient accepts.
-  await request().put(`/api/calendar/events/${eventId}`)
-    .set('Authorization', sender.auth).send({ guestListVisible: true });
-  await request().post(`/api/invitations/${inv._id}/accept`).set('Authorization', recipient.auth);
+  await request().post('/api/invitations')
+    .set('Authorization', sender.auth)
+    .send({ eventId, email: recipient.user.email, event: snapshot, guestListVisible: true });
+  await acceptSealed(inv._id, recipient.auth);
   const after = await request().get(`/api/invitations/${inv._id}/guests`).set('Authorization', recipient.auth);
   assert.equal(after.body.visible, true);
   assert.equal(after.body.guests.find((g) => g.toEmail === recipient.user.email).status, 'accepted');
-
-  // A deleted source event hides the list (nothing left to gate on).
-  await request().delete(`/api/calendar/events/${eventId}`).set('Authorization', sender.auth);
-  const gone = await request().get(`/api/invitations/${inv._id}/guests`).set('Authorization', recipient.auth);
-  assert.equal(gone.body.visible, false);
 });

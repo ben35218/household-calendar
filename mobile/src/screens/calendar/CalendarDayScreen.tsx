@@ -12,11 +12,14 @@ import HourlyForecast from '../../components/HourlyForecast';
 import { itemsForDate, eventColor, CALENDAR_COLORS } from '../../lib/calendar';
 import { getHolidays } from '../../lib/holidays';
 import { useCalendarVisibility, useHolidayCalendars, holidayEnabledIds, useCalendarColors } from '../../lib/calendarPrefs';
+import { useCallEventStatus } from '../../lib/callStatus';
 import WeatherIcon from '../../components/WeatherIcon';
 import { weatherCardColors } from '../../lib/weatherTheme';
+import { summarizeNext24h } from '../../lib/weatherSummary';
 import { zonedTimeLabel } from '../../lib/tz';
 import { useHorizontalSwipe } from '../../lib/useHorizontalSwipe';
 import { mdiName } from '../../lib/recurrence';
+import { resolveTaskIcon } from '../../lib/maintenanceCategories';
 import { CalendarStackParamList } from '../../navigation/CalendarNavigator';
 import { colors, spacing, radius } from '../../theme';
 
@@ -36,14 +39,15 @@ function windowFor(dateStr: string) {
   return { from: from.toISOString(), to: to.toISOString() };
 }
 
-function Row({ icon, color, title, subtitle, onPress }: { icon: string; color: string; title: string; subtitle?: string; onPress?: () => void }) {
+function Row({ icon, color, title, subtitle, onPress, faded, strike }: { icon: string; color: string; title: string; subtitle?: string; onPress?: () => void; faded?: boolean; strike?: boolean }) {
   return (
     <CardRow
       onPress={onPress}
       leading={<MaterialCommunityIcons name={icon as any} size={20} color={color} />}
       title={title}
+      titleStyle={strike ? { textDecorationLine: 'line-through' } : undefined}
       subtitle={subtitle}
-      style={{ borderLeftColor: color, borderLeftWidth: 4 }}
+      style={[{ borderLeftColor: color, borderLeftWidth: 4 }, faded && { opacity: 0.55 }]}
     />
   );
 }
@@ -54,6 +58,7 @@ export default function CalendarDayScreen() {
   const { visibility } = useCalendarVisibility();
   const { calendars: holidayCals } = useHolidayCalendars();
   const { colors: calColors } = useCalendarColors();
+  const { cancelledIds, reschedulePendingIds } = useCallEventStatus();
 
   // The visible day is local state so swiping animates the content in place,
   // rather than pushing/replacing a screen (whose transition direction the native
@@ -108,14 +113,23 @@ export default function CalendarDayScreen() {
     () => weatherQ.data?.forecast?.find((d) => d.date === date) ?? null,
     [weatherQ.data, date]
   );
-  // Card fill tracks the day's conditions (daytime tint — it's a day forecast).
-  const wxColors = weatherCardColors(wx?.weatherCode, false);
+  // For today, the icon + fill should read as the *current* conditions (the
+  // daily summary code resolves to the day's most significant weather, e.g. rain
+  // expected later, which looks wrong when it's clear right now). Future days
+  // have no "current", so fall back to the daily summary code.
+  const isToday = date === new Date().toLocaleDateString('en-CA');
+  const displayCode =
+    isToday && weatherQ.data?.current ? weatherQ.data.current.weatherCode : wx?.weatherCode;
+  // Card fill tracks the shown conditions (daytime tint — it's a day forecast).
+  const wxColors = weatherCardColors(displayCode, false);
   // This day onward, so the hourly strip can roll past midnight into the next day.
   const wxDays = useMemo(() => {
     const f = weatherQ.data?.forecast ?? [];
     const i = f.findIndex((d) => d.date === date);
     return i >= 0 ? f.slice(i) : [];
   }, [weatherQ.data, date]);
+  // One-sentence recap of the same 24h window the hourly strip shows.
+  const wxSummary = useMemo(() => summarizeNext24h(wxDays), [wxDays]);
 
   const day = useMemo(() => itemsForDate(calQ.data, date), [calQ.data, date]);
 
@@ -172,9 +186,10 @@ export default function CalendarDayScreen() {
           onTouchEnd={() => { swipeBlocked.current = false; }}
           onTouchCancel={() => { swipeBlocked.current = false; }}
         >
+        <TouchableOpacity activeOpacity={0.85} onPress={() => navigation.navigate('Weather')}>
         <Card style={[styles.weatherCard, { backgroundColor: wxColors.bg, borderColor: wxColors.border }]}>
           <View style={styles.weatherRow}>
-            <WeatherIcon code={wx.weatherCode} size={40} />
+            <WeatherIcon code={displayCode ?? wx.weatherCode} size={40} />
             <View style={{ flex: 1 }}>
               <Text style={styles.weatherTemp}>{Math.round(wx.tempMax)}° / {Math.round(wx.tempMin)}°</Text>
             </View>
@@ -185,11 +200,13 @@ export default function CalendarDayScreen() {
           </View>
           {wx.hours?.length ? (
             <>
+              {wxSummary ? <Text style={styles.weatherSummary}>{wxSummary}</Text> : null}
               <View style={styles.weatherDivider} />
               <HourlyForecast days={wxDays} />
             </>
           ) : null}
         </Card>
+        </TouchableOpacity>
         </View>
       ) : null}
 
@@ -205,10 +222,19 @@ export default function CalendarDayScreen() {
         <Row key={`bday-${b.id}`} icon="cake-variant" color={calColors.birthdays} title={b.name} subtitle="Birthday" />
       ))}
       {day.events.map((e) => (
-        <Row key={e._id} icon="calendar" color={eventColor(e)} title={e.title} subtitle={[eventTime(e), e.location].filter(Boolean).join(' · ')} onPress={() => navigation.navigate('EventForm', { eventId: e._id, date })} />
+        <Row
+          key={e._id}
+          icon="calendar"
+          color={eventColor(e)}
+          title={e.title}
+          subtitle={[eventTime(e), e.location].filter(Boolean).join(' · ')}
+          faded={Boolean(e.cancelled) || cancelledIds.has(e._id) || reschedulePendingIds.has(e._id)}
+          strike={Boolean(e.cancelled) || cancelledIds.has(e._id)}
+          onPress={() => navigation.navigate('EventDetail', { eventId: e._id, date })}
+        />
       ))}
       {day.tasks.map((t) => (
-        <Row key={t._id} icon="wrench" color={calColors.maintenance} title={t.title} subtitle="Maintenance task" onPress={() => navigation.navigate('TaskDetail', { id: t._id })} />
+        <Row key={t._id} icon={resolveTaskIcon(t.icon, typeof t.categoryId === 'object' ? t.categoryId?.name : null)} color={calColors.maintenance} title={t.title} subtitle="Maintenance task" onPress={() => navigation.navigate('TaskDetail', { id: t._id })} />
       ))}
       {day.chores.map((c) => (
         <Row key={c._id} icon={mdiName(c.icon)} color={calColors.chores} title={c.title} subtitle="Chore" onPress={() => navigation.navigate('ChoreDetail', { id: c._id })} />
@@ -255,4 +281,5 @@ const styles = StyleSheet.create({
   weatherSub: { fontSize: 13, color: 'rgba(255,255,255,0.85)' },
   weatherRain: { fontSize: 13, color: '#CFE8FF', fontWeight: '600' },
   weatherDivider: { height: StyleSheet.hairlineWidth, backgroundColor: 'rgba(255,255,255,0.25)', marginVertical: spacing.sm },
+  weatherSummary: { fontSize: 13, lineHeight: 18, color: 'rgba(255,255,255,0.9)', marginTop: spacing.sm },
 });

@@ -90,13 +90,30 @@ export interface RecordLocation {
   id: string;
   householdId: string;
   keyVersion: number;
+  // Signal-parity D1/D2: when present, the ciphertext is sealed under a per-
+  // resource key (a CalendarKey for `'calendar'`, a TripKey for `'trip'`) instead
+  // of the household HDK, and the AAD binds `<kind-prefix>:${resource} ${version}`
+  // rather than householdId + HDK version. `resource` is the globally-unique
+  // resource id (a CustomCalendar `key`, or a Trip `_id`). See the §D1/§D2
+  // decision docs in docs/SIGNAL-PARITY-PLAN.md.
+  scope?: { kind: 'calendar' | 'trip'; resource: string; version: number };
 }
 
 // The AEAD ciphertext stored in a document's `enc` field.
 export interface RecordEnvelope {
-  alg: 'xchacha20poly1305-ietf';
+  // Signal-parity C3: 'xchacha20poly1305-ietf' is the v1 format (AAD binds the
+  // plaintext `collection`); '…-ietf-v2' is the opaque format (collection moves
+  // inside the sealed payload, AAD binds a generic tag). Reads accept both; new
+  // record writes are always v2. Key/file-key wraps keep the v1 alg.
+  alg: 'xchacha20poly1305-ietf' | 'xchacha20poly1305-ietf-v2';
   nonce: string; // base64url
   ct: string; // base64url (ciphertext + tag)
+  // Signal-parity D1/D2 key-scope discriminator: absent = sealed under the
+  // household HDK (the default for every record); 'cal' = sealed under a
+  // CalendarKey (D1); 'trip' = sealed under a TripKey (D2). A self-describing hint
+  // (not bound in AAD) so a reader picks the right key without consulting
+  // membership; anything truthy means "resource-scoped, not HDK-sealed".
+  ks?: 'cal' | 'trip';
 }
 
 // A private key wrapped by one unlock factor. Any one envelope can recover the

@@ -7,25 +7,30 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const KEY = 'hc_privacy_prefs';
 
-export type DataStorage = 'cloud' | 'local';
-
 export interface PrivacyPrefs {
   // Master switch for any AI-powered feature (assistants, suggestions, scans).
   aiEnabled: boolean;
   // Whether personal/contact info may be included in AI prompts.
   aiUsePersonalInfo: boolean;
-  // Where app data lives: backed up in the Cloud, or kept only on this device.
-  dataStorage: DataStorage;
   // On-device reminder notifications (Phase 5a). When off we cancel the schedule
   // and stop rescheduling — no local notifications fire.
   remindersEnabled: boolean;
+  // Screen security (Signal-parity A3): block screenshots/recording and cover
+  // the app-switcher snapshot. Default ON — decrypted household data shouldn't
+  // leak into the photo roll or the task switcher unless the user opts out.
+  screenSecurity: boolean;
+  // App lock (Signal-parity A4): minutes in the background before the in-memory
+  // keys are dropped and a fresh Face ID unlock is required. -1 = never (off,
+  // the default — matches Signal's opt-in screen lock), 0 = immediately.
+  appLockMinutes: number;
 }
 
 export const DEFAULT_PRIVACY_PREFS: PrivacyPrefs = {
   aiEnabled: true,
   aiUsePersonalInfo: true,
-  dataStorage: 'cloud',
   remindersEnabled: true,
+  screenSecurity: true,
+  appLockMinutes: -1,
 };
 
 // ── In-memory state + subscribers ───────────────────────────────────────────
@@ -51,9 +56,18 @@ async function ensureLoaded() {
 }
 
 function persist(next: PrivacyPrefs) {
+  const prev = current();
   state = next;
   AsyncStorage.setItem(KEY, JSON.stringify(next)).catch(() => {});
   subs.forEach((fn) => fn());
+  // Mirror the AI master switch to the server (User.aiEnabled) so the AI routes
+  // can refuse even a bypassed client (spec: ai-assistant.md). Best-effort —
+  // the on-device gate is primary; a missed sync self-heals on the next flip.
+  if (prev.aiEnabled !== next.aiEnabled) {
+    // Deferred require to avoid a module cycle (api/client → stores → prefs).
+    const { settingsApi } = require('../api') as typeof import('../api');
+    settingsApi.update({ aiEnabled: next.aiEnabled }).catch(() => {});
+  }
 }
 
 // Read the current prefs imperatively (e.g. before firing an AI request). Falls

@@ -1,7 +1,11 @@
-// Integration test for the §9 plaintext drop — the full journey a real household
-// takes: enroll → mint → join → seal stragglers via the API → readiness (incl.
-// the min-app-version gate) → dry run → COMMIT → and then the API exercised with
-// e2eeActive = true. This is the path that was previously never executed anywhere.
+// Integration test for the §9 plaintext drop, updated for the Signal-parity C3b
+// unified store. The drop still nulls the plaintext content columns on any record
+// that carries ciphertext (for the non-migrated Trip/TripItem + the household
+// blob, and for legacy per-collection rows created before the C3b migration),
+// nulls the C4 author (`userId`) on author-hidden collections, and keeps the
+// shared-trip plaintext lane. The 9 migrated collections are opaque in the Record
+// store, so a fresh household has NO content stragglers — only the household name
+// blob gates the drop. Post-drop, content creates go through the opaque /records.
 const { test, before, after } = require('node:test');
 const assert = require('node:assert/strict');
 const {
@@ -13,6 +17,7 @@ const Person = require('../models/Person');
 const CalendarEvent = require('../models/CalendarEvent');
 const Trip = require('../models/Trip');
 const TripItem = require('../models/TripItem');
+const Record = require('../models/Record');
 const AuditLog = require('../models/AuditLog');
 const { dropPlaintext } = require('../scripts/dropPlaintext');
 
@@ -31,11 +36,15 @@ test('the whole drop journey: seal → readiness → dry run → commit → post
   const householdId = hh.body._id;
   await joinHousehold({ joiner: member, approver: owner, keyVersion: 1 });
 
-  // Content: a sealed event (dual-write), a sealed private trip + booking, and a
-  // SHARED trip + booking that must stay plaintext for outside collaborators.
+  // Legacy per-collection dual-write rows (enc + plaintext) the drop must null:
+  // an author-hidden event + person, a private trip, and a SHARED trip + booking
+  // that must STAY plaintext for outside collaborators.
   const event = await CalendarEvent.create({
-    userId: owner.user._id, calendarType: 'appointments', title: 'Dentist',
+    userId: owner.user._id, householdId, calendarType: 'appointments', title: 'Dentist',
     startDate: new Date('2026-08-10'), enc: fakeEnc(), keyVersion: 1,
+  });
+  const person = await Person.create({
+    userId: owner.user._id, householdId, type: 'friend', name: 'Neighbor', enc: fakeEnc(), keyVersion: 1,
   });
   const privateTrip = await Trip.create({
     userId: owner.user._id, name: 'Anniversary', destination: 'Quebec City',
@@ -51,30 +60,21 @@ test('the whole drop journey: seal → readiness → dry run → commit → post
     type: 'activity', title: 'Canoe rental', start: new Date('2026-07-20'),
   });
 
-  // ── 1) Stragglers block the drop (the two seeded self-Persons lack enc) ────
+  // ── 1) The only straggler is the household name blob (C3b: no server-seeded
+  //       content, and every created record already carries enc) ──────────────
   let result = await dropPlaintext(householdId);
-  assert.equal(result.status, 'stragglers');
+  assert.equal(result.status, 'stragglers', 'the unsealed household name blocks the drop');
 
   const stragglers = await request().get('/api/household/e2ee/stragglers').set('Authorization', owner.auth);
   assert.equal(stragglers.status, 200);
-  const personRows = stragglers.body.collections.find((c) => c.collection === 'Person');
-  assert.ok(personRows, 'the seeded self-Persons should surface as stragglers');
-  assert.equal(personRows.records.length, 2);
+  assert.equal(stragglers.body.total, 0, 'no CONTENT stragglers — all records are already sealed');
   // The shared trip is legitimately plaintext — it must NOT be offered for sealing.
-  const tripRows = stragglers.body.collections.find((c) => c.collection === 'Trip');
-  assert.equal(tripRows, undefined);
+  assert.equal(stragglers.body.collections.find((c) => c.collection === 'Trip'), undefined);
 
-  // Seal each straggler through the real content-blind endpoint.
-  for (const row of personRows.records) {
-    const seal = await request().post('/api/household/e2ee/seal')
-      .set('Authorization', owner.auth)
-      .send({ collection: 'Person', _id: row._id, enc: fakeEnc(), keyVersion: 1 });
-    assert.equal(seal.status, 200);
-  }
-  // Same for the shared trip's booking? No — exempt. But the private trip's
-  // booking doesn't exist and the event is already sealed, so we're clean now.
-  const after1 = await request().get('/api/household/e2ee/stragglers').set('Authorization', owner.auth);
-  assert.equal(after1.body.total, 0);
+  // Seal the household settings blob (name + homeAddress — C2) via PUT /settings.
+  const blob = await request().put('/api/settings').set('Authorization', owner.auth)
+    .send({ enc: fakeEnc(), keyVersion: 1 });
+  assert.equal(blob.status, 200);
 
   // ── 2) Min-app-version gate ────────────────────────────────────────────────
   process.env.E2EE_MIN_APP_VERSION = '1.2.0';
@@ -103,22 +103,26 @@ test('the whole drop journey: seal → readiness → dry run → commit → post
 
   const hhAfter = await Household.findById(householdId);
   assert.equal(hhAfter.e2eeActive, true);
+  // C2: the household name is content — nulled at the drop, blob intact.
+  assert.equal(hhAfter.name, undefined);
+  assert.ok(hhAfter.enc?.ct);
 
-  // Sealed records: plaintext content nulled, ciphertext intact.
+  // Sealed records: plaintext content nulled, ciphertext intact, and the C4 author
+  // (plaintext userId) nulled on the author-hidden collections.
   const eventAfter = await CalendarEvent.findById(event._id).lean();
   assert.equal(eventAfter.title, undefined);
+  assert.equal(eventAfter.userId, undefined, 'author (plaintext userId) is nulled at the drop');
   assert.ok(eventAfter.enc?.ct);
+  const personAfter = await Person.findById(person._id).lean();
+  assert.equal(personAfter.name, undefined);
+  assert.equal(personAfter.userId, undefined, 'author sealed inside enc, plaintext nulled');
+  assert.equal(String(personAfter.householdId), String(householdId), 'attributed to the household');
+  assert.ok(personAfter.enc?.ct);
   const privAfter = await Trip.findById(privateTrip._id).lean();
   assert.equal(privAfter.name, undefined);
   assert.ok(privAfter.enc?.ct);
-  const selves = await Person.find({ userId: { $in: [owner.user._id, member.user._id] } }).lean();
-  assert.equal(selves.length, 2);
-  for (const p of selves) {
-    assert.equal(p.name, undefined);
-    assert.ok(p.enc?.ct);
-  }
 
-  // The shared trip and its booking keep their plaintext.
+  // The shared trip and its booking keep their plaintext (no enc → collaborator-readable).
   const sharedAfter = await Trip.findById(sharedTrip._id).lean();
   assert.equal(sharedAfter.name, 'Cousins camping');
   const sharedItemAfter = await TripItem.findById(sharedItem._id).lean();
@@ -133,32 +137,21 @@ test('the whole drop journey: seal → readiness → dry run → commit → post
   assert.equal(hhLive.status, 200);
   assert.equal(hhLive.body.e2eeActive, true);
 
-  // /calendar/raw serves enc-only records for client-side decrypt + expansion,
-  // and its ensureSelf call must NOT re-create a plaintext self-Person.
-  const raw = await request().get('/api/calendar/raw').set('Authorization', owner.auth);
-  assert.equal(raw.status, 200);
-  const rawEvent = (raw.body.events || []).find((e) => String(e._id) === String(event._id));
-  assert.ok(rawEvent, 'the sealed event is still served');
-  assert.equal(rawEvent.title, undefined);
-  assert.ok(rawEvent.enc?.ct);
-  assert.equal(await Person.countDocuments({ userId: { $in: [owner.user._id, member.user._id] } }), 2);
-
-  // Creating content post-drop: the client mints the _id (the ciphertext AAD
-  // binds to it) and sends enc alongside the schema-required plaintext columns.
-  const create = await request().post('/api/calendar/events')
+  // Post-drop content creates go through the opaque store: ciphertext only, and the
+  // HDK record's author is hidden (attributed to the household).
+  const create = await request().post('/api/records')
     .set('Authorization', member.auth)
-    .send({
-      _id: '66aabbccddeeff0011223344',
-      calendarType: 'activities', title: 'sealed', startDate: '2026-08-15',
-      enc: fakeEnc(), keyVersion: 1,
-    });
+    .send({ _id: '66aabbccddeeff0011223344', enc: fakeEnc(), keyVersion: 1 });
   assert.equal(create.status, 201);
+  const createdRow = await Record.findById('66aabbccddeeff0011223344').lean();
+  assert.equal(createdRow.title, undefined, 'the opaque store persists no plaintext content');
+  assert.equal(createdRow.userId, undefined, 'a post-drop HDK create hides the author');
+  assert.equal(String(createdRow.householdId), String(householdId));
+  assert.ok(createdRow.enc?.ct);
 
-  // Readiness endpoint reports the live state.
+  // Readiness endpoint reports the live state; no new stragglers.
   const readyAfter = await request().get('/api/household/e2ee/readiness').set('Authorization', owner.auth);
   assert.equal(readyAfter.body.e2eeActive, true);
-
-  // No new stragglers.
   const strag = await request().get('/api/household/e2ee/stragglers').set('Authorization', owner.auth);
   assert.equal(strag.body.total, 0);
 });

@@ -1,6 +1,7 @@
 const express = require('express');
 const CustomCalendar = require('../models/CustomCalendar');
 const CalendarInvitation = require('../models/CalendarInvitation');
+const ResourceKeyEnvelope = require('../models/ResourceKeyEnvelope');
 const User = require('../models/User');
 const { requireAuth } = require('../middleware/auth');
 const { sendCalendarInvitation } = require('../services/mailer');
@@ -10,10 +11,16 @@ const {
   normalizeOutsideEntry,
   normalizeCollaboratorEntry,
   effectiveCalendarAccess,
+  isCalendarOutsideShared,
 } = require('../services/calendarSharing');
 
 const router = express.Router();
 router.use(requireAuth);
+
+// Whether the requester's household owns this calendar (the calendar's creator
+// is a household member) — gates who may serve/mint the household-wrapped
+// CalendarKey and who may rotate it.
+const ownsCalendar = (cal, req) => req.scopeIds.some((id) => String(id) === String(cal.userId));
 
 // Canonical key for an outside-share entry (email or phone).
 const outsideKey = (e) => e?.email || e?.phone || '';
@@ -153,6 +160,7 @@ async function syncOutsideInvitations(cal, prevEntries, req) {
     }
   }
 
+  let revoked = false;
   for (const [key, entry] of prev) {
     if (next.has(key)) continue;
     try {
@@ -167,20 +175,18 @@ async function syncOutsideInvitations(cal, prevEntries, req) {
           { $pull: { collaborators: { userId: inv.toUserId } } },
         );
       }
+      revoked = true;
     } catch (err) {
       console.error('[calendars] invitation revoke failed:', err.message);
     }
   }
-}
-
-// Post-drop, events on an outside-shared calendar must be plaintext for the
-// collaborator (§9.5, same lane as shared trips). The decrypt-on-share client
-// step isn't built, so on an E2EE-active household adding outside emails fails
-// safe rather than sharing unreadable events.
-function outsideShareBlocked(req, prevEntries, nextEntries) {
-  if (!req.household?.e2eeActive) return false;
-  const prev = new Set((prevEntries || []).map((e) => outsideKey(e)));
-  return (nextEntries || []).some((e) => !prev.has(outsideKey(e)));
+  // Signal-parity D1: an outside party losing access means the CalendarKey must
+  // rotate so their wrapped key opens nothing further. Flag it for the owner's
+  // next unlocked session (which rotates + re-seals the events — B1 machinery).
+  // Only meaningful once a CalendarKey exists (calKeyVersion > 0).
+  if (revoked && (cal.calKeyVersion || 0) > 0) {
+    await CustomCalendar.updateOne({ _id: cal._id }, { $set: { calKeyRotationPending: true } }).catch(() => {});
+  }
 }
 
 // ── Invitations addressed to me (registered before /:key routes) ────────────
@@ -262,6 +268,185 @@ router.post('/invitations/:id/decline', async (req, res) => {
   }
 });
 
+// ── CalendarKeys (Signal-parity D1: per-resource content keys) ───────────────
+// The events on an outside-shared calendar are sealed under a CalendarKey (not
+// the household HDK), wrapped to the owning household (via its HDK) and to each
+// accepted collaborator (via their identity public key). The server is blind to
+// the key — it only ferries opaque `ResourceKeyEnvelope` rows, exactly like the
+// HDK envelopes. See docs/SIGNAL-PARITY-PLAN.md §D1.
+
+// Loose shape check for a wrapped-key blob (JSON envelope for the household wrap,
+// b64url sealed box for a member wrap). The server never verifies crypto.
+const isWrappedKey = (v) => typeof v === 'string' && v.length > 0 && v.length < 8192;
+
+// The CalendarKey envelopes the caller can actually use for a calendar: the
+// household wrap (when the caller's household owns the calendar) and/or the
+// caller's own member wrap (when they're a collaborator). The client unwraps
+// whichever it holds a key for. `/:key` params can't shadow the literal
+// `/keys/...` routes below (different path shapes), but this one is registered
+// under `/:key/keys` so it stays after them.
+router.get('/:key/keys', async (req, res) => {
+  try {
+    const cal = await CustomCalendar.findOne({ key: req.params.key }).lean();
+    if (!cal) return res.status(404).json({ error: 'Calendar not found' });
+    const access = effectiveCalendarAccess(cal, req.user._id, req.scopeIds);
+    if (!ownsCalendar(cal, req) && !access) return res.status(404).json({ error: 'Calendar not found' });
+
+    const or = [];
+    if (ownsCalendar(cal, req)) or.push({ recipient: 'household', resourceKey: cal.key });
+    or.push({ recipient: 'member', resourceKey: cal.key, userId: req.user._id });
+    const envelopes = or.length
+      ? await ResourceKeyEnvelope.find({ resourceType: 'calendar', $or: or }).lean()
+      : [];
+
+    res.json({
+      calendarKey: cal.key,
+      currentKeyVersion: cal.calKeyVersion || 0,
+      household: envelopes
+        .filter((e) => e.recipient === 'household')
+        .map((e) => ({ keyVersion: e.keyVersion, hdkVersion: e.hdkVersion, wrappedKey: e.wrappedKey })),
+      member: envelopes
+        .filter((e) => e.recipient === 'member')
+        .map((e) => ({ keyVersion: e.keyVersion, wrappedKey: e.wrappedKey })),
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Owner mints or rotates the CalendarKey. `keyVersion` must be the calendar's
+// current `calKeyVersion + 1` (compare-and-set, so concurrent mints can't both
+// win). Carries the household wrap (required) and any collaborator wraps the
+// owner could produce this session. Bumps `calKeyVersion`, clears the rotation
+// flag. Used at first-share (v1) and on revoke/un-share (vN+1 + client re-seal).
+router.post('/:key/keys', async (req, res) => {
+  try {
+    const cal = await CustomCalendar.findOne({ key: req.params.key }).lean();
+    if (!cal) return res.status(404).json({ error: 'Calendar not found' });
+    if (String(cal.userId) !== String(req.user._id)) {
+      return res.status(403).json({ error: 'Only the calendar owner manages its key' });
+    }
+    const { keyVersion, household, members } = req.body || {};
+    const current = cal.calKeyVersion || 0;
+    if (keyVersion !== current + 1) {
+      return res.status(409).json({ error: 'Key version moved — please retry', currentKeyVersion: current });
+    }
+    if (!household || !isWrappedKey(household.wrappedKey) || !Number.isInteger(household.hdkVersion)) {
+      return res.status(400).json({ error: 'A household-wrapped CalendarKey is required' });
+    }
+
+    // Compare-and-set the calendar's version so only one mint from `current` wins.
+    const claimed = await CustomCalendar.findOneAndUpdate(
+      { key: cal.key, userId: req.user._id, calKeyVersion: current },
+      { $set: { calKeyVersion: keyVersion, calKeyRotationPending: false } },
+    );
+    if (!claimed) return res.status(409).json({ error: 'Key already rotated — please retry' });
+
+    await ResourceKeyEnvelope.updateOne(
+      { resourceType: 'calendar', resourceKey: cal.key, keyVersion, recipient: 'household' },
+      {
+        $set: { householdId: req.user.householdId, hdkVersion: household.hdkVersion, wrappedKey: household.wrappedKey, wrappedByUserId: req.user._id },
+      },
+      { upsert: true },
+    );
+    await writeMemberWraps(cal.key, keyVersion, members, req.user._id);
+    res.status(201).json({ ok: true, keyVersion });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Owner adds collaborator wraps at the current version (the async approve-on-
+// device step — no rotation). Used when a new collaborator accepts and the
+// owner's next unlocked session wraps the CalendarKey to them.
+router.post('/:key/keys/members', async (req, res) => {
+  try {
+    const cal = await CustomCalendar.findOne({ key: req.params.key }).lean();
+    if (!cal) return res.status(404).json({ error: 'Calendar not found' });
+    if (String(cal.userId) !== String(req.user._id)) {
+      return res.status(403).json({ error: 'Only the calendar owner manages its key' });
+    }
+    const { keyVersion, members } = req.body || {};
+    if (keyVersion !== (cal.calKeyVersion || 0)) {
+      return res.status(409).json({ error: 'Key version moved — please retry', currentKeyVersion: cal.calKeyVersion || 0 });
+    }
+    const n = await writeMemberWraps(cal.key, keyVersion, members, req.user._id);
+    res.json({ ok: true, wrapped: n });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Persist a batch of collaborator wraps for one CalendarKey version. Only seats
+// wraps for users who are actually collaborators on the calendar (defense in
+// depth: the owner can't hand the key to an arbitrary account). Returns the count.
+async function writeMemberWraps(calendarKey, keyVersion, members, wrappedByUserId) {
+  if (!Array.isArray(members) || !members.length) return 0;
+  const cal = await CustomCalendar.findOne({ key: calendarKey }, 'collaborators').lean();
+  const collabIds = new Set((cal?.collaborators || []).map((c) => String(c.userId || c)));
+  let n = 0;
+  for (const m of members) {
+    if (!m || !isWrappedKey(m.wrappedKey) || !collabIds.has(String(m.userId))) continue;
+    await ResourceKeyEnvelope.updateOne(
+      { resourceType: 'calendar', resourceKey: calendarKey, keyVersion, recipient: 'member', userId: m.userId },
+      { $set: { wrappedKey: m.wrappedKey, wrappedByUserId } },
+      { upsert: true },
+    );
+    n++;
+  }
+  return n;
+}
+
+// The owner's background wrap-on-approve work list: for every outside-shared
+// calendar they own, the accepted collaborators still missing a member wrap at
+// the current CalendarKey version (their `identityPublicKey` included so the
+// client can seal to it), plus the calendars flagged for a revoke-rotation.
+router.get('/keys/pending', async (req, res) => {
+  try {
+    const owned = await CustomCalendar.find({ userId: req.user._id }).lean();
+    // Outside-shared calendars need a CalendarKey; a calendar flagged for a
+    // revoke-rotation stays on the list even after its last outside party left
+    // (so the owner still rotates it, locking out the removed party's key).
+    const shared = owned.filter((c) => isCalendarOutsideShared(c) || c.calKeyRotationPending);
+    const out = [];
+    for (const cal of shared) {
+      const collabIds = (cal.collaborators || []).map((c) => c.userId || c);
+      const version = cal.calKeyVersion || 0;
+      const wrapped = version
+        ? new Set((await ResourceKeyEnvelope.find({
+            resourceType: 'calendar', resourceKey: cal.key, keyVersion: version, recipient: 'member',
+          }).distinct('userId')).map(String))
+        : new Set();
+      const missing = collabIds.filter((id) => !wrapped.has(String(id)));
+      const needsMint = version === 0; // never provisioned — mint v1 first
+      if (!needsMint && !missing.length && !cal.calKeyRotationPending) continue;
+      // Every collaborator's public key (a rotation re-wraps to ALL of them); the
+      // client picks who to seal to (all on mint/rotate, `missing` in steady state).
+      const users = await User.find(
+        { _id: { $in: collabIds }, identityPublicKey: { $exists: true, $ne: null } },
+        '_id identityPublicKey',
+      ).lean();
+      const byId = new Map(users.map((u) => [String(u._id), u.identityPublicKey]));
+      const missingSet = new Set(missing.map(String));
+      out.push({
+        calendarKey: cal.key,
+        currentKeyVersion: version,
+        needsMint,
+        rotationPending: !!cal.calKeyRotationPending,
+        collaborators: (cal.collaborators || [])
+          .map((c) => ({ userId: c.userId || c, access: c.access || 'view', identityPublicKey: byId.get(String(c.userId || c)) || null }))
+          .filter((c) => c.identityPublicKey),
+        missingMembers: users
+          .filter((u) => missingSet.has(String(u._id)))
+          .map((u) => ({ userId: u._id, identityPublicKey: u.identityPublicKey })),
+      });
+    }
+    res.json(out);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ── Calendar CRUD ────────────────────────────────────────────────────────────
 
 router.get('/', async (req, res) => {
@@ -298,9 +483,6 @@ router.post('/', async (req, res) => {
   try {
     const { key, name, color, alertsEnabled, sharedWithHousehold, householdAccess, sharedWith, sharedWithOutside, feedUrl, holiday } = req.body;
     const outside = normalizeOutsideList(sharedWithOutside);
-    if (outsideShareBlocked(req, [], outside)) {
-      return res.status(409).json({ error: 'decrypt_required' });
-    }
     let feed;
     if (feedUrl) {
       feed = normalizeFeedUrl(feedUrl);
@@ -338,9 +520,6 @@ router.put('/:key', async (req, res) => {
     const nextOutside = sharedWithOutside !== undefined
       ? normalizeOutsideList(sharedWithOutside)
       : prevOutside;
-    if (outsideShareBlocked(req, prevOutside, nextOutside)) {
-      return res.status(409).json({ error: 'decrypt_required' });
-    }
 
     const updates = {};
     if (name !== undefined)                updates.name                = name;
@@ -376,6 +555,8 @@ router.delete('/:key', async (req, res) => {
     const cal = await CustomCalendar.findOneAndDelete({ key: req.params.key, userId: req.user._id });
     if (!cal) return res.status(404).json({ error: 'Calendar not found' });
     await CalendarInvitation.deleteMany({ calendarKey: cal.key }).catch(() => {});
+    // Signal-parity D1: the CalendarKey envelopes die with the calendar.
+    await ResourceKeyEnvelope.deleteMany({ resourceType: 'calendar', resourceKey: cal.key }).catch(() => {});
     res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ error: err.message });

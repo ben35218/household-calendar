@@ -1,5 +1,5 @@
 const mongoose = require('mongoose');
-const { encFields } = require('./encFields');
+const { encFields, requiredUntilSealed } = require('./encFields');
 
 const candidateRangeSchema = new mongoose.Schema({
   start: { type: Date, required: true },
@@ -10,7 +10,7 @@ const candidateRangeSchema = new mongoose.Schema({
 
 const tripSchema = new mongoose.Schema({
   userId:             { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
-  name:               { type: String, required: true },
+  name:               { type: String, required: requiredUntilSealed },
   destination:        String,
   destinationPlaceId: String,
   destinationTz:      String,   // display label only, e.g. "Europe/Rome"
@@ -46,6 +46,16 @@ const tripSchema = new mongoose.Schema({
     date:            { type: Date, default: Date.now },
     note:            String,
   }],
+  // Signal-parity D2: the current TripKey version for this shared trip. 0 = no
+  // TripKey yet (never shared, or an old plaintext-lane trip pending migration).
+  // A shared trip's Trip + TripItems (+ shared_shared attachments) seal under the
+  // TripKey at this version instead of the household HDK; bumped on revoke/un-
+  // share (rotate + re-seal) via ResourceKeyEnvelope. Mirrors CustomCalendar.
+  tripKeyVersion:         { type: Number, default: 0 },
+  // Set when a collaborator/outside party is removed: the owning household's next
+  // unlocked session must rotate the TripKey so the removed party's key opens
+  // nothing further.
+  tripKeyRotationPending: { type: Boolean, default: false },
   // E2EE dual-write ciphertext (Phase 3+): see models/encFields.js.
   ...encFields,
 }, { timestamps: true });

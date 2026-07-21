@@ -1,5 +1,5 @@
 const mongoose = require('mongoose');
-const { encFields } = require('./encFields');
+const { encFields, requiredUntilSealed } = require('./encFields');
 
 const recurrenceSchema = new mongoose.Schema({
   type: { type: String, enum: ['interval', 'calendar', 'one-time'], required: true },
@@ -12,8 +12,8 @@ const recurrenceSchema = new mongoose.Schema({
 }, { _id: false });
 
 const choreSchema = new mongoose.Schema({
-  userId:               { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
-  title:                { type: String, required: true },
+  userId:               { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: requiredUntilSealed },
+  title:                { type: String, required: requiredUntilSealed },
   instructions:         String,
   description:          String, // legacy — superseded by `instructions`
   recurrence:           recurrenceSchema,
@@ -23,6 +23,9 @@ const choreSchema = new mongoose.Schema({
   // null = no alert. Delivered via push.
   reminderDaysBefore:   { type: Number, default: 0 },
   alert2DaysBefore:     { type: Number, default: null },
+  // Wall-clock time of day the alerts fire, `HH:mm` local. null = the 7am
+  // default (ALERT_HOUR, client-side). Applies to both alert offsets.
+  reminderTime:         { type: String, default: null },
   // Who the alert goes to in a shared household: 'everyone' or 'owner' (creator).
   alertAudience:        { type: String, enum: ['everyone', 'owner'], default: 'everyone' },
   active:               { type: Boolean, default: true },

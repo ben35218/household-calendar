@@ -1,15 +1,15 @@
 const express = require('express');
 const multer = require('multer');
 const Anthropic = require('@anthropic-ai/sdk');
-const Item = require('../models/Item');
-const Manual = require('../models/Manual');
-const Receipt = require('../models/Receipt');
 const { requireAuth } = require('../middleware/auth');
+const { requireAiEnabled } = require('../middleware/aiConsent');
 const { meter } = require('../middleware/usageMeter');
-const { activity } = require('../middleware/activity');
-const { isObjectId, pickRecordEnc } = require('../services/householdKey');
-const { plaintextCreateBlocked, E2EE_REQUIRED_MESSAGE } = require('../services/e2eePolicy');
 
+// Signal-parity C3b: item content CRUD (GET/POST/GET:id/PUT:id/DELETE:id) moved to
+// the unified opaque store — the client reads items from its replica and writes
+// through /records, and fetches an item's manuals/receipts (which stay their own
+// collections) separately. What stays here is the AI photo-scan helper, which
+// returns extracted item JSON the client seals + creates; it touches no DB row.
 const router = express.Router();
 router.use(requireAuth);
 
@@ -42,7 +42,7 @@ For vehicles include relevant customFields: Year, Vehicle Type, Colour, Fuel Typ
 For appliances/equipment include any specs visible on labels (capacity, voltage, wattage, etc.).
 Only include fields that are clearly visible or identifiable from the photo. Always provide a name.`;
 
-router.post('/from-photo', meter('scan'), upload.single('photo'), async (req, res) => {
+router.post('/from-photo', meter('scan'), requireAiEnabled, upload.single('photo'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'photo is required' });
   try {
     const apiKey = process.env.ANTHROPIC_API_KEY;
@@ -73,84 +73,6 @@ router.post('/from-photo', meter('scan'), upload.single('photo'), async (req, re
     if (err instanceof SyntaxError) {
       return res.status(422).json({ error: 'Could not extract item details from that photo. Try adding the item manually.' });
     }
-    res.status(500).json({ error: err.message });
-  }
-});
-
-router.get('/', async (req, res) => {
-  try {
-    const { category, search, type } = req.query;
-    const filter = { userId: { $in: req.scopeIds } };
-    if (category) filter.categoryId = category;
-    if (type) filter.type = type;
-    if (search) filter.$text = { $search: search };
-
-    const items = await Item.find(filter)
-      .populate('categoryId', 'name icon color')
-      .populate('propertyId', 'name icon color')
-      .sort('name');
-    res.json(items);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-router.post('/', activity('itemAdded'), async (req, res) => {
-  try {
-    let enc;
-    try { enc = pickRecordEnc(req.body); }
-    catch (msg) { return res.status(400).json({ error: String(msg) }); }
-    if (plaintextCreateBlocked(req.household, enc.enc)) {
-      return res.status(400).json({ error: E2EE_REQUIRED_MESSAGE });
-    }
-    const item = await Item.create({
-      ...req.body,
-      ...(isObjectId(req.body._id) ? { _id: req.body._id } : {}),
-      userId: req.user._id,
-      ...enc,
-    });
-    res.status(201).json(item);
-  } catch (err) {
-    res.status(400).json({ error: err.message });
-  }
-});
-
-router.get('/:id', async (req, res) => {
-  const item = await Item.findOne({ _id: req.params.id, userId: { $in: req.scopeIds } })
-    .populate('categoryId', 'name icon color')
-    .populate('propertyId', 'name icon color');
-  if (!item) return res.status(404).json({ error: 'Not found' });
-  const [manuals, receipts] = await Promise.all([
-    Manual.find({ itemId: item._id }),
-    Receipt.find({ itemId: item._id }).sort('-createdAt'),
-  ]);
-  res.json({ ...item.toObject(), manuals, receipts });
-});
-
-router.put('/:id', async (req, res) => {
-  try {
-    const item = await Item.findOneAndUpdate(
-      { _id: req.params.id, userId: { $in: req.scopeIds } },
-      req.body,
-      { new: true, runValidators: true }
-    ).populate('categoryId', 'name icon color');
-    if (!item) return res.status(404).json({ error: 'Not found' });
-    res.json(item);
-  } catch (err) {
-    res.status(400).json({ error: err.message });
-  }
-});
-
-router.delete('/:id', async (req, res) => {
-  try {
-    const item = await Item.findOneAndDelete({ _id: req.params.id, userId: { $in: req.scopeIds } });
-    if (!item) return res.status(404).json({ error: 'Not found' });
-    await Promise.all([
-      Manual.deleteMany({ itemId: item._id }),
-      Receipt.deleteMany({ itemId: item._id }),
-    ]);
-    res.json({ message: 'Deleted' });
-  } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });

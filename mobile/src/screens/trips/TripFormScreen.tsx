@@ -2,10 +2,10 @@ import React, { useEffect, useRef, useState } from 'react';
 import { View, Text, StyleSheet, ActivityIndicator, TouchableOpacity, Alert } from 'react-native';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Ionicons } from '@expo/vector-icons';
-import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
+import { useNavigation, useRoute, RouteProp, StackActions } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { tripsApi, placesApi, TripStatus, Trip, TripItem, FormAssistField } from '../../api';
-import { sealNew, sealUpdate, openRecord, getHDK } from '../../lib/e2ee';
+import { sealNew, sealUpdate, openRecord, getHDK, loadResourceKeys, currentResourceKeyVersion, sealForResource } from '../../lib/e2ee';
 
 // Encrypted trip content (dates/color stay plaintext).
 const TRIP_ENC = (p: Record<string, unknown>) => ({ name: p.name, destination: p.destination, notes: p.notes });
@@ -51,7 +51,7 @@ export default function TripFormScreen() {
   const { id } = useRoute<Rt>().params || {};
   const isEdit = !!id;
   const qc = useQueryClient();
-  const accent = useCalendarColors().colors.vacations;
+  const accent = useCalendarColors().colors.trips;
 
   const [form, setForm] = useState({
     name: '',
@@ -123,6 +123,22 @@ export default function TripFormScreen() {
     return () => { cancelled = true; };
   }, [tripQ.data]);
 
+  // Seal a Trip update under its TripKey when the trip is outside-shared and this
+  // device holds the key (§D2), else the HDK dual-write. Falls back to the HDK
+  // seal when the TripKey isn't held yet (the owner's reconcile migrates later).
+  async function sealTripPayload(tripId: string, payload: Record<string, unknown>) {
+    const d = tripQ.data as unknown as { trip?: Trip } | undefined;
+    const shared = ((d?.trip?.sharedWithOutside?.length ?? 0) > 0) || ((d?.trip?.collaborators?.length ?? 0) > 0);
+    if (shared && getHDK()) {
+      await loadResourceKeys('trip', tripId).catch(() => {});
+      if (currentResourceKeyVersion(tripId) > 0) {
+        const sealed = await sealForResource('trip', 'Trip', tripId, tripId, TRIP_ENC(payload));
+        if (sealed) return { ...payload, ...sealed };
+      }
+    }
+    return sealUpdate('Trip', tripId, payload, TRIP_ENC(payload));
+  }
+
   const save = useMutation({
     mutationFn: async () => {
       const payload: Record<string, unknown> = {
@@ -136,24 +152,25 @@ export default function TripFormScreen() {
         endDate: form.endDate || undefined,
       };
       if (isEdit) {
-        const res = await tripsApi.update(id!, await sealUpdate('Trip', id!, payload, TRIP_ENC(payload)));
+        // Signal-parity D2: a shared trip seals under its TripKey; a private trip
+        // under the HDK. (A brand-new trip below is never shared yet.)
+        const res = await tripsApi.update(id!, await sealTripPayload(id!, payload));
         return { id: res.data?._id as string | undefined, shareFailed: false };
       }
       const res = await tripsApi.create(await sealNew('Trip', payload, TRIP_ENC(payload)));
       // Apply any invites collected before the trip existed. The trip itself is
       // already saved, so we don't abort on failure (that would risk a duplicate
       // create on retry) — instead we flag it and surface it after navigating.
+      // The trip stays sealed (no decrypt-on-share); we pass a plaintext snapshot
+      // for the invitation display rows, and the owner's reconcile migrates the
+      // trip onto a TripKey on the next unlock (§D2).
       const newId = res.data?._id as string | undefined;
       let shareFailed = false;
       if (newId && pendingEmails.length) {
         try {
-          try {
-            await tripsApi.setShareRecipients(newId, pendingEmails);
-          } catch (e: any) {
-            if (e?.response?.data?.error !== 'decrypt_required') throw e;
-            // A brand-new trip has no items yet; payload holds the plaintext content.
-            await tripsApi.setShareRecipients(newId, pendingEmails, { trip: payload, items: [] });
-          }
+          await tripsApi.setShareRecipients(newId, pendingEmails, {
+            tripName: payload.name as string, destination: payload.destination as string | undefined,
+          });
         } catch {
           shareFailed = true;
         }
@@ -183,7 +200,10 @@ export default function TripFormScreen() {
     mutationFn: () => tripsApi.remove(id!),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['trips'] });
-      navigation.navigate('Vacations');
+      // popTo (not navigate) so the deleted trip's TripDetail + this Edit form are
+      // removed from the back stack — otherwise closing Trips lands back on
+      // the now-deleted trip's form.
+      navigation.dispatch(StackActions.popTo('Trips'));
     },
     onError: (e: any) => setError(e.response?.data?.error || 'Delete failed'),
   });
@@ -210,20 +230,16 @@ export default function TripFormScreen() {
   const shareRecipients = isEdit ? serverRecipients : pendingEmails;
   const isShared = shareRecipients.length > 0 || (detail?.trip?.collaborators?.length ?? 0) > 0;
 
-  // Set the full outside-share list. On an E2EE household the first recipient
-  // flips the trip to plaintext (§9.3), so the server may ask for the decrypted
-  // trip + items — we retry with them (requires the household key to be unlocked).
+  // Set the full outside-share list. Signal-parity D2: sharing no longer flips the
+  // trip to plaintext — the trip stays sealed and migrates onto a TripKey on the
+  // owner's next unlock (maintainKeyHygiene → reconcileTripKeys). We pass a
+  // plaintext { tripName, destination } snapshot (from the decrypted trip) for the
+  // invitation display rows only.
   const setEmails = useMutation({
     mutationFn: async (recipients: ShareRecipient[]) => {
-      try {
-        return (await tripsApi.setShareRecipients(id!, recipients)).data;
-      } catch (e: any) {
-        if (e?.response?.data?.error !== 'decrypt_required') throw e;
-        if (!getHDK() || !detail?.trip) throw new Error('Unlock your account, then try sharing again.');
-        const decTrip = await openRecord('Trip', detail.trip as any);
-        const decItems = await Promise.all((detail.items || []).map((i) => openRecord('TripItem', i as any)));
-        return (await tripsApi.setShareRecipients(id!, recipients, { trip: decTrip, items: decItems })).data;
-      }
+      const dec = detail?.trip ? await openRecord('Trip', detail.trip as any) : undefined;
+      const snapshot = dec ? { tripName: (dec as any).name, destination: (dec as any).destination } : undefined;
+      return (await tripsApi.setShareRecipients(id!, recipients, snapshot)).data;
     },
     onSuccess: () => qc.invalidateQueries({ queryKey: ['trips', id] }),
     onError: (e: any) => setInviteError(e?.message || e?.response?.data?.error || 'Please try again.'),
@@ -279,7 +295,8 @@ export default function TripFormScreen() {
     mutationFn: () => tripsApi.leaveShare(id!),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['trips'] });
-      navigation.navigate('Vacations');
+      // popTo so the left trip's detail + this form don't linger in the back stack.
+      navigation.dispatch(StackActions.popTo('Trips'));
     },
     onError: (e: any) => setError(e.response?.data?.error || 'Could not leave trip'),
   });
@@ -315,7 +332,7 @@ export default function TripFormScreen() {
   return (
     <Screen>
       <FormAssist
-        formType="trip / vacation"
+        formType="trip"
         placeholder={'Describe the trip, e.g. "10-day trip to Rome in May, booked"'}
         fields={ASSIST_FIELDS}
         current={{ ...form }}

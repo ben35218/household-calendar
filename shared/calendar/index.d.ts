@@ -15,7 +15,7 @@ export interface AssembleInput {
   fromDate: Date | string | number;
   toDate: Date | string | number;
   selfId?: string | null;
-  groceryShoppingDay?: number;
+  groceryShoppingDay?: number | null;
   groceryFrequency?: 'weekly' | 'biweekly';
   groceryAnchor?: string | null;
 }
@@ -48,6 +48,11 @@ export interface CalendarData {
 }
 
 export function computeNextDueDate(task: AnyRecord, fromDate?: Date | string | number | null): Date | null;
+export function anchorRecurrence<T extends AnyRecord | null | undefined>(recurrence: T, fromDate?: Date | string | number): T;
+export function seedDueDate(recurrence: AnyRecord | null | undefined, fromDate?: Date | string | number): Date | null;
+export function avgKmPerDay(logs: Array<{ reading: number; recordedAt: Date | string }> | null | undefined): number | null;
+export function estimateDateFromKm(nextDueKm: number, currentKm: number, kmPerDay: number | null | undefined): Date | null;
+export function computeNextDueKm(task: { intervalKm?: number | null }, serviceKm: number | null | undefined): number | null;
 export function expandRecurringEvent(event: AnyRecord, fromDate: Date, toDate: Date): AnyRecord[];
 export function expandRecurringTaskChore(item: AnyRecord, fromDate: Date, toDate: Date): AnyRecord[];
 export function birthdayOccurrences(birthdayDate: Date | string, fromDate: Date, toDate: Date): string[];

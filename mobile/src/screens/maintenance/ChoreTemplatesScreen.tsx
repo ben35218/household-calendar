@@ -13,21 +13,20 @@ import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { choresApi, ChoreTemplate } from '../../api';
-import { Input, SegmentedControl, Badge, SectionHeader, CenteredLoader } from '../../components/ui';
+import { createChoreFromTemplate } from '../../lib/taskTemplates';
+import { Input, Badge, SectionHeader, CenteredLoader } from '../../components/ui';
 import { recurrenceLabelShort, mdiName } from '../../lib/recurrence';
 import { useCalendarColors } from '../../lib/calendarPrefs';
 import { MaintenanceStackParamList } from '../../navigation/MaintenanceNavigator';
 import { colors, radius, spacing } from '../../theme';
 
 type Nav = NativeStackNavigationProp<MaintenanceStackParamList, 'ChoreTemplates'>;
-type Filter = 'available' | 'all';
 
 export default function ChoreTemplatesScreen() {
   const navigation = useNavigation<Nav>();
   const qc = useQueryClient();
   const accent = useCalendarColors().colors.chores;
   const [search, setSearch] = useState('');
-  const [filter, setFilter] = useState<Filter>('available');
 
   const templatesQ = useQuery({
     queryKey: ['chore-templates'],
@@ -35,16 +34,24 @@ export default function ChoreTemplatesScreen() {
   });
   const choresQ = useQuery({ queryKey: ['chores', 'list'], queryFn: async () => (await choresApi.list()).data });
 
+  // Templates are reusable — a household may add the same one more than once.
+  // We still track which are already in use to show a non-blocking "In Use" hint.
   const usedIds = useMemo(
     () => new Set((choresQ.data ?? []).map((c: any) => c.templateId).filter(Boolean) as string[]),
     [choresQ.data]
   );
 
+  // Instantiation is client-side now (Signal-parity D4): the template's chore
+  // is built + sealed on-device and created through the ordinary POST /chores.
   const create = useMutation({
-    mutationFn: (templateId: string) => choresApi.fromTemplate({ templateIds: [templateId] }),
-    onSuccess: (res) => {
+    mutationFn: async (templateId: string) => {
+      const tpl = templatesQ.data?.find((t) => t.id === templateId);
+      if (!tpl) throw new Error('Template not found');
+      return createChoreFromTemplate(tpl);
+    },
+    onSuccess: (created) => {
       qc.invalidateQueries({ queryKey: ['chores'] });
-      const created = res.data?.[0];
+      qc.invalidateQueries({ queryKey: ['calendar'] });
       if (created?._id) navigation.replace('ChoreDetail', { id: created._id });
       else navigation.goBack();
     },
@@ -52,7 +59,6 @@ export default function ChoreTemplatesScreen() {
 
   const grouped = useMemo(() => {
     let list = templatesQ.data ?? [];
-    if (filter === 'available') list = list.filter((t) => !usedIds.has(t.id));
     if (search) {
       const q = search.toLowerCase();
       list = list.filter(
@@ -65,7 +71,7 @@ export default function ChoreTemplatesScreen() {
       (g[cat] ||= []).push(t);
     }
     return g;
-  }, [templatesQ.data, usedIds, filter, search]);
+  }, [templatesQ.data, search]);
 
   if (templatesQ.isLoading) {
     return <CenteredLoader color={accent} />;
@@ -75,16 +81,6 @@ export default function ChoreTemplatesScreen() {
     <KeyboardAwareScrollView bottomOffset={24} keyboardShouldPersistTaps="handled" style={styles.screen} contentContainerStyle={styles.content}
       refreshControl={<RefreshControl refreshing={templatesQ.isRefetching} onRefresh={templatesQ.refetch} />}
     >
-      <View style={styles.toolbar}>
-        <SegmentedControl<Filter>
-          value={filter}
-          onChange={setFilter}
-          options={[
-            { label: 'Available', value: 'available' },
-            { label: 'All', value: 'all' },
-          ]}
-        />
-      </View>
       <Input placeholder="Search templates…" value={search} onChangeText={setSearch} />
 
       {Object.entries(grouped).map(([cat, items]) => (
@@ -98,8 +94,8 @@ export default function ChoreTemplatesScreen() {
             return (
               <TouchableOpacity
                 key={tpl.id}
-                style={[styles.card, used && styles.cardUsed]}
-                disabled={used || create.isPending}
+                style={styles.card}
+                disabled={create.isPending}
                 onPress={() => create.mutate(tpl.id)}
                 activeOpacity={0.7}
               >
@@ -117,9 +113,9 @@ export default function ChoreTemplatesScreen() {
                 </View>
                 {busy ? (
                   <ActivityIndicator color={colors.primary} />
-                ) : !used ? (
+                ) : (
                   <Ionicons name="add-circle-outline" size={24} color={colors.primary} />
-                ) : null}
+                )}
               </TouchableOpacity>
             );
           })}
@@ -132,7 +128,6 @@ export default function ChoreTemplatesScreen() {
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: colors.background },
   content: { padding: spacing.md },
-  toolbar: { marginBottom: spacing.md },
   group: { marginBottom: spacing.lg },
   groupCount: { color: colors.textMuted, fontWeight: '600' },
   card: {
@@ -146,7 +141,6 @@ const styles = StyleSheet.create({
     marginBottom: spacing.sm,
     gap: spacing.md,
   },
-  cardUsed: { opacity: 0.6 },
   avatar: {
     width: 40,
     height: 40,

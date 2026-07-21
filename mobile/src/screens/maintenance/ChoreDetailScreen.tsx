@@ -3,7 +3,9 @@ import { View, Text, StyleSheet, Alert } from 'react-native';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import { choresApi } from '../../api';
+import { choresApi, peopleApi } from '../../api';
+import { openRecord } from '../../lib/e2ee';
+import { useAuth } from '../../store/auth';
 import { Button, Card, Screen, ListRow, CenteredLoader, IconAvatar, ScreenTitle, HeaderIconButton, InfoCard } from '../../components/ui';
 import { recurrenceLabel, dueInLabel, mdiName } from '../../lib/recurrence';
 import { useCalendarColors } from '../../lib/calendarPrefs';
@@ -18,14 +20,26 @@ export default function ChoreDetailScreen() {
   const { id } = useRoute<Rt>().params;
   const qc = useQueryClient();
   const accent = useCalendarColors().colors.chores;
+  const { user } = useAuth();
 
   const choreQ = useQuery({
     queryKey: ['chores', id],
-    queryFn: async () => (await choresApi.get(id)).data,
+    queryFn: async () => openRecord('Chore', (await choresApi.get(id)).data),
   });
   const chore = choreQ.data;
 
-  const invalidate = () => qc.invalidateQueries({ queryKey: ['chores'] });
+  // `assignedTo` is a Person id in the opaque store, so resolve the name against
+  // the decrypted people list rather than a populated doc.
+  const peopleQ = useQuery({
+    queryKey: ['people'],
+    queryFn: async () => Promise.all((await peopleApi.list()).data.map((p) => openRecord('Person', p))),
+  });
+
+  const invalidate = () => {
+    qc.invalidateQueries({ queryKey: ['chores'] });
+    // Chores also render on the calendar, which caches under ['calendar'].
+    qc.invalidateQueries({ queryKey: ['calendar'] });
+  };
 
   const del = useMutation({
     mutationFn: () => choresApi.delete(id),
@@ -53,8 +67,16 @@ export default function ChoreDetailScreen() {
     return <CenteredLoader color={accent} />;
   }
 
-  const assignee =
-    typeof chore.assignedTo === 'object' && chore.assignedTo ? chore.assignedTo.name : null;
+  const a = chore.assignedTo;
+  const assigneeId = !a ? null : typeof a === 'string' ? a : a._id;
+  const assigneePerson = assigneeId
+    ? (peopleQ.data ?? []).find((p) => String(p._id) === String(assigneeId))
+    : null;
+  const assignee = assigneePerson
+    ? user && assigneePerson.accountId && String(assigneePerson.accountId) === String(user._id)
+      ? 'You'
+      : assigneePerson.name
+    : null;
   const instructions = chore.instructions || chore.description || '';
 
   return (

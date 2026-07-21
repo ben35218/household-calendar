@@ -13,15 +13,19 @@ const itemRoutes = require('./routes/items');
 const manualRoutes = require('./routes/manuals');
 const receiptRoutes = require('./routes/receipts');
 const taskRoutes = require('./routes/tasks');
+const recordRoutes = require('./routes/records');
 const taskTemplateRoutes = require('./routes/taskTemplates');
 const choreRoutes = require('./routes/chores');
 const choreTemplateRoutes = require('./routes/choreTemplates');
-const calendarRoutes = require('./routes/calendar');
+const eventAttachmentRoutes = require('./routes/eventAttachments');
 const customCalendarRoutes = require('./routes/calendars');
 const invitationRoutes = require('./routes/invitations');
 const calendarChatRoutes = require('./routes/calendarChat');
+const callsRoutes = require('./routes/calls');
 const maintenanceChatRoutes = require('./routes/maintenanceChat');
-const vacationChatRoutes = require('./routes/vacationChat');
+const maintenancePlanChatRoutes = require('./routes/maintenancePlanChat');
+const choresChatRoutes = require('./routes/choresChat');
+const tripsChatRoutes = require('./routes/tripsChat');
 const formAssistRoutes = require('./routes/formAssist');
 const placesRoutes = require('./routes/places');
 const historyRoutes = require('./routes/history');
@@ -31,12 +35,10 @@ const weatherRoutes = require('./routes/weather');
 const peopleRoutes = require('./routes/people');
 const recipeRoutes = require('./routes/recipes');
 const recipeScheduleRoutes = require('./routes/recipeSchedule');
-const inventoryRoutes = require('./routes/inventory');
 const tripRoutes = require('./routes/trips');
 const householdRoutes = require('./routes/household');
 const keyRoutes = require('./routes/keys');
 const notificationRoutes = require('./routes/notifications');
-const storageRoutes = require('./routes/storage');
 const billingRoutes = require('./routes/billing');
 const moderationRoutes = require('./routes/moderation');
 const monetizationConfigRoutes = require('./routes/monetizationConfig');
@@ -83,6 +85,16 @@ app.use(cors({
   // response header if it's exposed explicitly.
   exposedHeaders: ['X-Refreshed-Token'],
 }));
+// Chat requests may carry base64-encoded image/PDF attachments inline, so they
+// need a much larger body limit than the 100kb default. Register a roomy parser
+// on just the chat paths (before the global tight one, which skips a body that's
+// already been parsed) so every other route keeps the small limit.
+const chatJson = express.json({ limit: '15mb' });
+app.use('/api/calendar/chat', chatJson);
+app.use('/api/maintenance/chat', chatJson);
+app.use('/api/maintenance/plan-chat', chatJson);
+app.use('/api/chores/chat', chatJson);
+app.use('/api/trips/chat', chatJson);
 app.use(express.json());
 app.use('/uploads', express.static(path.resolve(process.env.UPLOAD_DIR || './uploads')));
 
@@ -93,14 +105,18 @@ app.use('/api/items', itemRoutes);
 app.use('/api/manuals', manualRoutes);
 app.use('/api/receipts', receiptRoutes);
 app.use('/api/tasks', taskRoutes);
+app.use('/api/records', recordRoutes);
 app.use('/api/task-templates', taskTemplateRoutes);
 app.use('/api/chores', choreRoutes);
 app.use('/api/chore-templates', choreTemplateRoutes);
 app.use('/api/calendar/chat', calendarChatRoutes);
+app.use('/api/calls', callsRoutes);
 app.use('/api/maintenance/chat', maintenanceChatRoutes);
-app.use('/api/vacation/chat', vacationChatRoutes);
+app.use('/api/maintenance/plan-chat', maintenancePlanChatRoutes);
+app.use('/api/chores/chat', choresChatRoutes);
+app.use('/api/trips/chat', tripsChatRoutes);
 app.use('/api/form-assist', formAssistRoutes);
-app.use('/api/calendar', calendarRoutes);
+app.use('/api/calendar', eventAttachmentRoutes);
 app.use('/api/calendars', customCalendarRoutes);
 app.use('/api/invitations', invitationRoutes);
 app.use('/api/places', placesRoutes);
@@ -111,12 +127,10 @@ app.use('/api/weather', weatherRoutes);
 app.use('/api/people', peopleRoutes);
 app.use('/api/recipes', recipeRoutes);
 app.use('/api/recipe-schedule', recipeScheduleRoutes);
-app.use('/api/inventory', inventoryRoutes);
 app.use('/api/trips', tripRoutes);
 app.use('/api/household', householdRoutes);
 app.use('/api/keys', keyRoutes);
 app.use('/api/notifications', notificationRoutes);
-app.use('/api/storage', storageRoutes);
 app.use('/api/billing', billingRoutes);
 app.use('/api/moderation', moderationRoutes);
 // Admin-only monetization config (consumed by the separate admin web app).

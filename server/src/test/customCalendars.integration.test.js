@@ -116,33 +116,26 @@ test('validation: bad keys are rejected; duplicate keys conflict', async () => {
   assert.equal(dup.status, 400);
 });
 
-test('events can live on a custom calendar id', async () => {
-  const { owner } = await setupHouseholdOfTwo();
-  const cal = await createCalendar(owner.auth);
-
-  const event = await request().post('/api/calendar/events')
-    .set('Authorization', owner.auth)
-    .send({ calendarType: cal.body.key, title: 'Practice', startDate: '2026-09-01T16:00:00.000Z', allDay: false });
-  assert.equal(event.status, 201);
-  assert.equal(event.body.calendarType, cal.body.key);
-});
+// Event CRUD moved to the unified opaque /records store in C3b (the per-collection
+// /calendar/events routes were deleted), and per-event calendar-access enforcement
+// (view vs full, feed/holiday read-only) moved to CalendarKey possession + the
+// client — the content-blind server can't see an event's calendarType. So the
+// tests below assert only the calendar-level surface (/api/calendars): sharing
+// tiers, the `access`/`mine` flags, and the invitation lifecycle. Event-storage
+// and resource-lane scoping are covered by records.integration.test.js.
 
 // ── Outside-household sharing (CalendarInvitation flow, §9.5) ────────────────
 
-test('outside share: invitation lifecycle grants and revokes live event access', async () => {
+test('outside share: invitation lifecycle grants and revokes calendar access', async () => {
   const { owner } = await setupHouseholdOfTwo();
   const outsider = await registerUser({ firstName: 'Piper' });
 
-  // Owner shares a calendar with the outsider's email + puts an event on it.
+  // Owner shares a calendar with the outsider's email.
   const cal = await createCalendar(owner.auth, {
     name: 'Carpool',
     sharedWithOutside: [outsider.user.email.toUpperCase()], // case-insensitive
   });
   assert.equal(cal.status, 201);
-  const event = await request().post('/api/calendar/events')
-    .set('Authorization', owner.auth)
-    .send({ calendarType: cal.body.key, title: 'Pickup', startDate: '2026-09-02T15:00:00.000Z', allDay: false });
-  assert.equal(event.status, 201);
 
   // The outsider sees a pending invitation (resolved to their account).
   const inbox = await request().get('/api/calendars/invitations').set('Authorization', outsider.auth);
@@ -153,11 +146,13 @@ test('outside share: invitation lifecycle grants and revokes live event access',
   assert.equal(inv.calendarName, 'Carpool');
   assert.equal(String(inv.toUserId), String(outsider.user._id));
 
-  // Before accepting: no calendar, no events.
+  // Before accepting: no calendar.
   let calList = await request().get('/api/calendars').set('Authorization', outsider.auth);
   assert.ok(!calList.body.some((c) => c.key === cal.body.key));
 
-  // Accept → the calendar appears (read-only, sharing details stripped)…
+  // Accept → the calendar appears (read-only, sharing details stripped). The
+  // events on it are read via the CalendarKey wrapped to this collaborator (D1),
+  // served by the /records resource lane — not a server calendar feed.
   const accept = await request().post(`/api/calendars/invitations/${inv._id}/accept`)
     .set('Authorization', outsider.auth);
   assert.equal(accept.status, 200);
@@ -169,24 +164,10 @@ test('outside share: invitation lifecycle grants and revokes live event access',
   assert.deepEqual(shared.sharedWithOutside, []);
   assert.deepEqual(shared.sharedWith, []);
   assert.equal(shared.sharedWithHousehold, false);
+  // Default outside access is View Only (the client keys read-only mode off this).
+  assert.equal(shared.access, 'view');
 
-  // …and the owner's event shows on the outsider's calendar range.
-  const range = await request().get('/api/calendar')
-    .set('Authorization', outsider.auth)
-    .query({ from: '2026-09-01T00:00:00.000Z', to: '2026-09-08T00:00:00.000Z' });
-  assert.equal(range.status, 200);
-  assert.ok(range.body.events.some((e) => e.title === 'Pickup'));
-
-  // Default outside access is View Only: reads flag readOnly, writes 403.
-  const detail = await request().get(`/api/calendar/events/${event.body._id}`)
-    .set('Authorization', outsider.auth);
-  assert.equal(detail.status, 200);
-  assert.equal(detail.body.readOnly, true);
-  const edit = await request().put(`/api/calendar/events/${event.body._id}`)
-    .set('Authorization', outsider.auth).send({ title: 'Hijacked' });
-  assert.equal(edit.status, 403);
-
-  // Owner removes the email → invitation deleted, access revoked.
+  // Owner removes the email → invitation deleted, calendar access revoked.
   const unshare = await request().put(`/api/calendars/${cal.body.key}`)
     .set('Authorization', owner.auth).send({ sharedWithOutside: [] });
   assert.equal(unshare.status, 200);
@@ -194,10 +175,6 @@ test('outside share: invitation lifecycle grants and revokes live event access',
   assert.ok(!inbox2.body.some((i) => i.calendarKey === cal.body.key));
   calList = await request().get('/api/calendars').set('Authorization', outsider.auth);
   assert.ok(!calList.body.some((c) => c.key === cal.body.key));
-  const range2 = await request().get('/api/calendar')
-    .set('Authorization', outsider.auth)
-    .query({ from: '2026-09-01T00:00:00.000Z', to: '2026-09-08T00:00:00.000Z' });
-  assert.ok(!range2.body.events.some((e) => e.title === 'Pickup'));
 });
 
 test('outside share: decline grants nothing; declining after accept gives up access', async () => {
@@ -245,70 +222,40 @@ test('outside share: an email without an account is claimed at registration', as
 
 // ── Access levels: View Only vs Full Access ──────────────────────────────────
 
-test('member access levels: view-only blocks event writes; full access allows them', async () => {
+test('member access levels: the calendar carries the member’s view/full access flag', async () => {
   const { owner, member } = await setupHouseholdOfTwo();
   const cal = await createCalendar(owner.auth, {
     name: 'Projects',
     sharedWith: [{ userId: member.user._id, access: 'view' }],
   });
-  const event = await request().post('/api/calendar/events')
-    .set('Authorization', owner.auth)
-    .send({ calendarType: cal.body.key, title: 'Kickoff', startDate: '2026-09-03T10:00:00.000Z', allDay: false });
-  assert.equal(event.status, 201);
 
-  // The member sees the calendar with access: 'view'…
+  // The member sees the calendar with access: 'view' (the client keys read-only
+  // mode off this; the content-blind /records store no longer enforces per-event
+  // write access — CalendarKey possession + the client do).
   const list = await request().get('/api/calendars').set('Authorization', member.auth);
-  const seen = list.body.find((c) => c.key === cal.body.key);
-  assert.equal(seen.access, 'view');
+  assert.equal(list.body.find((c) => c.key === cal.body.key).access, 'view');
 
-  // …reads the event flagged readOnly, and can't write.
-  const detail = await request().get(`/api/calendar/events/${event.body._id}`).set('Authorization', member.auth);
-  assert.equal(detail.body.readOnly, true);
-  const edit = await request().put(`/api/calendar/events/${event.body._id}`)
-    .set('Authorization', member.auth).send({ title: 'Nope' });
-  assert.equal(edit.status, 403);
-  const del = await request().delete(`/api/calendar/events/${event.body._id}`).set('Authorization', member.auth);
-  assert.equal(del.status, 403);
-  const create = await request().post('/api/calendar/events')
-    .set('Authorization', member.auth)
-    .send({ calendarType: cal.body.key, title: 'Sneaky', startDate: '2026-09-04T10:00:00.000Z' });
-  assert.equal(create.status, 403);
-
-  // Owner upgrades to full access → the member can now write.
+  // Owner upgrades to full access → the flag flips.
   const upgrade = await request().put(`/api/calendars/${cal.body.key}`)
     .set('Authorization', owner.auth)
     .send({ sharedWith: [{ userId: member.user._id, access: 'full' }] });
   assert.equal(upgrade.status, 200);
-  const edit2 = await request().put(`/api/calendar/events/${event.body._id}`)
-    .set('Authorization', member.auth).send({ title: 'Renamed by member' });
-  assert.equal(edit2.status, 200);
-  assert.equal(edit2.body.title, 'Renamed by member');
+  const list2 = await request().get('/api/calendars').set('Authorization', member.auth);
+  assert.equal(list2.body.find((c) => c.key === cal.body.key).access, 'full');
 });
 
-test('household-wide view-only calendar: members read but cannot write; the owner still can', async () => {
+test('household-wide view-only calendar: members see access:view', async () => {
   const { owner, member } = await setupHouseholdOfTwo();
   const cal = await createCalendar(owner.auth, {
     name: 'Announcements',
     sharedWithHousehold: true,
     householdAccess: 'view',
   });
-  const event = await request().post('/api/calendar/events')
-    .set('Authorization', owner.auth)
-    .send({ calendarType: cal.body.key, title: 'Read me', startDate: '2026-09-05T10:00:00.000Z' });
-  assert.equal(event.status, 201);
-
   const list = await request().get('/api/calendars').set('Authorization', member.auth);
   assert.equal(list.body.find((c) => c.key === cal.body.key).access, 'view');
-
-  const memberEdit = await request().put(`/api/calendar/events/${event.body._id}`)
-    .set('Authorization', member.auth).send({ title: 'Nope' });
-  assert.equal(memberEdit.status, 403);
-  const ownerEdit = await request().put(`/api/calendar/events/${event.body._id}`)
-    .set('Authorization', owner.auth).send({ title: 'Still mine' });
-  assert.equal(ownerEdit.status, 200);
 });
 
-test('full-access outside collaborator can create and edit events; the owner sees them', async () => {
+test('full-access outside collaborator: the invitation carries access:full', async () => {
   const { owner } = await setupHouseholdOfTwo();
   const outsider = await registerUser({ firstName: 'Remy' });
 
@@ -319,34 +266,13 @@ test('full-access outside collaborator can create and edit events; the owner see
   const inbox = await request().get('/api/calendars/invitations').set('Authorization', outsider.auth);
   const inv = inbox.body.find((i) => i.calendarKey === cal.body.key);
   assert.equal(inv.access, 'full');
-  await request().post(`/api/calendars/invitations/${inv._id}/accept`).set('Authorization', outsider.auth);
+  const accept = await request().post(`/api/calendars/invitations/${inv._id}/accept`).set('Authorization', outsider.auth);
+  assert.equal(accept.status, 200);
 
-  // Collaborator creates an event on the shared calendar…
-  const created = await request().post('/api/calendar/events')
-    .set('Authorization', outsider.auth)
-    .send({ calendarType: cal.body.key, title: 'Pickup swap', startDate: '2026-09-06T09:00:00.000Z', allDay: false });
-  assert.equal(created.status, 201);
-
-  // …the owner sees it on their range and can edit it; the collaborator can
-  // edit the owner's events too (no readOnly flag).
-  const ownerRange = await request().get('/api/calendar')
-    .set('Authorization', owner.auth)
-    .query({ from: '2026-09-05T00:00:00.000Z', to: '2026-09-08T00:00:00.000Z' });
-  assert.ok(ownerRange.body.events.some((e) => e.title === 'Pickup swap'));
-  const ownerEdit = await request().put(`/api/calendar/events/${created.body._id}`)
-    .set('Authorization', owner.auth).send({ title: 'Pickup swap (moved)' });
-  assert.equal(ownerEdit.status, 200);
-
-  const detail = await request().get(`/api/calendar/events/${created.body._id}`).set('Authorization', outsider.auth);
-  assert.equal(detail.body.readOnly, undefined);
-
-  // Owner downgrades to view → the collaborator's writes stop.
-  await request().put(`/api/calendars/${cal.body.key}`)
-    .set('Authorization', owner.auth)
-    .send({ sharedWithOutside: [{ email: outsider.user.email, access: 'view' }] });
-  const blocked = await request().put(`/api/calendar/events/${created.body._id}`)
-    .set('Authorization', outsider.auth).send({ title: 'Nope' });
-  assert.equal(blocked.status, 403);
+  // The accepted calendar carries the full-access flag (the client offers writes;
+  // the collaborator holds the CalendarKey to seal events into the /records lane).
+  const list = await request().get('/api/calendars').set('Authorization', outsider.auth);
+  assert.equal(list.body.find((c) => c.key === cal.body.key).access, 'full');
 });
 
 // ── Subscribed (ICS feed) calendars ──────────────────────────────────────────
@@ -374,28 +300,9 @@ test('feed subscription: a non-http(s) feed URL is rejected', async () => {
   assert.equal(bad.body.error, 'invalid_feed_url');
 });
 
-test('feed subscription: events are read-only — even the owner cannot write', async () => {
-  const { owner, member } = await setupHouseholdOfTwo();
-  const cal = await createCalendar(owner.auth, {
-    name: 'Sports',
-    sharedWithHousehold: true,
-    feedUrl: 'https://example.com/sports.ics',
-  });
-  assert.equal(cal.status, 201);
-
-  // The owner (full access to every other custom calendar) cannot create an
-  // event here — the feed is the sole source of its events.
-  const ownerCreate = await request().post('/api/calendar/events')
-    .set('Authorization', owner.auth)
-    .send({ calendarType: cal.body.key, title: 'Injected', startDate: '2026-09-01T16:00:00.000Z' });
-  assert.equal(ownerCreate.status, 403);
-
-  // And a housemate likewise cannot write.
-  const memberCreate = await request().post('/api/calendar/events')
-    .set('Authorization', member.auth)
-    .send({ calendarType: cal.body.key, title: 'Injected', startDate: '2026-09-01T16:00:00.000Z' });
-  assert.equal(memberCreate.status, 403);
-});
+// (Feed calendars' events are computed client-side from the ICS source and are
+// never CalendarEvent/Record rows, so their read-only nature is a client concern
+// now — the deleted /calendar/events route used to reject writes here.)
 
 // ── Holiday calendars (client-computed, read-only, shareable) ────────────────
 
@@ -417,25 +324,8 @@ test('holiday calendar: config is stored and reaches a housemate', async () => {
   assert.deepEqual(seen.holiday.disabledIds, ['boxing-day']);
 });
 
-test('holiday calendar: events are read-only — even the owner cannot write', async () => {
-  const { owner, member } = await setupHouseholdOfTwo();
-  const cal = await createCalendar(owner.auth, {
-    name: 'US Holidays',
-    sharedWithHousehold: true,
-    holiday: { country: 'US', selectedRegions: [], disabledIds: [] },
-  });
-  assert.equal(cal.status, 201);
-
-  const ownerCreate = await request().post('/api/calendar/events')
-    .set('Authorization', owner.auth)
-    .send({ calendarType: cal.body.key, title: 'Injected', startDate: '2026-07-04T12:00:00.000Z' });
-  assert.equal(ownerCreate.status, 403);
-
-  const memberCreate = await request().post('/api/calendar/events')
-    .set('Authorization', member.auth)
-    .send({ calendarType: cal.body.key, title: 'Injected', startDate: '2026-07-04T12:00:00.000Z' });
-  assert.equal(memberCreate.status, 403);
-});
+// (Holiday calendars' events are computed client-side; like feeds, their
+// read-only nature is now enforced by the client, not the deleted event route.)
 
 test('holiday calendar: owner can edit its regions/disabled config', async () => {
   const { owner } = await setupHouseholdOfTwo();
@@ -451,7 +341,7 @@ test('holiday calendar: owner can edit its regions/disabled config', async () =>
   assert.deepEqual(edit.body.holiday.selectedRegions, ['Scotland']);
 });
 
-test('outside share fails safe on an E2EE-active household (409 decrypt_required)', async () => {
+test('outside share now succeeds on an E2EE-active household (Signal-parity D1 CalendarKey)', async () => {
   const { owner } = await setupHouseholdOfTwo();
   const cal = await createCalendar(owner.auth);
 
@@ -459,15 +349,20 @@ test('outside share fails safe on an E2EE-active household (409 decrypt_required
   const hh = await request().get('/api/household').set('Authorization', owner.auth);
   await Household.updateOne({ _id: hh.body._id }, { $set: { e2eeActive: true } });
 
-  const blocked = await request().put(`/api/calendars/${cal.body.key}`)
+  // D1 replaced the old 409 fail-safe: sharing outside is allowed because the
+  // events seal under a CalendarKey wrapped to the collaborator (no plaintext
+  // feed). The owner's device provisions the CalendarKey after the share.
+  const shared = await request().put(`/api/calendars/${cal.body.key}`)
     .set('Authorization', owner.auth).send({ sharedWithOutside: ['friend@example.com'] });
-  assert.equal(blocked.status, 409);
-  assert.equal(blocked.body.error, 'decrypt_required');
+  assert.equal(shared.status, 200);
 
-  // Non-sharing edits still work.
-  const rename = await request().put(`/api/calendars/${cal.body.key}`)
-    .set('Authorization', owner.auth).send({ name: 'Still Editable' });
-  assert.equal(rename.status, 200);
+  const mint = await request().post(`/api/calendars/${cal.body.key}/keys`)
+    .set('Authorization', owner.auth)
+    .send({ keyVersion: 1, household: { hdkVersion: 1, wrappedKey: b64u(120) } });
+  assert.equal(mint.status, 201);
+  const keys = await request().get(`/api/calendars/${cal.body.key}/keys`).set('Authorization', owner.auth);
+  assert.equal(keys.body.currentKeyVersion, 1);
+  assert.equal(keys.body.household.length, 1);
 
   await Household.updateOne({ _id: hh.body._id }, { $set: { e2eeActive: false } });
 });

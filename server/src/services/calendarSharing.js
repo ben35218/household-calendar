@@ -23,6 +23,14 @@ const OUTSIDE_SHARED_MATCH = {
   ],
 };
 
+// Whether a calendar is outside-shared (an outside invitation is pending OR a
+// collaborator has joined) — the trigger for the Signal-parity D1 CalendarKey
+// (its events seal under the CalendarKey rather than the household HDK).
+function isCalendarOutsideShared(cal) {
+  const has = (a) => Array.isArray(a) && a.length > 0;
+  return !!(cal && (has(cal.sharedWithOutside) || has(cal.collaborators)));
+}
+
 // The calendarType keys of every outside-shared calendar owned by this scope.
 async function outsideSharedCalendarKeys(CustomCalendar, scopeIds) {
   const rows = await CustomCalendar
@@ -88,6 +96,7 @@ async function canWriteCalendarType(CustomCalendar, { userId, scopeIds }, calend
 
 module.exports = {
   OUTSIDE_SHARED_MATCH,
+  isCalendarOutsideShared,
   outsideSharedCalendarKeys,
   excludeOutsideCalendarFilter,
   normalizeMemberEntry,

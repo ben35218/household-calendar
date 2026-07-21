@@ -1,5 +1,5 @@
 const mongoose = require('mongoose');
-const { encFields } = require('./encFields');
+const { encFields, requiredUntilSealed } = require('./encFields');
 
 const recurrenceSchema = new mongoose.Schema({
   type: { type: String, enum: ['interval', 'calendar', 'one-time'], required: true },
@@ -12,10 +12,13 @@ const recurrenceSchema = new mongoose.Schema({
 }, { _id: false });
 
 const taskSchema = new mongoose.Schema({
-  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: requiredUntilSealed },
   itemId: { type: mongoose.Schema.Types.ObjectId, ref: 'Item' },
   categoryId:    { type: mongoose.Schema.Types.ObjectId, ref: 'Category' },
-  title: { type: String, required: true },
+  title: { type: String, required: requiredUntilSealed },
+  // MaterialCommunityIcons glyph (from the source template or user-picked);
+  // the mobile app falls back to the category icon when this is absent.
+  icon: String,
   description: String,
   instructions: String,
   recurrence: recurrenceSchema,
@@ -29,6 +32,9 @@ const taskSchema = new mongoose.Schema({
   // alert on the due date itself. null = no alert. Delivered via push.
   reminderDaysBefore: { type: Number, default: 0 },
   alert2DaysBefore:   { type: Number, default: null },
+  // Wall-clock time of day the alerts fire, `HH:mm` local. null = the 7am
+  // default (ALERT_HOUR, client-side). Applies to both alert offsets.
+  reminderTime:       { type: String, default: null },
   // Who the alert goes to in a shared household: 'everyone' or 'owner' (the
   // member who created the task). Only meaningful with >1 member.
   alertAudience: { type: String, enum: ['everyone', 'owner'], default: 'everyone' },

@@ -1,28 +1,84 @@
 import React, { useState } from 'react';
-import { View, Text, StyleSheet, KeyboardAvoidingView } from 'react-native';
+import { View, Text, StyleSheet, Alert } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useAuth } from '../../store/auth';
+import { passkeysSupported } from '../../lib/passkeys';
 import { Button, Input } from '../../components/ui';
 import { spacing } from '../../theme';
-import { authStyles, authInputProps, AUTH_PRIMARY_BTN_COLOR, keyboardBehavior } from './authStyles';
+import { authStyles, authInputProps, AUTH_PRIMARY_BTN_COLOR } from './authStyles';
+import { AuthScaffold } from './AuthScaffold';
 import type { AuthStackParamList } from '../../navigation/AuthNavigator';
 
+// Registration establishes the account's primary unlock factor. A passkey is the
+// preferred path (no password to remember, and it silently unlocks E2EE after a
+// relaunch/logout); a password is the alternative for people who want one or on
+// devices without a passkey. Either way the recovery code (shown right after) is
+// the backstop. See docs/PASSWORDLESS-E2EE-PLAN.md.
 export default function RegisterScreen() {
   const nav = useNavigation<NativeStackNavigationProp<AuthStackParamList>>();
-  const { register } = useAuth();
+  const { register, registerWithPasskey } = useAuth();
+  const supportsPasskey = passkeysSupported();
+
   const [firstName, setFirstName] = useState('');
   const [lastName, setLastName] = useState('');
   const [email, setEmail] = useState('');
+  // 'passkey' when the device supports it (preferred); otherwise the password
+  // path is the only option.
+  const [mode, setMode] = useState<'passkey' | 'password'>(supportsPasskey ? 'passkey' : 'password');
   const [password, setPassword] = useState('');
+  const [confirm, setConfirm] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
-  async function handleRegister() {
-    setLoading(true);
+  function validName(): boolean {
+    if (!firstName.trim() || !email.trim()) {
+      setError('Enter your first name and email.');
+      return false;
+    }
+    return true;
+  }
+
+  async function createWithPasskey() {
     setError('');
+    if (!validName()) return;
+    setLoading(true);
     try {
-      await register({ email: email.trim(), password, firstName: firstName.trim(), lastName: lastName.trim() });
+      await registerWithPasskey({
+        email: email.trim(), firstName: firstName.trim(), lastName: lastName.trim(),
+      });
+    } catch (e: any) {
+      // registerWithPasskey rolls the account back and throws a friendly message
+      // when the passkey ceremony doesn't complete. Surface it as a popup with a
+      // clear next step — the inline error is too easy to miss below the fold.
+      const serverError = e?.response?.data?.error;
+      Alert.alert(
+        'Couldn’t finish Face ID setup',
+        serverError || e?.message || 'Face ID / passkey setup didn’t complete on this device.',
+        [
+          { text: 'Try again', onPress: createWithPasskey },
+          { text: 'Use a password', style: 'cancel', onPress: () => { setMode('password'); setError(''); } },
+        ],
+      );
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function createWithPassword() {
+    setError('');
+    if (!validName()) return;
+    if (password.length < 8) {
+      setError('Use a password of at least 8 characters.');
+      return;
+    }
+    if (password !== confirm) {
+      setError('Passwords do not match.');
+      return;
+    }
+    setLoading(true);
+    try {
+      await register({ email: email.trim(), firstName: firstName.trim(), lastName: lastName.trim(), password });
     } catch (e: any) {
       setError(e?.response?.data?.error || 'Registration failed');
     } finally {
@@ -31,17 +87,61 @@ export default function RegisterScreen() {
   }
 
   return (
-    <KeyboardAvoidingView style={authStyles.container} behavior={keyboardBehavior}>
-      <View style={authStyles.inner}>
+    <AuthScaffold>
         <Text style={[authStyles.title, styles.title]}>Create your account</Text>
         <Input label="First name" value={firstName} onChangeText={setFirstName} {...authInputProps} />
         <Input label="Last name (optional)" value={lastName} onChangeText={setLastName} {...authInputProps} />
         <Input label="Email" value={email} onChangeText={setEmail} autoCapitalize="none" keyboardType="email-address" {...authInputProps} />
-        <Input label="Password" value={password} onChangeText={setPassword} secureTextEntry {...authInputProps} />
 
-        {error ? <Text style={authStyles.error}>{error}</Text> : null}
-
-        <Button title="Create account" onPress={handleRegister} loading={loading} color={AUTH_PRIMARY_BTN_COLOR} />
+        {mode === 'passkey' ? (
+          // ── Passkey path (preferred) ──────────────────────────────────────
+          <>
+            <Text style={styles.methodHint}>
+              Sign in with Face ID / Touch ID — no password to remember, and it unlocks your
+              encrypted data automatically.
+            </Text>
+            {error ? <Text style={authStyles.error}>{error}</Text> : null}
+            <Button title="Create account with Face ID" onPress={createWithPasskey} loading={loading} color={AUTH_PRIMARY_BTN_COLOR} />
+            <Text
+              style={[authStyles.link, styles.altLink]}
+              onPress={() => { setMode('password'); setError(''); }}
+            >
+              Prefer a password? Use one instead
+            </Text>
+          </>
+        ) : (
+          // ── Password path ─────────────────────────────────────────────────
+          <>
+            <Input
+              label="Password (min 8 chars)"
+              value={password}
+              onChangeText={setPassword}
+              secureTextEntry
+              autoComplete="new-password"
+              {...authInputProps}
+            />
+            <Input
+              label="Confirm password"
+              value={confirm}
+              onChangeText={setConfirm}
+              secureTextEntry
+              autoComplete="new-password"
+              {...authInputProps}
+            />
+            {error ? <Text style={authStyles.error}>{error}</Text> : null}
+            <Button title="Create account" onPress={createWithPassword} loading={loading} color={AUTH_PRIMARY_BTN_COLOR} />
+            {supportsPasskey ? (
+              <Text
+                style={[authStyles.link, styles.altLink]}
+                onPress={() => { setMode('passkey'); setError(''); }}
+              >
+                Use Face ID instead (recommended)
+              </Text>
+            ) : (
+              <Text style={styles.methodHint}>Face ID / Touch ID isn’t available on this device.</Text>
+            )}
+          </>
+        )}
 
         <View style={authStyles.footer}>
           <Text style={authStyles.footerText}>Already have an account? </Text>
@@ -49,11 +149,12 @@ export default function RegisterScreen() {
             Sign in
           </Text>
         </View>
-      </View>
-    </KeyboardAvoidingView>
+    </AuthScaffold>
   );
 }
 
 const styles = StyleSheet.create({
   title: { marginTop: 0, marginBottom: spacing.lg, textAlign: 'center' },
+  methodHint: { color: '#6b7280', fontSize: 13, textAlign: 'center', marginBottom: spacing.md, lineHeight: 18 },
+  altLink: { textAlign: 'center', marginTop: spacing.md },
 });

@@ -1,9 +1,22 @@
-import type { InvitationEventSnapshot, Item, Recipe } from '../api';
+import type { InvitationEventSnapshot, Item, ProposedTask, Recipe } from '../api';
 import type { RepeatRule } from '../lib/eventRepeat';
+import type { AssistantId } from '../screens/chat/assistantTabs';
 
 // The Meals screen's segmented panes; also usable as a KitchenHome route param
 // to land on a specific pane.
 export type KitchenPane = 'planner' | 'grocery';
+
+// The decrypted event snapshot "Ask Calen" (event detail) hands the calendar
+// assistant, so "cancel this appointment" resolves without a lookup.
+export interface AssistantFocusEvent {
+  _id: string;
+  title: string;
+  startDate?: string;
+  allDay?: boolean;
+  calendarType?: string;
+  location?: string;
+  phone?: string;
+}
 
 // A contact prefilled from device import (direct or AI-assisted), fed into
 // PersonForm in review mode. All fields optional except type + name.
@@ -33,7 +46,15 @@ export type RootStackParamList = {
   CalendarHome: undefined;
   CalendarDay: { date: string };
   EventForm: { eventId?: string; date?: string; prefill?: Record<string, unknown> };
-  CalendarAssistant: undefined;
+  // Read-only event detail (tapped from a calendar card). `date` is passed on to
+  // the Edit form so it returns to the same day. Household-owned events only —
+  // guest/collaborator copies still open read-only in EventForm.
+  EventDetail: { eventId: string; date?: string };
+  // Unified assistant view (Calendar / Chores / Task Plan swap in place). `initial`
+  // picks which body opens; the switcher swaps the rest without navigating.
+  // `focusEvent` scopes the calendar assistant to one event ("Ask Calen" on the
+  // event detail screen) so cancel/reschedule requests need no lookup.
+  Assistant: { initial?: AssistantId; focusEvent?: AssistantFocusEvent } | undefined;
   CalendarSearch: undefined;
   Calendars: undefined;
   // The "Add Calendar" chooser: pick what kind of calendar to add.
@@ -63,6 +84,21 @@ export type RootStackParamList = {
   // patterns). Edits flow back to the form via lib/repeatDraft. `date` = the
   // event's start date, seeding pattern defaults.
   EventRepeat: { rule: RepeatRule; date: string };
+  // The event's Location view. With `initial` (from the event form) the picked
+  // location flows back via locationDraft; with `eventId` (e.g. Call to Cancel
+  // needing a phone number) the checkmark saves straight onto the event.
+  EventLocation: { eventId?: string; initial?: { location?: string; phone?: string; placeId?: string } } | undefined;
+  // A phone call Calen placed: live status, outcome, summary, and the
+  // confirm-cancellation actions. `id` is the PhoneCall record id.
+  Interaction: { id: string };
+  // Event Action — set up a Calen call to cancel or reschedule this appointment
+  // (pick the action, answer the fee question, propose reschedule windows).
+  // Carries the decrypted event snapshot: under E2EE the server (and this
+  // screen, without re-decrypting) can't read the stored row.
+  EventAction: {
+    eventId: string;
+    event: { title: string; startDate: string; phone: string; allDay?: boolean; calendarType?: string };
+  };
 
   // ----- Maintenance (item-centric) -----
   MaintenanceHome: undefined;
@@ -73,9 +109,10 @@ export type RootStackParamList = {
   // browsing templates for a known item. `itemId` links the single-tap task to
   // that item and scopes the "in use" block to the item's property.
   TaskTemplates: { mode?: 'multi'; categoryName?: string; itemId?: string } | undefined;
-  // Review step for the bulk flow: link each selected template to an item
-  // (existing or auto-created), grouped by category.
-  TaskTemplateReview: { templateIds: string[] };
+  // Review step for the bulk flow: link each selected template (or a task Calen
+  // staged in the AI plan chat) to an item — existing or auto-created — grouped
+  // by category.
+  TaskTemplateReview: { templateIds: string[] } | { proposedTasks: ProposedTask[] };
   ItemDetail: { id: string };
   ItemForm: { id?: string; prefill?: Partial<Item> };
   MaintenanceChat: { itemId: string; itemName?: string };
@@ -83,7 +120,8 @@ export type RootStackParamList = {
   // ----- Chores (separate flow) -----
   ChoresHome: undefined;
   ChoreDetail: { id: string };
-  ChoreForm: { id?: string };
+  AddChore: undefined;
+  ChoreForm: { id?: string; prefill?: Record<string, unknown> };
   ChoreTemplates: undefined;
 
   // ----- Kitchen / meal planner -----
@@ -91,7 +129,10 @@ export type RootStackParamList = {
   // used after scheduling a freshly-created recipe so the user lands on it.
   // `pane`: open a specific Meals pane — e.g. shopping-day rows on the
   // calendar jump straight to the Grocery pane.
-  KitchenHome: { scrollToDate?: string; pane?: KitchenPane } | undefined;
+  // `weekStart` (YYYY-MM-DD): a date within the shopping period to show — the
+  // calendar's grocery icon passes its day so the pane opens on that period
+  // rather than the current one.
+  KitchenHome: { scrollToDate?: string; pane?: KitchenPane; weekStart?: string } | undefined;
   // The recipe library (list/search/manage); reached from the Meals view's
   // Recipes button rather than a segmented pane.
   Recipes: undefined;
@@ -108,17 +149,30 @@ export type RootStackParamList = {
   MealPlannerSettings: undefined;
   AddMeal: { date: string };
 
-  // ----- Trips / vacations -----
-  Vacations: undefined;
+  // ----- Trips -----
+  Trips: undefined;
   TripForm: { id?: string };
   TripDetail: { id: string };
   TripItemForm: { tripId: string; itemId?: string; date?: string };
   TripSettle: { id: string };
-  VacationAssistant: { tripId: string; tripName?: string };
+  TripAssistant: { tripId: string; tripName?: string };
 
   // ----- Profile -----
   ProfileHome: undefined;
-  Account: undefined;
+  // `section` deep-links to a collapsible section on the Account screen.
+  Account: { section?: 'account' | 'reminders' | 'security' } | undefined;
+  // The dedicated Privacy & Data screen. `focus` deep-links intent: 'unlock'
+  // (locked-data prompt — auto-presents Face ID) or 'recovery'.
+  PrivacyData: { focus?: 'unlock' | 'recovery' } | undefined;
+  // The recovery-code detail view — explains it + create/replace the code.
+  RecoveryCode: undefined;
+  // Signal-parity F4 — QR device linking. 'show' = the new (locked) device shows
+  // its code; 'scan' = an existing (unlocked) device scans + hands over the keys.
+  LinkDevice: { mode: 'show' | 'scan' };
+  // Dual-control guardian recovery. 'setup' = arm/remove a guardian; 'recover' =
+  // the locked user requests + finishes with their PIN; 'approve' = the guardian
+  // hands over the PIN-locked key. See specs/features/guardian-recovery.md.
+  GuardianRecovery: { mode?: 'setup' | 'recover' | 'approve' } | undefined;
   People: undefined;
   PersonDetail: { id: string };
   PersonForm: {

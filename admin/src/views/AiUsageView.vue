@@ -14,7 +14,7 @@
     </p>
 
     <v-row dense class="mb-4">
-      <v-col cols="12" sm="4">
+      <v-col cols="12" sm="6" md="3">
         <v-card rounded="lg" variant="tonal" color="primary">
           <v-card-text>
             <div class="text-overline">Tokens this week (fleet)</div>
@@ -22,7 +22,15 @@
           </v-card-text>
         </v-card>
       </v-col>
-      <v-col cols="12" sm="4">
+      <v-col cols="12" sm="6" md="3">
+        <v-card rounded="lg" variant="tonal" color="primary">
+          <v-card-text>
+            <div class="text-overline">Call time this week (fleet)</div>
+            <div class="text-h4 font-weight-bold">{{ mins(fleet.callSecondsThisPeriod) }}</div>
+          </v-card-text>
+        </v-card>
+      </v-col>
+      <v-col cols="12" sm="6" md="3">
         <v-card rounded="lg" variant="tonal" :color="fleet.blockedThisPeriod ? 'warning' : 'default'">
           <v-card-text>
             <div class="text-overline">Blocked attempts this week</div>
@@ -30,7 +38,7 @@
           </v-card-text>
         </v-card>
       </v-col>
-      <v-col cols="12" sm="4">
+      <v-col cols="12" sm="6" md="3">
         <v-card rounded="lg" variant="tonal" :color="fleet.flaggedUsers ? 'error' : 'default'">
           <v-card-text>
             <div class="text-overline">Flagged users</div>
@@ -69,6 +77,7 @@
               <th class="text-right">Tokens (week)</th>
               <th>Trend ({{ weeks }}w)</th>
               <th style="min-width: 140px">Budget used</th>
+              <th style="min-width: 130px">Call time (week)</th>
               <th class="text-right">Blocked</th>
               <th>Flags</th>
             </tr>
@@ -94,6 +103,17 @@
                 </template>
                 <span v-else class="text-caption text-medium-emphasis">unlimited</span>
               </td>
+              <td>
+                <template v-if="u.callSecondsLimit != null">
+                  <v-progress-linear
+                    :model-value="Math.min(100, u.callPctOfLimit)" height="6" rounded
+                    :color="u.callPctOfLimit >= 100 ? 'error' : u.callPctOfLimit >= 75 ? 'warning' : 'primary'" />
+                  <span class="text-caption text-medium-emphasis">
+                    {{ mins(u.callSecondsUsed) }} / {{ mins(u.callSecondsLimit) }}<span v-if="u.scope === 'household'"> (pooled)</span>
+                  </span>
+                </template>
+                <span v-else class="text-caption text-medium-emphasis">{{ mins(u.callSecondsUsed) }} · unlimited</span>
+              </td>
               <td class="text-right" :class="{ 'text-warning font-weight-bold': u.blocked > 0 }">
                 {{ u.blocked || '—' }}
               </td>
@@ -104,7 +124,7 @@
               </td>
             </tr>
             <tr v-if="!filtered.length">
-              <td colspan="8" class="text-medium-emphasis py-4">No users match.</td>
+              <td colspan="9" class="text-medium-emphasis py-4">No users match.</td>
             </tr>
           </tbody>
         </v-table>
@@ -128,7 +148,7 @@ const loading = ref(true);
 const weeks = ref(8);
 const search = ref('');
 const items = ref([]);
-const fleet = ref({ tokensThisPeriod: 0, blockedThisPeriod: 0, flaggedUsers: 0 });
+const fleet = ref({ tokensThisPeriod: 0, callSecondsThisPeriod: 0, blockedThisPeriod: 0, flaggedUsers: 0 });
 const resetAt = ref(null);
 
 // Server sorts by current-week tokens desc; flagged users float to the top.
@@ -156,6 +176,15 @@ function fmt(n) {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
   return String(n);
+}
+
+// Call-time budget is in seconds; admins read minutes. Sub-minute stays in
+// seconds so a small value isn't shown as "0m".
+function mins(seconds) {
+  if (seconds == null) return '—';
+  if (seconds < 60) return `${Math.round(seconds)}s`;
+  const m = seconds / 60;
+  return `${Number.isInteger(m) ? m : m.toFixed(1)}m`;
 }
 
 async function load() {

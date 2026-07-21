@@ -16,7 +16,9 @@ const householdInvitationSchema = new mongoose.Schema({
   // populate and survives later renames.
   fromName:      String,
   fromEmail:     String,
-  householdName: { type: String, required: true },
+  // Optional since Signal-parity C2 (the name is sealed content post-drop):
+  // absent → the inbox + email use sender-name framing ("Ben invited you").
+  householdName: { type: String },
 
   // Addressed by EMAIL or by PHONE (exactly one). Phone invites are texted from
   // the inviter's own device (no SMTP) and resolve to an account by the saved

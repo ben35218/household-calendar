@@ -11,8 +11,13 @@ import {
   parseCalendarDate,
   formatCalendarDate,
   mdiName,
+  patchTouchesRecurrence,
+  applyRecurrenceAssistPatch,
+  recurrenceAssistCurrent,
+  ruleToRecurrence,
 } from '../recurrence';
 import { Recurrence } from '../../api';
+import { EMPTY_REPEAT, RepeatRule } from '../eventRepeat';
 
 describe('ordinal', () => {
   it('handles the standard suffixes', () => {
@@ -259,5 +264,64 @@ describe('mdiName', () => {
   it('falls back to broom', () => {
     expect(mdiName(null)).toBe('broom');
     expect(mdiName('')).toBe('broom');
+  });
+});
+
+describe('form-assist recurrence patches', () => {
+  const weekly = (day: number): RepeatRule => ({
+    ...EMPTY_REPEAT,
+    freq: 'weekly',
+    interval: 1,
+    daysOfWeek: [day],
+  });
+
+  it('detects repeat* keys', () => {
+    expect(patchTouchesRecurrence({ repeatWeekday: 6 })).toBe(true);
+    expect(patchTouchesRecurrence({ title: 'x' })).toBe(false);
+  });
+
+  it('changes an existing weekly rule to a new weekday ("laundry on Saturdays")', () => {
+    // Started weekly on Sunday (0); user asks for Saturday (6).
+    const next = applyRecurrenceAssistPatch(weekly(0), { repeatWeekday: 6 });
+    expect(next.freq).toBe('weekly');
+    expect(next.daysOfWeek).toEqual([6]);
+    // The rule the form saves resolves to a Saturday weekly recurrence.
+    expect(ruleToRecurrence(next)).toMatchObject({ type: 'interval', intervalUnit: 'weeks', dayOfWeek: 6 });
+  });
+
+  it('infers weekly frequency from a bare weekday when none is set', () => {
+    const next = applyRecurrenceAssistPatch({ ...EMPTY_REPEAT }, { repeatWeekday: 3 });
+    expect(next.freq).toBe('weekly');
+    expect(next.daysOfWeek).toEqual([3]);
+  });
+
+  it('applies frequency + interval together', () => {
+    const next = applyRecurrenceAssistPatch({ ...EMPTY_REPEAT }, { repeatFrequency: 'monthly', repeatInterval: 3, repeatDayOfMonth: 15 });
+    expect(next.freq).toBe('monthly');
+    expect(next.interval).toBe(3);
+    expect(next.daysOfMonth).toEqual([15]);
+  });
+
+  it('turns repeating off with "none"', () => {
+    const next = applyRecurrenceAssistPatch(weekly(1), { repeatFrequency: 'none' });
+    expect(next.freq).toBe('');
+    expect(ruleToRecurrence(next)).toEqual({ type: 'one-time' });
+  });
+
+  it('ignores out-of-range values', () => {
+    const base = weekly(2);
+    expect(applyRecurrenceAssistPatch(base, { repeatWeekday: 9 }).daysOfWeek).toEqual([2]);
+    expect(applyRecurrenceAssistPatch(base, { repeatDayOfMonth: 40 }).daysOfMonth).toEqual([]);
+    expect(applyRecurrenceAssistPatch(base, { repeatInterval: 0 }).interval).toBe(1);
+  });
+
+  it('projects a rule onto the assist field names', () => {
+    expect(recurrenceAssistCurrent(weekly(6))).toEqual({
+      repeatFrequency: 'weekly',
+      repeatInterval: 1,
+      repeatWeekday: 6,
+      repeatDayOfMonth: null,
+      repeatMonths: [],
+    });
   });
 });

@@ -65,6 +65,12 @@ export async function query<T = Row>(
   return rows;
 }
 
+// Remove one row (a C3 tombstone from the unified sync — the server soft-deletes
+// and the client drops it from the replica).
+export async function remove(collection: string, id: string): Promise<void> {
+  conn().runSync('DELETE FROM records WHERE collection = ? AND id = ?', [collection, id]);
+}
+
 export async function clear(collection: string): Promise<void> {
   conn().runSync('DELETE FROM records WHERE collection = ?', [collection]);
 }

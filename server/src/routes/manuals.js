@@ -5,12 +5,11 @@ const fs = require('fs');
 const axios = require('axios');
 const Manual = require('../models/Manual');
 const Item = require('../models/Item');
-const MaintenanceTask = require('../models/MaintenanceTask');
 const { requireAuth } = require('../middleware/auth');
+const { requireAiEnabled } = require('../middleware/aiConsent');
 const { meter } = require('../middleware/usageMeter');
 const { findManuals } = require('../services/manualLookup');
 const { parseManualForTasks, parseManualBufferForTasks } = require('../services/manualParser');
-const { computeNextDueDate, anchorRecurrence } = require('../services/recurrence');
 
 const router = express.Router();
 router.use(requireAuth);
@@ -47,7 +46,7 @@ const memUpload = multer({
 
 router.post('/items/:itemId/upload', meter('manualParse'), upload.single('file'), async (req, res) => {
   try {
-    const item = await Item.findOne({ _id: req.params.itemId, userId: { $in: req.scopeIds } });
+    const item = await Item.findOne({ _id: req.params.itemId, ...req.scopeFilter });
     if (!item) return res.status(404).json({ error: 'Item not found' });
     if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
 
@@ -79,7 +78,7 @@ router.post('/items/:itemId/upload', meter('manualParse'), upload.single('file')
 
 router.post('/items/:itemId/from-url', meter('manualParse'), async (req, res) => {
   try {
-    const item = await Item.findOne({ _id: req.params.itemId, userId: { $in: req.scopeIds } });
+    const item = await Item.findOne({ _id: req.params.itemId, ...req.scopeFilter });
     if (!item) return res.status(404).json({ error: 'Item not found' });
 
     const { url, title } = req.body;
@@ -109,9 +108,9 @@ router.post('/items/:itemId/from-url', meter('manualParse'), async (req, res) =>
   }
 });
 
-router.post('/items/:itemId/auto-lookup', meter('manualParse'), async (req, res) => {
+router.post('/items/:itemId/auto-lookup', meter('manualParse'), requireAiEnabled, async (req, res) => {
   try {
-    const item = await Item.findOne({ _id: req.params.itemId, userId: { $in: req.scopeIds } });
+    const item = await Item.findOne({ _id: req.params.itemId, ...req.scopeFilter });
     if (!item) return res.status(404).json({ error: 'Item not found' });
 
     let parts;
@@ -145,7 +144,7 @@ router.post('/items/:itemId/auto-lookup', meter('manualParse'), async (req, res)
 
 router.get('/:id/download', async (req, res) => {
   try {
-    const manual = await Manual.findOne({ _id: req.params.id, userId: { $in: req.scopeIds } });
+    const manual = await Manual.findOne({ _id: req.params.id, ...req.scopeFilter });
     if (!manual) return res.status(404).json({ error: 'Not found' });
 
     const filepath = path.join(uploadDir, manual.storageKey);
@@ -165,9 +164,9 @@ router.get('/:id/download', async (req, res) => {
 });
 
 // Parse a saved manual PDF and extract maintenance tasks via Claude
-router.post('/:id/extract-tasks', meter('manualParse'), memUpload.single('file'), async (req, res) => {
+router.post('/:id/extract-tasks', meter('manualParse'), requireAiEnabled, memUpload.single('file'), async (req, res) => {
   try {
-    const manual = await Manual.findOne({ _id: req.params.id, userId: { $in: req.scopeIds } });
+    const manual = await Manual.findOne({ _id: req.params.id, ...req.scopeFilter });
     if (!manual) return res.status(404).json({ error: 'Manual not found' });
 
     // Ephemeral-consent (§9.1 P4b): when the client posts the decrypted manual
@@ -193,56 +192,11 @@ router.post('/:id/extract-tasks', meter('manualParse'), memUpload.single('file')
   }
 });
 
-// Create tasks that were extracted from a manual (called after user reviews and confirms)
-router.post('/:id/create-tasks', async (req, res) => {
-  try {
-    const manual = await Manual.findOne({ _id: req.params.id, userId: { $in: req.scopeIds } });
-    if (!manual) return res.status(404).json({ error: 'Manual not found' });
-
-    // currentKm is the vehicle's current odometer reading, used to seed nextDueKm/lastServiceKm
-    const { tasks, itemId, categoryId, currentKm } = req.body;
-    if (!Array.isArray(tasks) || !tasks.length) {
-      return res.status(400).json({ error: 'tasks array is required' });
-    }
-
-    const created = await Promise.all(
-      tasks.map(async t => {
-        const task = new MaintenanceTask({
-          userId: req.user._id,
-          itemId: itemId || manual.itemId,
-          categoryId: categoryId || undefined,
-          title: t.title,
-          description: [t.description, t.notes].filter(Boolean).join(' — '),
-          priority: t.priority || 'medium',
-          recurrence: t.recurrence?.type ? anchorRecurrence(t.recurrence) : undefined,
-          estimatedDurationMins: t.estimatedDurationMins || undefined,
-          estimatedCost: t.estimatedCost || undefined,
-        });
-
-        // Wire up mileage fields when Claude extracted an intervalKm
-        if (t.intervalKm && currentKm != null) {
-          const intervalKm = Number(t.intervalKm);
-          task.intervalKm = intervalKm;
-          // Next boundary above current odometer
-          const intervals = Math.ceil(Number(currentKm) / intervalKm);
-          task.nextDueKm = intervals * intervalKm;
-          task.lastServiceKm = task.nextDueKm - intervalKm;
-        } else if (t.intervalKm) {
-          task.intervalKm = Number(t.intervalKm);
-        }
-
-        if (task.recurrence?.type) {
-          task.nextDueDate = computeNextDueDate(task, new Date());
-        }
-        return task.save();
-      })
-    );
-
-    res.status(201).json({ created: created.length });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+// POST /:id/create-tasks was removed (Signal-parity D4): it minted plaintext
+// tasks server-side with no `enc` (a write-guard bypass) and computed their
+// nextDueDate here. The client now builds the reviewed extract's tasks itself
+// (lib/taskTemplates.ts: anchorRecurrence/seedDueDate + the mileage-boundary
+// seeding, all from @household/calendar) and creates them sealed via POST /tasks.
 
 // Stream a remote URL through the server so the client can embed it in an iframe
 // without being blocked by X-Frame-Options or CORS. Nothing is stored.
@@ -274,7 +228,7 @@ router.get('/proxy', async (req, res) => {
 
 router.delete('/:id', async (req, res) => {
   try {
-    const manual = await Manual.findOneAndDelete({ _id: req.params.id, userId: { $in: req.scopeIds } });
+    const manual = await Manual.findOneAndDelete({ _id: req.params.id, ...req.scopeFilter });
     if (!manual) return res.status(404).json({ error: 'Not found' });
 
     const filepath = path.join(uploadDir, manual.storageKey);

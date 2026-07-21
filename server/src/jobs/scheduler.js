@@ -9,10 +9,6 @@ const CalendarEvent = require('../models/CalendarEvent');
 const { pushToUser } = require('../services/notify');
 const { isConfigured: pushConfigured } = require('../services/push');
 const { cleanupOrphanUploads } = require('./cleanupOrphanUploads');
-const AuditLog = require('../models/AuditLog');
-const mailer = require('../services/mailer');
-const { isDueForPurge } = require('../services/cloudDeletion');
-const { MANIFEST_MODELS } = require('../routes/storage');
 
 const APP_URL = () => process.env.APP_URL || 'http://localhost:5174';
 
@@ -123,7 +119,7 @@ async function runDailyCheckForHousehold(hh) {
         body: t.itemId?.name ? `${t.title} (${t.itemId.name})` : t.title,
         url: `${APP_URL()}/tasks`, tag: `task-${t._id}`,
       });
-      console.log(`[Scheduler] Task alert: ${t.title} → ${u.email}`);
+      console.log(`[Scheduler] Task alert: ${t._id} → user ${u._id}`); // ids only (C5)
     }
 
     // Chores
@@ -132,7 +128,7 @@ async function runDailyCheckForHousehold(hh) {
       await pushToUser(u, {
         title: 'Chore due', body: c.title, url: `${APP_URL()}/chores`, tag: `chore-${c._id}`,
       });
-      console.log(`[Scheduler] Chore alert: ${c.title} → ${u.email}`);
+      console.log(`[Scheduler] Chore alert: ${c._id} → user ${u._id}`);
     }
 
     // Birthdays — always, to everyone.
@@ -148,7 +144,7 @@ async function runDailyCheckForHousehold(hh) {
         body: turning > 0 ? `${p.name} turns ${turning} today` : `${p.name}'s birthday is today`,
         url: `${APP_URL()}/people`, tag: `bday-${p._id}-${todayStr}`,
       });
-      console.log(`[Scheduler] Birthday alert: ${p.name} → ${u.email}`);
+      console.log(`[Scheduler] Birthday alert: ${p._id} → user ${u._id}`);
     }
   }
 }
@@ -253,55 +249,34 @@ async function fanOutEventReminder(event) {
     url: `${APP_URL()}/calendar`,
     tag: `event-${event._id}-${new Date(event.startDate).toISOString()}`,
   });
-  console.log(`[Scheduler] Event alert: ${event.title}`);
+  console.log(`[Scheduler] Event alert: ${event._id}`);
+}
+
+// ── Periodic HDK rotation flag (Signal-parity plan B2) ──────────────────────
+// The server can't rotate a key it never holds — it only FLAGS households whose
+// current HDK version is older than the interval; the next unlocked member's
+// existing self-heal (ensureHouseholdKey → rotateHouseholdKey) performs the
+// rotation client-side. With the B1 eager re-encrypt + B3 envelope retirement,
+// this bounds how much ciphertext a compromised key can ever expose.
+async function runKeyRotationCheck() {
+  const days = Number(process.env.KEY_ROTATION_INTERVAL_DAYS || 90);
+  if (!days || days <= 0) return; // 0/negative disables the cadence
+  const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+  const res = await Household.updateMany(
+    {
+      currentKeyVersion: { $gte: 1 },
+      keyRotationPending: { $ne: true },
+      $or: [{ lastKeyRotationAt: { $lt: cutoff } }, { lastKeyRotationAt: null }],
+      // Pre-B2 households have no lastKeyRotationAt; use creation age so a
+      // fresh household isn't flagged on day one.
+      createdAt: { $lt: cutoff },
+    },
+    { $set: { keyRotationPending: true } },
+  );
+  if (res.modifiedCount) console.log(`[Scheduler] Flagged ${res.modifiedCount} household(s) for periodic key rotation`);
 }
 
 // ── Cloud-purge sweep (Phase 6, §6.2) ───────────────────────────────────────
-// Sweep users whose 7-day undo window has elapsed and permanently delete their
-// cloud ciphertext, so "store on this device only" is honored.
-//
-// SAFETY: the destructive delete runs ONLY when CLOUD_PURGE_LIVE === 'true'.
-// Until then this is a dry-run — it logs what it *would* purge and changes
-// nothing. The delete path is unverifiable in the current dev env and true
-// download-first isn't fully achievable yet (attachments/uncovered collections),
-// so it stays gated until it can be exercised on staging. See §6 / §9.2.
-const PURGE_LIVE = () => process.env.CLOUD_PURGE_LIVE === 'true';
-
-async function runCloudPurgeSweep(now = new Date()) {
-  const due = await User.find({
-    cloudDeletionState: 'scheduled',
-    cloudDeletionScheduledAt: { $lte: now },
-  });
-  if (!due.length) return;
-
-  for (const user of due) {
-    if (!isDueForPurge(user, now)) continue; // defensive re-check
-    if (!PURGE_LIVE()) {
-      console.log(`[CloudPurge] DRY-RUN would purge cloud data for ${user.email} (scheduled ${user.cloudDeletionScheduledAt?.toISOString?.() || user.cloudDeletionScheduledAt})`);
-      continue;
-    }
-    try {
-      // Delete this solo user's ciphertext across the covered collections.
-      // (Attachment blobs would be swept here too once mobile-full 4c lands.)
-      for (const Model of Object.values(MANIFEST_MODELS)) {
-        await Model.deleteMany({ userId: user._id });
-      }
-      await User.updateOne({ _id: user._id }, {
-        $set: { cloudDeletionState: 'purged', cloudDeletionScheduledAt: null },
-      });
-      await AuditLog.create({
-        userId: user._id,
-        householdId: user.householdId || null,
-        event: 'deletion_purged',
-      });
-      mailer.sendDeletionPurged(user).catch(() => {});
-      console.log(`[CloudPurge] Purged cloud data for ${user.email}`);
-    } catch (err) {
-      console.error(`[CloudPurge] Purge failed for ${user.email}:`, err.message);
-    }
-  }
-}
-
 function startScheduler() {
   cron.schedule('0 * * * *', () => runDailyCheck().catch(err =>
     console.error('[Scheduler] runDailyCheck failed:', err.message)));
@@ -309,13 +284,13 @@ function startScheduler() {
     console.error('[Scheduler] runEventReminderCheck failed:', err.message)));
   cron.schedule('30 3 * * *', () => cleanupOrphanUploads().catch(err =>
     console.error('[Scheduler] cleanupOrphanUploads failed:', err.message)));
-  cron.schedule('0 4 * * *', () => runCloudPurgeSweep().catch(err =>
-    console.error('[Scheduler] runCloudPurgeSweep failed:', err.message)));
-  console.log(`[Scheduler] Per-item push alerts: daily check hourly (fires 07:00 local for tasks/chores/birthdays); event reminders every 15 min; orphan-upload cleanup at 03:30; cloud-purge sweep at 04:00 (${PURGE_LIVE() ? 'LIVE' : 'dry-run'})`);
+  cron.schedule('45 3 * * *', () => runKeyRotationCheck().catch(err =>
+    console.error('[Scheduler] runKeyRotationCheck failed:', err.message)));
+  console.log('[Scheduler] Per-item push alerts: daily check hourly (fires 07:00 local for tasks/chores/birthdays); event reminders every 15 min; orphan-upload cleanup at 03:30; key-rotation age check at 03:45');
 }
 
 module.exports = {
-  startScheduler, runDailyCheck, runEventReminderCheck, runCloudPurgeSweep,
+  startScheduler, runDailyCheck, runEventReminderCheck, runKeyRotationCheck,
   // Exported for tests.
   runDailyCheckForHousehold, inAudience, alertsToday, localHour, localDateStr,
 };

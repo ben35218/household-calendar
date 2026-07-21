@@ -102,7 +102,13 @@ export default function CalendarColorsScreen() {
                   />
                 </TouchableOpacity>
               </View>
-              <Ionicons name={open ? 'remove' : 'color-palette-outline'} size={18} color={colors.textMuted} />
+              {open ? (
+                <View style={[styles.confirmBadge, { backgroundColor: current }]}>
+                  <Ionicons name="checkmark" size={16} color="#fff" />
+                </View>
+              ) : (
+                <Ionicons name="color-palette-outline" size={18} color={colors.textMuted} />
+              )}
             </TouchableOpacity>
 
             {open ? (
@@ -148,6 +154,7 @@ const styles = StyleSheet.create({
   card: { backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border, marginBottom: spacing.sm, overflow: 'hidden' },
   row: { flexDirection: 'row', alignItems: 'center', gap: spacing.md, padding: spacing.md },
   swatch: { width: 28, height: 28, borderRadius: 6 },
+  confirmBadge: { width: 28, height: 28, borderRadius: 14, alignItems: 'center', justifyContent: 'center' },
   name: { flex: 1, fontSize: 16, color: colors.text },
   reorder: { flexDirection: 'row', alignItems: 'center' },
   reorderBtn: { paddingHorizontal: 2 },

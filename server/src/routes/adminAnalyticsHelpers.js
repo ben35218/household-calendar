@@ -12,7 +12,7 @@ const WEEK_MS = 7 * DAY_MS;
 const AI_ACTIONS = ['chat', 'scan', 'generation', 'manualParse', 'aiHelper'];
 const ACTIVITY_ACTIONS = [
   'eventCreated', 'choreCreated', 'taskCompleted', 'recipeAdded',
-  'itemAdded', 'inventoryAdded', 'tripCreated',
+  'itemAdded', 'tripCreated',
 ];
 
 // DAU/WAU/MAU from a list of lastActiveAt values (Date | string | null).

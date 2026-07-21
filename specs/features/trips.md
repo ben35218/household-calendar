@@ -1,7 +1,7 @@
 ---
 title: Trips
 status: current
-last-verified: dad7c5a (2026-07-20)
+last-verified: 4d68a39 (2026-07-20)
 code:
   - mobile/src/screens/trips/
   - server/src/routes/trips.js
@@ -61,7 +61,9 @@ participating households, and share a trip with people outside your household.
 - **Endpoints:** `server/src/routes/trips.js` (the largest router — trips, items,
   budgets/settlement, sharing, keys).
 - **Client:** `screens/trips/*` (Trips, TripDetail, TripForm, TripItemForm,
-  TripSettle, TripPicker, TripAssistant).
+  TripSettle, TripPicker, TripAssistant). The trip assistant's prompt shows
+  booking confirmation codes as "on file" only (never the code itself) — see
+  [ai-assistant.md](ai-assistant.md).
 
 ## Encryption boundary
 

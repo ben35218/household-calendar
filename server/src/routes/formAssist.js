@@ -12,46 +12,41 @@
 const express = require('express');
 const Anthropic = require('@anthropic-ai/sdk');
 const { format } = require('date-fns');
-const Person = require('../models/Person');
 const { requireAuth } = require('../middleware/auth');
+const { requireAiEnabled } = require('../middleware/aiConsent');
 const { meter, getConfig } = require('../middleware/usageMeter');
 
 const router = express.Router();
 router.use(requireAuth);
+router.use(requireAiEnabled);
 
-// Build a compact, privacy-scoped snapshot of the household's saved contacts for
-// the assistant to draw on. Deliberately narrow: friends/family expose only name
-// + address; service providers add their service and phone. Nothing else (email,
-// birthday, notes, interests) is ever sent to the model.
-async function buildContactsContext(scopeIds) {
-  const people = await Person.find({ userId: { $in: scopeIds } })
-    .select('type name relationship address phone')
-    .sort({ type: 1, name: 1 })
-    .limit(200)
-    .lean();
+// Build a compact snapshot of the household's saved PROFESSIONAL contacts for
+// the assistant to draw on. Professionals-only by spec (ai-assistant.md):
+// friends/family are name-only in AI payloads, and a bare name list adds
+// nothing to form-filling — so they are omitted entirely (the client doesn't
+// send them either). Service providers expose name, service, address, phone;
+// nothing else (email, birthday, notes) is ever sent to the model.
+// Signal-parity C3b: contacts are sealed in the opaque store, so the CLIENT
+// sends its own decrypted roster projection. The server no longer reads Person.
+function buildContactsContext(contacts) {
+  const people = (Array.isArray(contacts) ? contacts : []).slice(0, 200);
 
-  const friendsFamily = [];
   const services = [];
   for (const p of people) {
-    if (!p.name) continue;
-    if (p.type === 'service') {
-      const parts = [p.name];
-      if (p.relationship) parts.push(`(${p.relationship})`);
-      if (p.address) parts.push(`— ${p.address}`);
-      if (p.phone) parts.push(`— ${p.phone}`);
-      services.push(`- ${parts.join(' ')}`);
-    } else if (p.address) {
-      // family / friend: name + address only
-      friendsFamily.push(`- ${p.name} — ${p.address}`);
-    }
+    if (!p.name || p.type !== 'service') continue;
+    const parts = [p.name];
+    if (p.relationship) parts.push(`(${p.relationship})`);
+    if (p.address) parts.push(`— ${p.address}`);
+    if (p.phone) parts.push(`— ${p.phone}`);
+    services.push(`- ${parts.join(' ')}`);
   }
 
-  if (!friendsFamily.length && !services.length) return '';
+  if (!services.length) return '';
 
-  const sections = ['The user has these saved contacts. When their request names one of these people or businesses, use the matching saved details to fill address/location and phone fields. Do not invent details for anyone not listed.'];
-  if (friendsFamily.length) sections.push(`\nFriends & family (name — address):\n${friendsFamily.join('\n')}`);
-  if (services.length) sections.push(`\nService providers (name (service) — address — phone):\n${services.join('\n')}`);
-  return sections.join('\n');
+  return [
+    'The user has these saved service providers. When their request names one of these businesses, use the matching saved details to fill address/location and phone fields. Do not invent details for anyone not listed.',
+    `\nService providers (name (service) — address — phone):\n${services.join('\n')}`,
+  ].join('\n');
 }
 
 const FIELD_TYPES = new Set(['text', 'number', 'date', 'time', 'boolean', 'select', 'multiselect']);
@@ -93,7 +88,7 @@ function propertyForField(field) {
 
 router.post('/', meter('chat', 'formAssist'), async (req, res) => {
   try {
-    const { formType, fields, current, prompt, includeContacts } = req.body || {};
+    const { formType, fields, current, prompt, includeContacts, contacts } = req.body || {};
 
     if (!prompt || typeof prompt !== 'string' || !prompt.trim()) {
       return res.status(400).json({ error: 'prompt is required' });
@@ -125,7 +120,7 @@ router.post('/', meter('chat', 'formAssist'), async (req, res) => {
       input_schema: { type: 'object', properties },
     };
 
-    const contactsContext = includeContacts ? await buildContactsContext(req.scopeIds) : '';
+    const contactsContext = includeContacts ? buildContactsContext(contacts) : '';
 
     const now = new Date();
     const today = format(now, 'yyyy-MM-dd (EEEE)');
@@ -150,8 +145,8 @@ User request:
 ${prompt.trim()}`;
 
     const config = await getConfig();
-    const plan = req.household?.plan || 'free';
-    const model = plan === 'free' ? config.models.freeChat : config.models.paidChat;
+    // Sonnet on all tiers: every plan uses the paid chat model.
+    const model = config.models.paidChat;
 
     const client = new Anthropic({ apiKey });
     const resp = await client.messages.create({

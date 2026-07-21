@@ -1,7 +1,7 @@
 ---
 title: Cryptography & E2EE
 status: current
-last-verified: b242e6c (2026-07-20)
+last-verified: d3d50a0 (2026-07-21)
 code:
   - shared/crypto/src/core.ts
   - shared/crypto/src/enrollment.ts
@@ -25,8 +25,12 @@ Every household's content is **born encrypted**: sealed on the device with keys
 the servers never hold, before upload. E2EE is **mandatory** — there is no
 plaintext-content lane and no opt-out (`server/src/services/e2eePolicy.js`
 rejects a content write without ciphertext; `POST /household/e2ee/activate`
-marks a household born-encrypted). There is no admin override or recovery
-backdoor: lose every unlock factor and the data is unrecoverable, by design.
+marks a household born-encrypted). There is **no server-side admin override or
+recovery backdoor**. Losing every personal unlock factor is recoverable only by
+client-held means: another household member re-seals the HDK to a fresh identity
+key, or — if the user opted in beforehand — a nominated guardian assists a
+dual-control recovery ([features/guardian-recovery.md](../features/guardian-recovery.md)).
+Absent those, the data is unrecoverable, by design.
 
 ## Key hierarchy (one paragraph)
 
@@ -34,14 +38,21 @@ A per-user **X25519 identity keypair** has its private key stored server-side
 only as ciphertext, wrapped **independently by each enrolled factor** (any one
 opens it): a **password** (Argon2id KEK), a **passkey** (WebAuthn-PRF KEK), and a
 one-time **recovery code** (KEK). Adding/removing a factor never re-keys anything
-else. A per-**household** symmetric key (**HDK**, versioned) is sealed to each
-member's public key (`crypto_box_seal` → `HouseholdKeyEnvelope`) and encrypts the
-household's records; per-file content keys are wrapped by the HDK. Shared
-calendars/trips get their own resource keys (`ResourceKeyEnvelope`) so a
-cross-household collaborator can read just that resource without the HDK. See
-[features/auth-identity.md](../features/auth-identity.md) (factors) and
-[features/households-sharing.md](../features/households-sharing.md) (HDK
-lifecycle).
+else. A user can also enrol **additional devices**: an existing device seals the
+identity key to the new device's transient key over the `/keys/link/*` relay
+(`DeviceLink`) — key material never rides through the server as plaintext, and a
+new device triggers a security alert. A per-**household** symmetric key (**HDK**,
+versioned) is sealed to each member's public key (`crypto_box_seal` →
+`HouseholdKeyEnvelope`) and encrypts the household's records; per-file content
+keys are wrapped by the HDK. Shared calendars/trips get their own resource keys —
+a **CalendarKey** (D1) or **TripKey** (D2), wrapped in a `ResourceKeyEnvelope` —
+so a cross-household collaborator can read just that resource without the HDK; a
+record sealed under one carries a `ks`/`scope` discriminator so a reader picks
+the right key without consulting membership. See
+[features/auth-identity.md](../features/auth-identity.md) (factors + device link),
+[features/guardian-recovery.md](../features/guardian-recovery.md) (guardian
+recovery) and [features/households-sharing.md](../features/households-sharing.md)
+(HDK lifecycle).
 
 ## Records are opaque
 
@@ -49,7 +60,9 @@ Content is stored in one content-blind collection
 ([`Record`](../../server/src/models/Record.js)). The **v2 envelope** moved the
 collection type out of the AAD and into the sealed payload, so the server can't
 tell an event from a recipe — it sees only routing metadata (`householdId`, key
-version, ciphertext, optional resource `scope`, tombstone, timestamps). Full
+version, ciphertext, optional resource `scope`, tombstone, timestamps). On
+collections in `e2eePolicy`'s author-hidden set the server also strips the author
+`userId`, so a record isn't attributable to a specific member. Full
 field-by-field boundary in [data-model.md](data-model.md); read/write API in
 [api-reference.md](api-reference.md).
 

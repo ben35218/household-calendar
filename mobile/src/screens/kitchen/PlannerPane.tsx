@@ -5,6 +5,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { recipeScheduleApi, settingsApi, RecipeSchedule } from '../../api';
+import { openRecord } from '../../lib/e2ee';
 import { Card } from '../../components/ui';
 import { KitchenStackParamList } from '../../navigation/KitchenNavigator';
 import { useCalendarColors } from '../../lib/calendarPrefs';
@@ -38,7 +39,20 @@ export default function PlannerPane({ weekStart }: { weekStart: Date }) {
   const end = iso(endDate);
 
   // periodDays is in the key so the range refetches when the cadence changes.
-  const schedulesQ = useQuery({ queryKey: ['recipe-schedule', start, periodDays], queryFn: async () => (await recipeScheduleApi.list({ start, end })).data });
+  // Decrypted: schedule notes and the populated recipe's title are sealed content.
+  const schedulesQ = useQuery({
+    queryKey: ['recipe-schedule', start, periodDays],
+    queryFn: async () => {
+      const rows = (await recipeScheduleApi.list({ start, end })).data;
+      return Promise.all(rows.map(async (s) => {
+        const sched = await openRecord('RecipeSchedule', s);
+        if (sched.recipeId && typeof sched.recipeId === 'object') {
+          sched.recipeId = await openRecord('Recipe', sched.recipeId as { _id: string });
+        }
+        return sched;
+      }));
+    },
+  });
 
   // Reveal a just-scheduled recipe's day, then clear the param so returning here
   // later doesn't re-scroll. The delay lets the refreshed schedule (the new meal

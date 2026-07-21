@@ -5,19 +5,27 @@ import { useQuery } from '@tanstack/react-query';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import { CalendarData, Chore } from '../../api';
+import { CalendarData, Chore, Task } from '../../api';
 import { loadCalendarData } from '../../lib/calendarData';
 import { useAuth } from '../../store/auth';
-import { weekBars, WeekBar, CALENDAR_COLORS, eventColor, ymd } from '../../lib/calendar';
+import { weekBars, WeekBar, CALENDAR_COLORS, eventColor, ymd, recipeIconTarget, RecipeCell } from '../../lib/calendar';
 import { getHolidays } from '../../lib/holidays';
-import { useCalendarVisibility, useHolidayCalendars, holidayEnabledIds, useCalendarColors } from '../../lib/calendarPrefs';
+import { useCalendarVisibility, useHolidayCalendars, holidayEnabledIds, useCalendarColors, useMonthDensity, MonthDensity } from '../../lib/calendarPrefs';
 import { mdiName } from '../../lib/recurrence';
+import { resolveTaskIcon } from '../../lib/maintenanceCategories';
 import { CalendarStackParamList } from '../../navigation/CalendarNavigator';
 import { colors, spacing } from '../../theme';
-import AssistantIcon from '../../components/AssistantIcon';
+import AssistantButton from '../../components/AssistantButton';
 import InvitationsButton from '../../components/InvitationsButton';
+import AnchoredMenu, { AnchoredMenuItem } from '../../components/AnchoredMenu';
 import { useAiEnabled } from '../../lib/privacyPrefs';
-import AgendaView, { TodayHandle } from './AgendaView';
+import { useCallEventStatus } from '../../lib/callStatus';
+import { useE2eeLocked } from '../../hooks/useE2eeLocked';
+import { TodayHandle } from './todayHandle';
+import CalendarListView from './CalendarListView';
+
+// The three grid densities (the fourth mode, 'list', is a separate layer).
+type GridDensity = Exclude<MonthDensity, 'list'>;
 
 type Nav = NativeStackNavigationProp<CalendarStackParamList, 'CalendarHome'>;
 
@@ -43,6 +51,21 @@ const MIN_WEEK = 96;
 const MAX_WEEK = 210;
 const CHIP_MAX = 3;
 
+// ── Density-specific metrics ──
+// Compact: uniform short rows (day number + a row of dots), whole month fits.
+const COMPACT_ROW_H = 26;   // day-number row
+const DOT_ROW_H = 14;       // the dots strip below the number
+const COMPACT_WEEK = COMPACT_ROW_H + DOT_ROW_H + VPAD;
+const DOT_MAX = 4;
+// Stacked: colored bars only (no text). Single-day items stack as thin bars
+// below the day number; multi-day spans use the overlaid week bars.
+const STACK_BAR_H = 9;      // one stacked single-day bar (incl. margin)
+const STACK_MAX = 5;
+const MIN_STACK_WEEK = 60;
+
+// A shorter-than-default (500ms) hold to trigger create/edit long-presses.
+const LONG_PRESS_MS = 200;
+
 const HOLIDAY_COLOR = CALENDAR_COLORS['canadian-holidays'];
 const BIRTHDAY_COLOR = CALENDAR_COLORS.birthdays;
 
@@ -62,8 +85,8 @@ const chipTimeLabel = (iso: string) =>
 // so returning to the calendar later in the session doesn't re-hijack it).
 let autoOpenedTrip = false;
 
-type Chip = { key: string; label: string; color: string; time?: string };
-type CellContent = { chips: Chip[]; tasks: number; chores: Chore[]; recipes: number; grocery: boolean };
+type Chip = { key: string; label: string; color: string; time?: string; eventId?: string; cancelled?: boolean; reschedulePending?: boolean };
+type CellContent = { chips: Chip[]; tasks: Task[]; chores: Chore[]; recipes: RecipeCell[]; grocery: boolean };
 type RenderCell = { date: string; day: number; isToday: boolean; content: CellContent };
 type RenderWeek = { key: string; cells: RenderCell[]; bars: WeekBar[]; height: number; headerH: number; monthLabel: string };
 
@@ -81,13 +104,15 @@ function monthWindow(): { year: number; month: number }[] {
 // host owns all floating chrome (avatar, pills) and crossfades this layer
 // against the agenda, so the header's top row is just empty space under the
 // host's buttons.
-const CalendarGrid = forwardRef<TodayHandle>(function CalendarGrid(_props, ref) {
+const CalendarGrid = forwardRef<TodayHandle, { density: GridDensity }>(function CalendarGrid({ density }, ref) {
   const navigation = useNavigation<Nav>();
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
   const { visibility } = useCalendarVisibility();
   const { calendars: holidayCals } = useHolidayCalendars();
   const { colors: calColors } = useCalendarColors();
+  // Events an AI call has resolved → dimmed (cancelled also struck through).
+  const { cancelledIds, reschedulePendingIds } = useCallEventStatus();
 
   const cellSize = (width - spacing.md * 2) / 7;
   const headerH = insets.top + TOP_BAR_ROW + HEADER_MONTH_H + WEEKDAY_ROW_H;
@@ -168,7 +193,7 @@ const CalendarGrid = forwardRef<TodayHandle>(function CalendarGrid(_props, ref) 
     if (!calQ.data) return undefined;
     return {
       ...calQ.data,
-      trips: visible('vacations') ? calQ.data.trips : [],
+      trips: visible('trips') ? calQ.data.trips : [],
       events: (calQ.data.events ?? []).filter((e) => visible(e.calendarType)),
     };
   }, [calQ.data, visibility]);
@@ -179,7 +204,7 @@ const CalendarGrid = forwardRef<TodayHandle>(function CalendarGrid(_props, ref) 
     const todayStr = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
 
     const content = (dateStr: string): CellContent => {
-      if (!data) return { chips: [], tasks: 0, chores: [], recipes: 0, grocery: false };
+      if (!data) return { chips: [], tasks: [], chores: [], recipes: [], grocery: false };
       const chips: Chip[] = [];
       for (const h of holidaysByDate[dateStr] ?? []) chips.push({ key: `hol-${h.id}`, label: h.name, color: h.color });
       if (visible('birthdays')) for (const b of data.birthdays ?? []) if (ld(b.date) === dateStr) chips.push({ key: `b-${b.id}`, label: b.name, color: calColors.birthdays });
@@ -189,12 +214,20 @@ const CalendarGrid = forwardRef<TodayHandle>(function CalendarGrid(_props, ref) 
         const end = e.endDate ? eventLd(e, e.endDate) : start;
         if (start === end && start === dateStr) {
           const time = e.allDay ? undefined : chipTimeLabel(e.startDate);
-          chips.push({ key: `e-${e._id}`, label: e.title, color: eventColor(e), time });
+          chips.push({
+            key: `e-${e._id}`, label: e.title, color: eventColor(e), time, eventId: e._id,
+            cancelled: Boolean(e.cancelled) || cancelledIds.has(e._id),
+            reschedulePending: reschedulePendingIds.has(e._id),
+          });
         }
       }
-      const tasks = visible('maintenance') ? (data.tasks ?? []).filter((t) => t.nextDueDate && ld(t.nextDueDate) === dateStr).length : 0;
+      const tasks = visible('maintenance') ? (data.tasks ?? []).filter((t) => t.nextDueDate && ld(t.nextDueDate) === dateStr) : [];
       const chores = visible('chores') ? (data.chores ?? []).filter((c) => c.nextDueDate && ld(c.nextDueDate) === dateStr) : [];
-      const recipes = visible('recipes') ? (data.recipes ?? []).filter((r) => ld(r.scheduledDate) === dateStr).length : 0;
+      const recipes = visible('recipes')
+        ? (data.recipes ?? [])
+            .filter((r) => ld(r.scheduledDate) === dateStr)
+            .map((r) => ({ recipeId: typeof r.recipeId === 'object' ? r.recipeId?._id : (r.recipeId as string | undefined) }))
+        : [];
       const grocery = visible('recipes') ? (data.groceryShopping ?? []).some((g) => g.date === dateStr) : false;
       return { chips, tasks, chores, recipes, grocery };
     };
@@ -203,9 +236,17 @@ const CalendarGrid = forwardRef<TodayHandle>(function CalendarGrid(_props, ref) 
       const chipsH = c.chips
         .slice(0, CHIP_MAX)
         .reduce((s, chip) => s + chipHeight(chipRows(chip)), 0);
-      const hasIcons = c.tasks > 0 || c.chores.length > 0 || c.recipes > 0 || c.grocery;
+      const hasIcons = c.tasks.length > 0 || c.chores.length > 0 || c.recipes.length > 0 || c.grocery;
       return chipsH + (c.chips.length > CHIP_MAX ? MORE_H : 0) + (hasIcons ? ICON_ROW_H : 0);
     };
+
+    // Stacked: every single-day item is one thin bar (chips + a bar per icon
+    // group); multi-day spans are the overlaid week bars (counted separately).
+    const stackBarCount = (c: CellContent): number =>
+      Math.min(
+        STACK_MAX,
+        c.chips.length + (c.tasks.length ? 1 : 0) + (c.chores.length ? 1 : 0) + (c.recipes.length ? 1 : 0) + (c.grocery ? 1 : 0),
+      );
 
     const weeksR: RenderWeek[] = [];
     const cursor = new Date(grid.gridStart);
@@ -236,9 +277,17 @@ const CalendarGrid = forwardRef<TodayHandle>(function CalendarGrid(_props, ref) 
       // plus its own items. Adding the week-wide max of each separately would
       // over-allocate when the deepest bar and the tallest item stack live in
       // different cells, leaving a spurious gap above the next week.
-      const maxCell = Math.max(0, ...cells.map((c, col) => lanesAt(col) * BAR_H + cellItemsHeight(c.content)));
-      const raw = headerH + maxCell + VPAD;
-      const height = Math.min(MAX_WEEK, Math.max(MIN_WEEK, raw));
+      let height: number;
+      if (density === 'compact') {
+        // Uniform short rows — no spans, just the dots strip.
+        height = COMPACT_WEEK;
+      } else if (density === 'stacked') {
+        const maxCell = Math.max(0, ...cells.map((c, col) => lanesAt(col) * BAR_H + stackBarCount(c.content) * STACK_BAR_H));
+        height = Math.min(MAX_WEEK, Math.max(MIN_STACK_WEEK, headerH + maxCell + VPAD));
+      } else {
+        const maxCell = Math.max(0, ...cells.map((c, col) => lanesAt(col) * BAR_H + cellItemsHeight(c.content)));
+        height = Math.min(MAX_WEEK, Math.max(MIN_WEEK, headerH + maxCell + VPAD));
+      }
       weeksR.push({ key: weekDates[0], cells, bars, height, headerH, monthLabel });
       cursor.setDate(cursor.getDate() + 7);
     }
@@ -251,7 +300,7 @@ const CalendarGrid = forwardRef<TodayHandle>(function CalendarGrid(_props, ref) 
     const twOff = tIdx >= 0 ? offs[tIdx] : 0;
 
     return { weeks: weeksR, offsets: offs, todayWeekOffset: twOff };
-  }, [calQ.data, visData, holidaysByDate, visibility, grid, charsPerLine, calColors]);
+  }, [calQ.data, visData, holidaysByDate, visibility, grid, charsPerLine, calColors, cancelledIds, reschedulePendingIds, density]);
 
   // Place today's week at the top of the viewport, just below the sticky header.
   const goToday = (animated = true) =>
@@ -294,12 +343,40 @@ const CalendarGrid = forwardRef<TodayHandle>(function CalendarGrid(_props, ref) 
           (max, b) => (col >= b.startCol && col <= b.endCol ? Math.max(max, b.lane + 1) : max),
           0,
         );
+
+        // Compact: one colored dot per source — spans covering this day plus
+        // each single-day item — capped so a busy day stays tidy.
+        const dots: string[] = [];
+        if (density === 'compact') {
+          for (const b of week.bars) if (col >= b.startCol && col <= b.endCol) dots.push(b.color);
+          for (const chip of c.chips) dots.push(chip.color);
+          if (c.tasks.length) dots.push(calColors.maintenance);
+          if (c.chores.length) dots.push(calColors.chores);
+          if (c.recipes.length || c.grocery) dots.push(calColors.recipes);
+        }
+
+        // Stacked: each single-day item is a thin colored bar (no text). Event
+        // bars stay tappable; the rest fall through to the cell's day view.
+        const stackItems: { color: string; eventId?: string; cancelled?: boolean; reschedulePending?: boolean }[] =
+          density === 'stacked'
+            ? [
+                ...c.chips.map((chip) => ({ color: chip.color, eventId: chip.eventId, cancelled: chip.cancelled, reschedulePending: chip.reschedulePending })),
+                ...(c.tasks.length ? [{ color: calColors.maintenance }] : []),
+                ...(c.chores.length ? [{ color: calColors.chores }] : []),
+                ...(c.recipes.length ? [{ color: calColors.recipes }] : []),
+                ...(c.grocery ? [{ color: calColors.recipes }] : []),
+              ].slice(0, STACK_MAX)
+            : [];
+
         return (
           <TouchableOpacity
             key={cell.date}
             style={[styles.dayCell, { width: cellSize, height: week.height }]}
             activeOpacity={0.7}
             onPress={() => navigation.navigate('CalendarDay', { date: cell.date })}
+            // Short-press an (empty part of a) day to start a new event on it.
+            onLongPress={() => navigation.navigate('EventForm', { date: cell.date })}
+            delayLongPress={LONG_PRESS_MS}
           >
             <View style={[styles.dayHeader, { height: week.headerH }]}>
               <View style={[styles.dayNumWrap, cell.isToday && styles.todayWrap]}>
@@ -307,46 +384,187 @@ const CalendarGrid = forwardRef<TodayHandle>(function CalendarGrid(_props, ref) 
               </View>
             </View>
 
+            {density === 'compact' ? (
+              <View style={styles.dotRow}>
+                {dots.slice(0, DOT_MAX).map((color, i) => (
+                  <View key={i} style={[styles.dot, { backgroundColor: color }]} />
+                ))}
+              </View>
+            ) : density === 'stacked' ? (
+              <>
+                {/* reserved space for the spanning bars overlaid on this cell */}
+                <View style={{ height: cellLanes * BAR_H }} />
+                <View style={styles.cellItems}>
+                  {stackItems.map((it, i) => {
+                    const barStyle = [
+                      styles.stackBar,
+                      { backgroundColor: it.color },
+                      it.cancelled ? styles.chipCancelled : it.reschedulePending ? styles.chipRescheduled : null,
+                    ];
+                    return it.eventId ? (
+                      <TouchableOpacity
+                        key={i}
+                        activeOpacity={0.7}
+                        style={barStyle}
+                        onPress={() => navigation.navigate('EventDetail', { eventId: it.eventId!, date: cell.date })}
+                        onLongPress={() => navigation.navigate('EventForm', { eventId: it.eventId!, date: cell.date })}
+                        delayLongPress={LONG_PRESS_MS}
+                      />
+                    ) : (
+                      <View key={i} style={barStyle} />
+                    );
+                  })}
+                </View>
+              </>
+            ) : (
+            <>
             {/* reserved space for the spanning bars overlaid on this cell */}
             <View style={{ height: cellLanes * BAR_H }} />
 
             <View style={styles.cellItems}>
+              {/* Event chips open that event; holiday/birthday chips fall back to
+                  the day view (they have no detail screen). */}
               {c.chips.slice(0, CHIP_MAX).map((chip) => (
-                <View key={chip.key} style={[styles.chip, { backgroundColor: chip.color, height: chipHeight(chipRows(chip)) - 2 }]}>
-                  <Text style={styles.chipText} numberOfLines={titleLines(chip.label)} ellipsizeMode="clip">{chip.label}</Text>
+                <TouchableOpacity
+                  key={chip.key}
+                  activeOpacity={0.7}
+                  style={[
+                    styles.chip,
+                    { backgroundColor: chip.color, height: chipHeight(chipRows(chip)) - 2 },
+                    // A resolved call fades the chip; a confirmed cancellation
+                    // also strikes the title (see chipText below).
+                    chip.cancelled ? styles.chipCancelled : chip.reschedulePending ? styles.chipRescheduled : null,
+                  ]}
+                  onPress={() =>
+                    chip.eventId
+                      ? navigation.navigate('EventDetail', { eventId: chip.eventId, date: cell.date })
+                      : navigation.navigate('CalendarDay', { date: cell.date })
+                  }
+                  // Long-press jumps straight to the edit form. Holiday/birthday
+                  // chips have no eventId (nothing to edit) → start a new event on the day.
+                  onLongPress={() =>
+                    chip.eventId
+                      ? navigation.navigate('EventForm', { eventId: chip.eventId, date: cell.date })
+                      : navigation.navigate('EventForm', { date: cell.date })
+                  }
+                  delayLongPress={LONG_PRESS_MS}
+                >
+                  <Text style={[styles.chipText, chip.cancelled && styles.chipTextCancelled]} numberOfLines={titleLines(chip.label)} ellipsizeMode="clip">{chip.label}</Text>
                   {/* numberOfLines={1} keeps the time on one line; ellipsizeMode "clip"
                       cuts off overflow (e.g. "10:30A") with no "…" and no wrapped "M". */}
                   {chip.time ? <Text style={styles.chipTime} numberOfLines={1} ellipsizeMode="clip">{chip.time}</Text> : null}
-                </View>
+                </TouchableOpacity>
               ))}
               {c.chips.length > CHIP_MAX ? <Text style={styles.moreText}>+{c.chips.length - CHIP_MAX} more</Text> : null}
 
+              {/* Each icon opens its own item view; a task/recipe icon aggregates
+                  multiple items, so it opens the item when it's the only one and
+                  falls back to the day/kitchen view when there are several. */}
               <View style={styles.iconRow}>
-                {c.tasks > 0 ? <IconChip count={c.tasks} icon="wrench" color={calColors.maintenance} /> : null}
+                {c.tasks.length > 0 ? (
+                  <TouchableOpacity
+                    hitSlop={6}
+                    onPress={() =>
+                      c.tasks.length === 1
+                        ? navigation.navigate('TaskDetail', { id: c.tasks[0]._id })
+                        : navigation.navigate('CalendarDay', { date: cell.date })
+                    }
+                    // Long-press edits the single task; several stacked → day view to pick one.
+                    onLongPress={() =>
+                      c.tasks.length === 1
+                        ? navigation.navigate('TaskForm', { id: c.tasks[0]._id })
+                        : navigation.navigate('CalendarDay', { date: cell.date })
+                    }
+                    delayLongPress={LONG_PRESS_MS}
+                  >
+                    <IconChip
+                      count={c.tasks.length}
+                      icon={
+                        c.tasks.length === 1
+                          ? resolveTaskIcon(c.tasks[0].icon, typeof c.tasks[0].categoryId === 'object' ? c.tasks[0].categoryId?.name : null)
+                          : 'wrench'
+                      }
+                      color={calColors.maintenance}
+                    />
+                  </TouchableOpacity>
+                ) : null}
                 {c.chores.slice(0, 3).map((ch) => (
-                  <MaterialCommunityIcons key={`ch-${ch._id}`} name={mdiName(ch.icon) as any} size={16} color={calColors.chores} />
+                  <TouchableOpacity
+                    key={`ch-${ch._id}`}
+                    hitSlop={6}
+                    onPress={() => navigation.navigate('ChoreDetail', { id: ch._id })}
+                    onLongPress={() => navigation.navigate('ChoreForm', { id: ch._id })}
+                    delayLongPress={LONG_PRESS_MS}
+                  >
+                    <MaterialCommunityIcons name={mdiName(ch.icon) as any} size={16} color={calColors.chores} />
+                  </TouchableOpacity>
                 ))}
-                {c.recipes > 0 ? <IconChip count={c.recipes} icon="silverware-fork-knife" color={calColors.recipes} /> : null}
-                {c.grocery ? <MaterialCommunityIcons name="cart" size={16} color={calColors.recipes} /> : null}
+                {c.recipes.length > 0 ? (
+                  <TouchableOpacity
+                    hitSlop={6}
+                    onPress={() => {
+                      const t = recipeIconTarget(c.recipes, cell.date);
+                      if (t.screen === 'RecipeDetail') navigation.navigate('RecipeDetail', t.params);
+                      else navigation.navigate('CalendarDay', t.params);
+                    }}
+                    // Long-press edits the single scheduled recipe; several → day view to pick one.
+                    onLongPress={() => {
+                      const id = c.recipes.length === 1 ? c.recipes[0].recipeId : undefined;
+                      if (id) navigation.navigate('RecipeForm', { id });
+                      else navigation.navigate('CalendarDay', { date: cell.date });
+                    }}
+                    delayLongPress={LONG_PRESS_MS}
+                  >
+                    <IconChip count={c.recipes.length} icon="silverware-fork-knife" color={calColors.recipes} />
+                  </TouchableOpacity>
+                ) : null}
+                {c.grocery ? (
+                  <TouchableOpacity hitSlop={6} onPress={() => navigation.navigate('KitchenHome', { pane: 'grocery', weekStart: cell.date })}>
+                    <MaterialCommunityIcons name="cart" size={16} color={calColors.recipes} />
+                  </TouchableOpacity>
+                ) : null}
               </View>
             </View>
+            </>
+            )}
           </TouchableOpacity>
         );
       })}
 
-      {week.bars.map((bar) => (
+      {/* Spanning bars: hidden in Compact (dots only); text-labelled only in
+          Details (Stacked shows unlabelled bars). */}
+      {density !== 'compact' && week.bars.map((bar) => (
         <TouchableOpacity
           key={bar.key}
           activeOpacity={0.7}
           onPress={(e) => {
             if (bar.tripId) { navigation.navigate('TripDetail', { id: bar.tripId }); return; }
-            // Multi-day event: figure out which day column the tap landed on
-            // (each column is cellSize wide, starting at the bar's startCol) and
-            // open that specific day in the daily view.
+            // A multi-day event bar opens the event itself; the tapped column
+            // seeds the day the Edit form returns to.
+            if (bar.eventId) {
+              const offset = Math.floor(e.nativeEvent.locationX / cellSize);
+              const col = Math.min(bar.endCol, bar.startCol + Math.max(0, offset));
+              navigation.navigate('EventDetail', { eventId: bar.eventId, date: week.cells[col].date });
+              return;
+            }
             const offset = Math.floor(e.nativeEvent.locationX / cellSize);
             const col = Math.min(bar.endCol, bar.startCol + Math.max(0, offset));
             navigation.navigate('CalendarDay', { date: week.cells[col].date });
           }}
+          // Long-press a spanning bar to edit the event/trip it represents.
+          onLongPress={(e) => {
+            if (bar.tripId) { navigation.navigate('TripForm', { id: bar.tripId }); return; }
+            if (bar.eventId) {
+              const offset = Math.floor(e.nativeEvent.locationX / cellSize);
+              const col = Math.min(bar.endCol, bar.startCol + Math.max(0, offset));
+              navigation.navigate('EventForm', { eventId: bar.eventId, date: week.cells[col].date });
+              return;
+            }
+            const offset = Math.floor(e.nativeEvent.locationX / cellSize);
+            const col = Math.min(bar.endCol, bar.startCol + Math.max(0, offset));
+            navigation.navigate('CalendarDay', { date: week.cells[col].date });
+          }}
+          delayLongPress={LONG_PRESS_MS}
           style={[
             styles.spanBar,
             {
@@ -357,7 +575,9 @@ const CalendarGrid = forwardRef<TodayHandle>(function CalendarGrid(_props, ref) 
             },
           ]}
         >
-          <Text style={styles.spanBarText} numberOfLines={1} ellipsizeMode="clip">{bar.label}</Text>
+          {density === 'details' ? (
+            <Text style={styles.spanBarText} numberOfLines={1} ellipsizeMode="clip">{bar.label}</Text>
+          ) : null}
         </TouchableOpacity>
       ))}
     </View>
@@ -402,66 +622,111 @@ const CalendarGrid = forwardRef<TodayHandle>(function CalendarGrid(_props, ref) 
   );
 });
 
-// Hosts the month grid and the agenda list as two always-black layers under
-// shared floating chrome. The list/calendar button is a mode toggle, not
-// navigation: both layers stay mounted (agenda lazily, after first use) and
-// crossfade in place with a slight zoom, so the chrome never moves.
+// The view-switcher modes, in menu order (List sits apart, below a divider —
+// mirroring Apple Calendar). Each maps to a glyph shown both in the popover and
+// on the switcher button itself (the button reflects the active mode).
+const DENSITY_META: { key: MonthDensity; label: string; icon: string; dividerBefore?: boolean }[] = [
+  { key: 'compact', label: 'Compact', icon: 'dots-horizontal' },
+  { key: 'stacked', label: 'Stacked', icon: 'view-agenda-outline' },
+  { key: 'details', label: 'Details', icon: 'view-stream-outline' },
+  { key: 'list', label: 'List', icon: 'format-list-bulleted', dividerBefore: true },
+];
+
+// Hosts the month grid (Compact/Stacked/Details) and the List view as two
+// always-black layers under shared floating chrome. The view switcher is a mode
+// toggle, not navigation: both layers stay mounted (List lazily, after first
+// use) and crossfade in place with a slight zoom, so the chrome never moves.
 export default function CalendarScreen() {
   const navigation = useNavigation<Nav>();
   const insets = useSafeAreaInsets();
   const aiEnabled = useAiEnabled();
   const { user } = useAuth();
+  const { density, setDensity } = useMonthDensity();
 
-  const [mode, setMode] = useState<'grid' | 'agenda'>('grid');
-  const [agendaMounted, setAgendaMounted] = useState(false);
-  const progress = useRef(new Animated.Value(0)).current; // 0 = grid, 1 = agenda
+  const isList = density === 'list';
+  // The grid layer needs a concrete density even while List is showing over it;
+  // remember the last grid density so returning to the grid keeps the choice.
+  const gridDensityRef = useRef<GridDensity>('details');
+  if (density !== 'list') gridDensityRef.current = density;
+  const gridDensity = gridDensityRef.current;
+
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [listMounted, setListMounted] = useState(false);
+  const progress = useRef(new Animated.Value(0)).current; // 0 = grid, 1 = list
   const gridRef = useRef<TodayHandle>(null);
-  const agendaRef = useRef<TodayHandle>(null);
+  const listRef = useRef<TodayHandle>(null);
 
-  const toggleMode = () => {
-    const next = mode === 'grid' ? 'agenda' : 'grid';
-    if (next === 'agenda') setAgendaMounted(true);
-    setMode(next);
+  // Crossfade whenever we cross into/out of List (button taps and the async
+  // initial load of a stored List preference alike).
+  useEffect(() => {
+    if (isList) setListMounted(true);
     Animated.timing(progress, {
-      toValue: next === 'agenda' ? 1 : 0,
+      toValue: isList ? 1 : 0,
       duration: 220,
       useNativeDriver: true,
     }).start();
-  };
+  }, [isList, progress]);
 
   const gridLayer = {
     opacity: progress.interpolate({ inputRange: [0, 1], outputRange: [1, 0] }),
     transform: [{ scale: progress.interpolate({ inputRange: [0, 1], outputRange: [1, 0.97] }) }],
   };
-  const agendaLayer = {
+  const listLayer = {
     opacity: progress,
     transform: [{ scale: progress.interpolate({ inputRange: [0, 1], outputRange: [0.97, 1] }) }],
   };
 
+  const menuItems: AnchoredMenuItem[] = DENSITY_META.map((m) => ({
+    key: m.key,
+    label: m.label,
+    active: density === m.key,
+    dividerBefore: m.dividerBefore,
+    icon: <MaterialCommunityIcons name={m.icon as any} size={20} color={colors.text} />,
+    onPress: () => setDensity(m.key),
+  }));
+  const activeIcon = DENSITY_META.find((m) => m.key === density)?.icon ?? 'view-stream-outline';
+
   const initial = user?.firstName?.charAt(0).toUpperCase() ?? '?';
+  // Encrypted data locked on this device → badge the profile button so it's
+  // obvious there's something to resolve (unlock) in Profile.
+  const dataLocked = useE2eeLocked();
 
   return (
     <View style={styles.screen}>
-      <Animated.View style={[StyleSheet.absoluteFill, gridLayer]} pointerEvents={mode === 'grid' ? 'auto' : 'none'}>
-        <CalendarGrid ref={gridRef} />
+      <Animated.View style={[StyleSheet.absoluteFill, gridLayer]} pointerEvents={isList ? 'none' : 'auto'}>
+        <CalendarGrid ref={gridRef} density={gridDensity} />
       </Animated.View>
-      {agendaMounted ? (
-        <Animated.View style={[StyleSheet.absoluteFill, agendaLayer]} pointerEvents={mode === 'agenda' ? 'auto' : 'none'}>
-          <AgendaView ref={agendaRef} />
+      {listMounted ? (
+        <Animated.View style={[StyleSheet.absoluteFill, listLayer]} pointerEvents={isList ? 'auto' : 'none'}>
+          <CalendarListView ref={listRef} active={isList} />
         </Animated.View>
       ) : null}
 
-      {/* ── Top row: avatar + view-toggle/search/add (shared by both layers) ──── */}
+      {/* ── Top row: avatar + view-switcher/search/add (shared by both layers) ── */}
       <View
         style={[styles.topChrome, { paddingTop: insets.top, height: insets.top + TOP_BAR_ROW }]}
         pointerEvents="box-none"
       >
-        <TouchableOpacity style={styles.avatar} activeOpacity={0.8} onPress={() => navigation.navigate('ProfileHome')}>
+        <TouchableOpacity
+          style={styles.avatar}
+          activeOpacity={0.8}
+          onPress={() => navigation.navigate('ProfileHome')}
+          accessibilityLabel={dataLocked ? 'Profile — encrypted data locked, action needed' : 'Profile'}
+        >
           <Text style={styles.avatarText}>{initial}</Text>
+          {dataLocked ? (
+            <View style={styles.lockBadge}>
+              <Text style={styles.lockBadgeText}>!</Text>
+            </View>
+          ) : null}
         </TouchableOpacity>
         <View style={styles.pill}>
-          <TouchableOpacity style={styles.pillBtn} onPress={toggleMode}>
-            <Ionicons name={mode === 'grid' ? 'list' : 'calendar'} size={22} color={BTN_FG} />
+          <TouchableOpacity
+            style={styles.pillBtn}
+            onPress={() => setMenuOpen(true)}
+            accessibilityLabel="Change calendar view"
+          >
+            <MaterialCommunityIcons name={activeIcon as any} size={22} color={BTN_FG} />
           </TouchableOpacity>
           <TouchableOpacity style={styles.pillBtn} onPress={() => navigation.navigate('CalendarSearch')}>
             <Ionicons name="search" size={20} color={BTN_FG} />
@@ -472,11 +737,18 @@ export default function CalendarScreen() {
         </View>
       </View>
 
+      <AnchoredMenu
+        visible={menuOpen}
+        onClose={() => setMenuOpen(false)}
+        top={insets.top + TOP_BAR_ROW}
+        items={menuItems}
+      />
+
       {/* ── Bottom-left: Today ───────────────────────────────────────────────── */}
       <View style={[styles.pill, styles.bottomLeft, { bottom: insets.bottom + 16 }]}>
         <TouchableOpacity
           style={styles.todayBtn}
-          onPress={() => (mode === 'grid' ? gridRef : agendaRef).current?.scrollToToday(true)}
+          onPress={() => (isList ? listRef : gridRef).current?.scrollToToday(true)}
         >
           <Text style={styles.todayText}>Today</Text>
         </TouchableOpacity>
@@ -489,9 +761,7 @@ export default function CalendarScreen() {
         </TouchableOpacity>
         <InvitationsButton onPress={() => navigation.navigate('Invitations')} />
         {aiEnabled && (
-          <TouchableOpacity style={styles.bottomPillBtn} onPress={() => navigation.navigate('CalendarAssistant')}>
-            <AssistantIcon size={22} color={BTN_FG} />
-          </TouchableOpacity>
+          <AssistantButton onPress={() => navigation.navigate('Assistant', { initial: 'calendar' })} />
         )}
       </View>
     </View>
@@ -527,7 +797,14 @@ const styles = StyleSheet.create({
   spanBarText: { fontSize: 12, lineHeight: 13, color: '#fff', fontWeight: '600' },
   cellItems: { flex: 1 },
   chip: { borderRadius: 4, paddingHorizontal: 4, paddingVertical: 1, marginBottom: 2, justifyContent: 'center', overflow: 'hidden' },
+  // Compact-mode dots + stacked-mode thin bars.
+  dotRow: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center', alignItems: 'center', gap: 3, height: DOT_ROW_H, paddingHorizontal: 2 },
+  dot: { width: 6, height: 6, borderRadius: 3 },
+  stackBar: { height: STACK_BAR_H - 3, borderRadius: 2, marginBottom: 2, marginHorizontal: 1 },
+  chipCancelled: { opacity: 0.45 },
+  chipRescheduled: { opacity: 0.6 },
   chipText: { fontSize: 12, lineHeight: 13, color: '#fff', fontWeight: '600' },
+  chipTextCancelled: { textDecorationLine: 'line-through' },
   chipTime: { fontSize: 10, lineHeight: 12, color: 'rgba(255,255,255,0.85)', fontWeight: '600', marginTop: 1 },
   moreText: { fontSize: 11, fontWeight: '600', color: colors.textMuted, paddingLeft: 2 },
   iconRow: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'center', gap: 3, marginBottom: 2 },
@@ -552,6 +829,13 @@ const styles = StyleSheet.create({
     shadowColor: '#000', shadowOpacity: 0.15, shadowRadius: 4, shadowOffset: { width: 0, height: 2 }, elevation: 3,
   },
   avatarText: { color: BTN_FG, fontSize: 18, fontWeight: '700' },
+  // Red "!" overlay, top-right of the avatar, when encrypted data is locked.
+  lockBadge: {
+    position: 'absolute', top: -2, right: -2, minWidth: 18, height: 18, borderRadius: 9,
+    backgroundColor: colors.error, alignItems: 'center', justifyContent: 'center',
+    borderWidth: 2, borderColor: colors.background, paddingHorizontal: 3,
+  },
+  lockBadgeText: { color: '#fff', fontSize: 11, fontWeight: '800', lineHeight: 13 },
   pill: {
     flexDirection: 'row', alignItems: 'center', backgroundColor: PILL_BG, borderRadius: 999,
     paddingHorizontal: 6, paddingVertical: 4,

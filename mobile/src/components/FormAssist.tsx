@@ -3,7 +3,7 @@ import { View, Text, StyleSheet, Pressable } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { Button, Input } from './ui';
 import AiUsageBanner from './AiUsageBanner';
-import AssistantIcon from './AssistantIcon';
+import CalenChatIcon from './CalenChatIcon';
 import { formAssistApi, FormAssistField } from '../api';
 import { usePrivacyPrefs } from '../lib/privacyPrefs';
 import { ASSISTANT_NAME } from '../config';
@@ -81,7 +81,7 @@ export default function FormAssist({
         style={[styles.header, expanded && styles.headerOpen]}
         onPress={() => setExpanded((v) => !v)}
       >
-        <AssistantIcon size={18} color={colors.primary} />
+        <CalenChatIcon size={18} color={colors.primary} cColor={colors.background} />
         <Text style={styles.title}>{title}</Text>
         <Ionicons name={expanded ? 'chevron-up' : 'chevron-down'} size={16} color={colors.textMuted} style={styles.chevron} />
       </Pressable>

@@ -2,10 +2,21 @@
 // The code is a high-entropy fallback that can unlock the account's encrypted
 // data if the password/passkey is lost. It is NEVER stored server-side — lose
 // every factor and the data is unrecoverable by design (no server escrow). The
-// "I've saved it" gate is deliberate friction. Mirrors the web RecoveryCodeDialog.
+// re-entry gate is deliberate friction. Mirrors the web RecoveryCodeDialog.
+//
+// Single-purpose: capture the recovery code. Adding a passkey is a separate,
+// optional durability step handled in Privacy & data → Recovery methods (the
+// recovery-health card nudges password accounts there) — the modal no longer
+// pushes it inline, so a password signup isn't nagged to set up a passkey right
+// after choosing not to use one.
 
 import React, { useEffect, useState } from 'react';
-import { Modal, View, Text, StyleSheet, Pressable, Alert } from 'react-native';
+import {
+  Modal, View, Text, StyleSheet, Pressable, TextInput,
+  KeyboardAvoidingView, ScrollView, Platform,
+} from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useQueryClient } from '@tanstack/react-query';
 import * as Clipboard from 'expo-clipboard';
 import { colors, spacing, radius } from '../theme';
 import { Button } from './ui';
@@ -13,25 +24,37 @@ import {
   subscribeRecoveryCode,
   getPendingRecoveryCode,
   clearRecoveryCode,
-  addPasskeyFactor,
+  markRecoverySetup,
+  ensureHouseholdKey,
+  subscribeE2eeActivated,
 } from '../lib/e2ee';
-import { passkeysSupported } from '../lib/passkeys';
 
 export default function RecoveryCodeModal() {
+  const qc = useQueryClient();
+  const insets = useSafeAreaInsets();
   const [code, setCode] = useState<string | null>(getPendingRecoveryCode());
-  const [acknowledged, setAcknowledged] = useState(false);
+  // Require the user to re-enter the code before continuing. A self-attested "I
+  // saved it" checkbox is too easy to click through, and under mandatory E2EE a
+  // lost code + no passkey = permanently unrecoverable data. Re-entry proves the
+  // code was actually captured (typed or pasted from wherever they stored it).
+  const [confirmInput, setConfirmInput] = useState('');
   const [copied, setCopied] = useState(false);
-  // Two-step flow: capture the recovery code, then (where supported) offer a
-  // passkey as a convenient second unlock factor. Under the mandate, losing
-  // every factor means the data is unrecoverable — so we push both.
-  const [phase, setPhase] = useState<'code' | 'passkey'>('code');
-  const [busy, setBusy] = useState(false);
+  const norm = (s: string) => s.replace(/[\s-]/g, '').toUpperCase();
+  const confirmed = !!code && norm(confirmInput) === norm(code);
 
   useEffect(() => subscribeRecoveryCode(() => {
     setCode(getPendingRecoveryCode());
-    setPhase('code');
-    setAcknowledged(false);
+    setConfirmInput('');
   }), []);
+
+  // Refetch the household's encryption status whenever born-encrypted activation
+  // lands (register→recovery, leave-household, on-unlock). This modal is always
+  // mounted at the app root, so it's a stable home for the subscription; without
+  // it the Encryption card keeps showing the stale pre-activation "Not encrypted
+  // yet" it fetched before the background drop committed.
+  useEffect(() => subscribeE2eeActivated(() => {
+    qc.invalidateQueries({ queryKey: ['household'] });
+  }), [qc]);
 
   async function copy() {
     if (!code) return;
@@ -40,89 +63,108 @@ export default function RecoveryCodeModal() {
     setTimeout(() => setCopied(false), 1500);
   }
 
+  // Paste from the clipboard into the confirm field so the user doesn't have to
+  // retype the 25-char code by hand (e.g. after copying it into a password
+  // manager). The normalized equality check below still gates "Continue".
+  async function paste() {
+    const text = await Clipboard.getStringAsync();
+    if (text) setConfirmInput(text.trim());
+  }
+
   function close() {
-    setAcknowledged(false);
-    setPhase('code');
+    setConfirmInput('');
     clearRecoveryCode();
   }
 
-  // Advance from the recovery-code step: offer the passkey step where the device
-  // supports it, otherwise finish.
-  function afterCode() {
-    if (passkeysSupported()) setPhase('passkey');
-    else close();
+  // Repaint any open recovery-health guard (e.g. the Account view) once the code
+  // is saved. The health query is keyed globally, so invalidating it here is what
+  // makes the screen behind the modal reflect the just-saved code — otherwise it
+  // keeps showing the stale pre-setup "Set up recovery" state.
+  function refreshRecoveryState() {
+    qc.invalidateQueries({ queryKey: ['recoveryHealth'] });
+    qc.invalidateQueries({ queryKey: ['passkeyFactor'] });
   }
 
-  async function enablePasskey() {
-    setBusy(true);
-    try {
-      const ok = await addPasskeyFactor();
-      if (ok) close();
-    } catch (err) {
-      Alert.alert('Couldn’t set up Face ID', (err as Error)?.message ?? 'Please try again later.');
-    } finally {
-      setBusy(false);
-    }
+  // Saving the code satisfies the recovery mandate (a non-password unlock
+  // factor). Now that a durable recovery factor is confirmed, the born-encrypted
+  // drop is permitted — nudge it along (ensureHouseholdKey funnels into the
+  // activation) instead of waiting for the next unlock — then close.
+  function afterCode() {
+    markRecoverySetup()
+      .then(() => ensureHouseholdKey().catch(() => {}))
+      .then(refreshRecoveryState)
+      .catch(() => {});
+    close();
   }
 
   return (
     <Modal visible={!!code} transparent animationType="fade" onRequestClose={() => {}}>
-      <View style={styles.backdrop}>
-        <View style={styles.card}>
-          {phase === 'code' ? (
-            <>
-              <Text style={styles.title}>Save your recovery code</Text>
-              <Text style={styles.body}>
-                Your data is end-to-end encrypted. This one-time code is the only way to
-                regain access if you lose your password and other sign-in methods.{' '}
-                <Text style={styles.bold}>We can’t recover it for you.</Text>
-              </Text>
+      <KeyboardAvoidingView
+        style={styles.backdrop}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      >
+        <ScrollView
+          contentContainerStyle={[
+            styles.scrollContent,
+            { paddingTop: insets.top + spacing.lg, paddingBottom: insets.bottom + spacing.lg },
+          ]}
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}
+        >
+          <View style={styles.card}>
+            <Text style={styles.title}>Save your recovery code</Text>
+            <Text style={styles.body}>
+              Your data is end-to-end encrypted. This one-time code is the only way to
+              regain access if you lose your password and other sign-in methods.{' '}
+              <Text style={styles.bold}>We can’t recover it for you.</Text>
+            </Text>
 
-              <View style={styles.codeBox}>
-                <Text style={styles.code} selectable>{code}</Text>
-              </View>
+            <View style={styles.codeBox}>
+              <Text style={styles.code} selectable>{code}</Text>
+            </View>
 
-              <Pressable onPress={copy} style={styles.copyBtn}>
-                <Text style={styles.copyText}>{copied ? 'Copied ✓' : 'Copy code'}</Text>
+            <Pressable onPress={copy} style={styles.copyBtn}>
+              <Text style={styles.copyText}>{copied ? 'Copied ✓' : 'Copy code'}</Text>
+            </Pressable>
+
+            <Text style={styles.note}>
+              Resetting your password restores sign-in only — it does not by itself
+              decrypt old data. Keep this code.
+            </Text>
+
+            <Text style={styles.confirmLabel}>Re-enter your recovery code to confirm you’ve saved it</Text>
+            <View style={styles.confirmRow}>
+              <TextInput
+                style={[styles.confirmInput, styles.confirmInputFlex]}
+                value={confirmInput}
+                onChangeText={setConfirmInput}
+                autoCapitalize="characters"
+                autoCorrect={false}
+                autoComplete="off"
+                placeholder="Enter the code above"
+                placeholderTextColor={colors.textMuted}
+              />
+              <Pressable onPress={paste} style={styles.pasteBtn} hitSlop={8}>
+                <Text style={styles.pasteText}>Paste</Text>
               </Pressable>
+            </View>
 
-              <Text style={styles.note}>
-                Resetting your password restores sign-in only — it does not by itself
-                decrypt old data. Keep this code.
-              </Text>
-
-              <Pressable style={styles.check} onPress={() => setAcknowledged((v) => !v)}>
-                <View style={[styles.checkbox, acknowledged && styles.checkboxOn]}>
-                  {acknowledged && <Text style={styles.checkmark}>✓</Text>}
-                </View>
-                <Text style={styles.checkLabel}>I’ve saved my recovery code somewhere safe</Text>
-              </Pressable>
-
-              <Button title="Continue" onPress={afterCode} disabled={!acknowledged} />
-            </>
-          ) : (
-            <>
-              <Text style={styles.title}>Add Face ID unlock</Text>
-              <Text style={styles.body}>
-                Add a passkey so you can unlock your encrypted data with Face ID or Touch
-                ID — a faster second factor if you ever forget your password.
-              </Text>
-              <Button title={busy ? 'Setting up…' : 'Enable Face ID'} onPress={enablePasskey} disabled={busy} />
-              <Pressable style={styles.skip} onPress={close} disabled={busy}>
-                <Text style={styles.skipText}>Not now</Text>
-              </Pressable>
-            </>
-          )}
-        </View>
-      </View>
+            <Button title="Continue" onPress={afterCode} disabled={!confirmed} />
+          </View>
+        </ScrollView>
+      </KeyboardAvoidingView>
     </Modal>
   );
 }
 
 const styles = StyleSheet.create({
-  backdrop: {
-    flex: 1, backgroundColor: 'rgba(0,0,0,0.6)',
-    alignItems: 'center', justifyContent: 'center', padding: spacing.lg,
+  backdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)' },
+  // flexGrow + center keeps the card vertically centered when it fits, but lets
+  // it scroll (rather than clip top/bottom) on a small screen or with the
+  // keyboard up.
+  scrollContent: {
+    flexGrow: 1, alignItems: 'center', justifyContent: 'center',
+    paddingHorizontal: spacing.lg,
   },
   card: {
     width: '100%', maxWidth: 420, backgroundColor: colors.surface,
@@ -140,14 +182,17 @@ const styles = StyleSheet.create({
   copyBtn: { alignSelf: 'flex-start', paddingVertical: spacing.xs },
   copyText: { color: colors.primary, fontWeight: '600' },
   note: { color: colors.textMuted, fontSize: 12, lineHeight: 17, marginTop: spacing.xs },
-  check: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, marginVertical: spacing.sm },
-  checkbox: {
-    width: 22, height: 22, borderRadius: 6, borderWidth: 2, borderColor: colors.border,
-    alignItems: 'center', justifyContent: 'center',
+  confirmLabel: { color: colors.text, fontSize: 14, marginTop: spacing.sm },
+  confirmRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, marginVertical: spacing.sm },
+  confirmInput: {
+    backgroundColor: colors.background, borderRadius: radius.md, borderWidth: 1,
+    borderColor: colors.border, color: colors.text, fontSize: 16, letterSpacing: 2,
+    paddingHorizontal: spacing.md, paddingVertical: spacing.sm,
   },
-  checkboxOn: { backgroundColor: colors.primary, borderColor: colors.primary },
-  checkmark: { color: '#fff', fontSize: 14, fontWeight: '700' },
-  checkLabel: { color: colors.text, flex: 1, fontSize: 14 },
-  skip: { alignSelf: 'center', paddingVertical: spacing.sm },
-  skipText: { color: colors.textMuted, fontSize: 14, fontWeight: '600' },
+  confirmInputFlex: { flex: 1 },
+  pasteBtn: {
+    backgroundColor: colors.background, borderRadius: radius.md, borderWidth: 1,
+    borderColor: colors.border, paddingHorizontal: spacing.md, paddingVertical: spacing.sm,
+  },
+  pasteText: { color: colors.primary, fontWeight: '600', fontSize: 15 },
 });

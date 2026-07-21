@@ -11,8 +11,13 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Ionicons } from '@expo/vector-icons';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import { tasksApi, historyApi, odometerApi } from '../../api';
-import { Button, Card, Screen, Input, ListRow, DateField, CenteredLoader, BottomSheet, HeaderIconButton } from '../../components/ui';
+import { computeNextDueDate, computeNextDueKm, avgKmPerDay, estimateDateFromKm } from '@household/calendar';
+import { tasksApi, historyApi } from '../../api';
+import { openRecord, sealUpdate } from '../../lib/e2ee';
+import { TASK_ENC } from '../../lib/encSubsets';
+import { loadOdometerData } from '../../lib/odometer';
+import { Button, Card, Screen, Input, ListRow, DateField, CenteredLoader, BottomSheet, HeaderIconButton, IconAvatar } from '../../components/ui';
+import { categoryMeta, resolveTaskIcon } from '../../lib/maintenanceCategories';
 import {
   recurrenceLabel,
   formatCalendarDate,
@@ -65,7 +70,13 @@ export default function TaskDetailScreen() {
 
   const taskQ = useQuery({
     queryKey: ['tasks', id],
-    queryFn: async () => (await tasksApi.get(id)).data,
+    // Decrypt the task and its populated refs (their names are sealed content).
+    queryFn: async () => {
+      const t = await openRecord('MaintenanceTask', (await tasksApi.get(id)).data);
+      if (t.itemId && typeof t.itemId === 'object') t.itemId = await openRecord('Item', t.itemId);
+      if (t.categoryId && typeof t.categoryId === 'object') t.categoryId = await openRecord('Category', t.categoryId);
+      return t;
+    },
   });
   const task = taskQ.data;
 
@@ -75,15 +86,21 @@ export default function TaskDetailScreen() {
   });
 
   const itemId = task?.itemId && typeof task.itemId === 'object' ? task.itemId._id : undefined;
+  // Decrypted odometer state (Signal-parity D5): currentKm/kmPerDay are derived
+  // on-device from the sealed logs.
   const odoQ = useQuery({
     queryKey: ['odometer', itemId],
-    queryFn: async () => (await odometerApi.get(itemId!)).data,
+    queryFn: () => loadOdometerData(itemId!),
     enabled: !!itemId && !!task?.intervalKm,
   });
   const currentKm = odoQ.data?.currentKm;
 
   const invalidate = () => {
     qc.invalidateQueries({ queryKey: ['tasks'] });
+    // Tasks also surface on the calendar (agenda/day/month/search), which caches
+    // under a separate ['calendar'] key — refetch it so edits show without a
+    // manual pull-to-refresh.
+    qc.invalidateQueries({ queryKey: ['calendar'] });
   };
 
   const togglePause = useMutation({
@@ -91,11 +108,49 @@ export default function TaskDetailScreen() {
     onSuccess: invalidate,
   });
 
+  // Completion is client-computed now (Signal-parity D4/D5): the next due date
+  // (shared computeNextDueDate), the mileage rollover (computeNextDueKm), and
+  // the km-based estimate (avgKmPerDay/estimateDateFromKm over the decrypted
+  // logs) are all derived here; the server just records what we send, plus the
+  // task's re-sealed enc carrying the new nextDueDate.
   const complete = useMutation({
-    mutationFn: () => {
-      const payload: Record<string, unknown> = { ...form };
-      if (!payload.odometerReading) delete payload.odometerReading;
-      return tasksApi.complete(id, payload);
+    mutationFn: async () => {
+      const t = task!; // decrypted by taskQ
+      const completedDate = new Date(form.completedDate);
+      const odometerReading = form.odometerReading ? Number(form.odometerReading) : null;
+
+      // Time-based next due date; mileage tasks keep their date unless a new
+      // reading yields an estimate (the old server rule, verbatim).
+      let nextDueDate: string | null;
+      if (!t.intervalKm) {
+        const d = t.recurrence?.type !== 'one-time' ? computeNextDueDate(t, completedDate) : null;
+        nextDueDate = d ? d.toISOString() : null;
+      } else {
+        nextDueDate = t.nextDueDate ?? null;
+      }
+
+      const payload: Record<string, unknown> = { completedDate: form.completedDate, notes: form.notes };
+      if (odometerReading != null) {
+        payload.odometerReading = odometerReading;
+        if (t.intervalKm) {
+          const nextDueKm = computeNextDueKm(t, odometerReading);
+          payload.nextDueKm = nextDueKm;
+          payload.lastServiceKm = odometerReading;
+          const logs = (odoQ.data?.logs ?? []).filter((l) => l.reading != null);
+          const kmPerDay = avgKmPerDay([
+            ...(logs as Array<{ reading: number; recordedAt: string }>),
+            { reading: odometerReading, recordedAt: new Date() },
+          ]);
+          if (kmPerDay && nextDueKm) {
+            const est = estimateDateFromKm(nextDueKm, odometerReading, kmPerDay);
+            if (est) nextDueDate = est.toISOString();
+          }
+        }
+      }
+      payload.nextDueDate = nextDueDate;
+
+      const sealed = await sealUpdate('MaintenanceTask', id, payload, TASK_ENC({ ...t, nextDueDate }));
+      return tasksApi.complete(id, sealed);
     },
     onSuccess: () => {
       setCompleteOpen(false);
@@ -133,6 +188,10 @@ export default function TaskDetailScreen() {
   if (taskQ.isLoading || !task) {
     return <CenteredLoader color={accent} />;
   }
+
+  // Category name from the populated ref, used for the header icon fallback + tint.
+  const categoryName =
+    task.categoryId && typeof task.categoryId === 'object' ? task.categoryId.name : null;
 
   const remainingKm =
     task.intervalKm && task.nextDueKm != null && currentKm != null ? task.nextDueKm - currentKm : null;
@@ -172,7 +231,14 @@ export default function TaskDetailScreen() {
       </Card>
 
       <Card style={styles.headerCard}>
-        <Text style={styles.screenTitle}>{task.title}</Text>
+        <View style={styles.headerTitleRow}>
+          <IconAvatar
+            mdiIcon={resolveTaskIcon(task.icon, categoryName)}
+            bg={categoryName ? categoryMeta(categoryName).color : accent}
+            size={44}
+          />
+          <Text style={[styles.screenTitle, styles.headerTitleText]}>{task.title}</Text>
+        </View>
         {task.description ? <Text style={styles.body}>{task.description}</Text> : null}
       </Card>
 
@@ -255,6 +321,8 @@ export default function TaskDetailScreen() {
 
 const styles = StyleSheet.create({
   headerCard: { marginBottom: spacing.md, gap: spacing.sm },
+  headerTitleRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.md },
+  headerTitleText: { flex: 1 },
   screenTitle: { fontSize: 24, fontWeight: '700', color: colors.text },
   actionCard: { marginBottom: spacing.md, padding: 0, overflow: 'hidden' },
   actionRow: { flexDirection: 'row' },

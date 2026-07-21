@@ -2,7 +2,6 @@ import React from 'react';
 import { TouchableOpacity, View, Text, StyleSheet } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
-import StorageBanner from '../components/StorageBanner';
 import { RootStackParamList } from './types';
 import { colors } from '../theme';
 import { ASSISTANT_NAME } from '../config';
@@ -16,7 +15,8 @@ import { weatherCardColors } from '../lib/weatherTheme';
 import CalendarScreen from '../screens/calendar/CalendarScreen';
 import CalendarDayScreen from '../screens/calendar/CalendarDayScreen';
 import EventFormScreen from '../screens/calendar/EventFormScreen';
-import CalendarAssistantScreen from '../screens/calendar/CalendarAssistantScreen';
+import EventDetailScreen from '../screens/calendar/EventDetailScreen';
+import AssistantScreen from '../screens/chat/AssistantScreen';
 import CalendarSearchScreen from '../screens/calendar/CalendarSearchScreen';
 import CalendarsScreen from '../screens/calendar/CalendarsScreen';
 import AddCalendarMenuScreen from '../screens/calendar/AddCalendarMenuScreen';
@@ -32,6 +32,9 @@ import InvitationsScreen from '../screens/calendar/InvitationsScreen';
 import EventInviteesScreen from '../screens/calendar/EventInviteesScreen';
 import EventTravelTimeScreen from '../screens/calendar/EventTravelTimeScreen';
 import EventRepeatScreen from '../screens/calendar/EventRepeatScreen';
+import EventLocationScreen from '../screens/calendar/EventLocationScreen';
+import InteractionScreen from '../screens/calendar/InteractionScreen';
+import EventActionScreen from '../screens/calendar/EventActionScreen';
 
 // Maintenance (item-centric)
 import MaintenanceScreen from '../screens/maintenance/MaintenanceScreen';
@@ -46,6 +49,7 @@ import MaintenanceChatScreen from '../screens/maintenance/MaintenanceChatScreen'
 // Chores (separate flow)
 import ChoresScreen from '../screens/maintenance/ChoresScreen';
 import ChoreDetailScreen from '../screens/maintenance/ChoreDetailScreen';
+import AddChoreScreen from '../screens/maintenance/AddChoreScreen';
 import ChoreFormScreen from '../screens/maintenance/ChoreFormScreen';
 import ChoreTemplatesScreen from '../screens/maintenance/ChoreTemplatesScreen';
 
@@ -61,16 +65,20 @@ import MealPlannerSettingsScreen from '../screens/kitchen/MealPlannerSettingsScr
 import AddMealScreen from '../screens/kitchen/AddMealScreen';
 
 // Trips
-import VacationsScreen from '../screens/trips/VacationsScreen';
+import TripsScreen from '../screens/trips/TripsScreen';
 import TripFormScreen from '../screens/trips/TripFormScreen';
 import TripDetailScreen from '../screens/trips/TripDetailScreen';
 import TripItemFormScreen from '../screens/trips/TripItemFormScreen';
 import TripSettleScreen from '../screens/trips/TripSettleScreen';
-import VacationAssistantScreen from '../screens/trips/VacationAssistantScreen';
+import TripAssistantScreen from '../screens/trips/TripAssistantScreen';
 
 // Profile
 import ProfileScreen from '../screens/ProfileScreen';
 import AccountScreen from '../screens/profile/AccountScreen';
+import PrivacyDataScreen from '../screens/profile/PrivacyDataScreen';
+import GuardianRecoveryScreen from '../screens/profile/GuardianRecoveryScreen';
+import RecoveryCodeScreen from '../screens/profile/RecoveryCodeScreen';
+import LinkDeviceScreen from '../screens/profile/LinkDeviceScreen';
 import PeopleScreen from '../screens/profile/PeopleScreen';
 import PersonDetailScreen from '../screens/profile/PersonDetailScreen';
 import PersonFormScreen from '../screens/profile/PersonFormScreen';
@@ -82,7 +90,7 @@ import UpsellSheet from '../screens/plan/UpsellSheet';
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
 
-// A header is tinted with its calendar's primary colour (Vacations purple,
+// A header is tinted with its calendar's primary colour (Trips purple,
 // Maintenance blue, Chores orange, Meals teal, Holidays red, Weather blue);
 // calendar-family screens use black.
 const BLACK = '#000';
@@ -142,6 +150,16 @@ const editableCalendarHome = (title: string, calendarId: string) =>
     ),
   });
 
+// Assistant chat screens open full screen. (They were briefly a resizable form
+// sheet, but react-native-screens doesn't give a form sheet's JS content a stable
+// height across detent drags, which broke the chat layout — full screen is the
+// reliable presentation.)
+const assistantSheet = (title: string) => ({
+  ...hdr(colors.background),
+  headerShadowVisible: false,
+  title,
+});
+
 // One flat stack rooted at the calendar (web's `/` → `/calendar`). The calendar
 // home + events list hide the native header and render their own black top bar.
 export default function AppNavigator() {
@@ -151,8 +169,6 @@ export default function AppNavigator() {
   useSyncTimezone();
   return (
     <View style={styles.root}>
-      {/* Persistent cloud-purge countdown, above every screen (§6.2). */}
-      <StorageBanner />
       <Stack.Navigator
       initialRouteName="CalendarHome"
       screenOptions={{
@@ -167,8 +183,11 @@ export default function AppNavigator() {
           CalendarHome (crossfading layers), not as a separate route. */}
       <Stack.Screen name="CalendarHome" component={CalendarScreen} options={{ headerShown: false }} />
       <Stack.Screen name="CalendarDay" component={CalendarDayScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Day' }} />
+      <Stack.Screen name="EventDetail" component={EventDetailScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Event' }} />
       <Stack.Screen name="EventForm" component={EventFormScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Event' }} />
-      <Stack.Screen name="CalendarAssistant" component={CalendarAssistantScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: `${ASSISTANT_NAME} · Calendar` }} />
+      {/* Unified assistant: Calendar / Chores / Task Plan swap in place inside one
+          view; header stays "Calen". Entry points pass `initial` to pick a body. */}
+      <Stack.Screen name="Assistant" component={AssistantScreen} options={assistantSheet(ASSISTANT_NAME)} />
       <Stack.Screen name="CalendarSearch" component={CalendarSearchScreen} options={{ ...hdr(BLACK), title: 'Search' }} />
       <Stack.Screen
         name="Calendars"
@@ -203,6 +222,9 @@ export default function AppNavigator() {
       <Stack.Screen name="EventInvitees" component={EventInviteesScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Invitees' }} />
       <Stack.Screen name="EventTravelTime" component={EventTravelTimeScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Travel Time' }} />
       <Stack.Screen name="EventRepeat" component={EventRepeatScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Repeat' }} />
+      <Stack.Screen name="EventLocation" component={EventLocationScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Location' }} />
+      <Stack.Screen name="Interaction" component={InteractionScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Calen Call' }} />
+      <Stack.Screen name="EventAction" component={EventActionScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Event Action' }} />
       <Stack.Screen name="AddCalendarMenu" component={AddCalendarMenuScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Add Calendar' }} />
       <Stack.Screen name="AddCalendar" component={AddCalendarScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'New Calendar' }} />
       <Stack.Screen name="SubscribeCalendar" component={SubscribeCalendarScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Subscribe' }} />
@@ -238,13 +260,14 @@ export default function AppNavigator() {
       <Stack.Screen name="TaskTemplateReview" component={TaskTemplateReviewScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Link Items' }} />
       <Stack.Screen name="ItemDetail" component={ItemDetailScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Item' }} />
       <Stack.Screen name="ItemForm" component={ItemFormScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Item' }} />
-      <Stack.Screen name="MaintenanceChat" component={MaintenanceChatScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: `${ASSISTANT_NAME} · Maintenance` }} />
+      <Stack.Screen name="MaintenanceChat" component={MaintenanceChatScreen} options={assistantSheet(`${ASSISTANT_NAME} · Maintenance`)} />
 
       {/* Chores (orange) */}
       <Stack.Screen name="ChoresHome" component={ChoresScreen} options={editableCalendarHome('Chores', 'chores')} />
       <Stack.Screen name="ChoreDetail" component={ChoreDetailScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Chore' }} />
+      <Stack.Screen name="AddChore" component={AddChoreScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Add Chore' }} />
       <Stack.Screen name="ChoreForm" component={ChoreFormScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Chore' }} />
-      <Stack.Screen name="ChoreTemplates" component={ChoreTemplatesScreen} options={{ ...hdr(cal.chores), title: 'Chore Templates' }} />
+      <Stack.Screen name="ChoreTemplates" component={ChoreTemplatesScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Chore Templates' }} />
 
       {/* Kitchen / meals (teal) */}
       <Stack.Screen name="KitchenHome" component={KitchenScreen} options={editableCalendarHome('Meals', 'recipes')} />
@@ -258,16 +281,20 @@ export default function AppNavigator() {
       <Stack.Screen name="AddMeal" component={AddMealScreen} options={{ headerStyle: { backgroundColor: colors.background }, headerTintColor: colors.text, headerShadowVisible: false, title: '' }} />
 
       {/* Trips (purple) */}
-      <Stack.Screen name="Vacations" component={VacationsScreen} options={editableCalendarHome('Vacations', 'vacations')} />
+      <Stack.Screen name="Trips" component={TripsScreen} options={editableCalendarHome('Trips', 'trips')} />
       <Stack.Screen name="TripForm" component={TripFormScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Trip' }} />
-      <Stack.Screen name="TripDetail" component={TripDetailScreen} options={{ ...hdr(cal.vacations), title: 'Trip' }} />
+      <Stack.Screen name="TripDetail" component={TripDetailScreen} options={{ ...hdr(cal.trips), title: 'Trip' }} />
       <Stack.Screen name="TripItemForm" component={TripItemFormScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Booking' }} />
-      <Stack.Screen name="TripSettle" component={TripSettleScreen} options={{ ...hdr(cal.vacations), title: 'Settle Up' }} />
-      <Stack.Screen name="VacationAssistant" component={VacationAssistantScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: `${ASSISTANT_NAME} · Trips` }} />
+      <Stack.Screen name="TripSettle" component={TripSettleScreen} options={{ ...hdr(cal.trips), title: 'Settle Up' }} />
+      <Stack.Screen name="TripAssistant" component={TripAssistantScreen} options={assistantSheet(`${ASSISTANT_NAME} · Trips`)} />
 
       {/* Profile (app primary) */}
       <Stack.Screen name="ProfileHome" component={ProfileScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Profile' }} />
       <Stack.Screen name="Account" component={AccountScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Account' }} />
+      <Stack.Screen name="PrivacyData" component={PrivacyDataScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Privacy & data' }} />
+      <Stack.Screen name="LinkDevice" component={LinkDeviceScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Link device' }} />
+      <Stack.Screen name="GuardianRecovery" component={GuardianRecoveryScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Guardian recovery' }} />
+      <Stack.Screen name="RecoveryCode" component={RecoveryCodeScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Recovery code' }} />
       <Stack.Screen name="People" component={PeopleScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Contacts' }} />
       <Stack.Screen name="PersonDetail" component={PersonDetailScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Contact' }} />
       <Stack.Screen name="PersonForm" component={PersonFormScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Person' }} />
@@ -277,7 +304,7 @@ export default function AppNavigator() {
           are its drill-ins — catalog / usage — plus the upsell sheet the
           AI-surface nudges open as a modal. */}
       <Stack.Screen name="ComparePlans" component={ComparePlansScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Plans' }} />
-      <Stack.Screen name="AiUsage" component={AiUsageScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'AI Usage' }} />
+      <Stack.Screen name="AiUsage" component={AiUsageScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'AI' }} />
       <Stack.Screen
         name="Upsell"
         component={UpsellSheet}

@@ -1,7 +1,7 @@
 ---
 title: People & contacts
 status: current
-last-verified: e38ef9d (2026-07-21)
+last-verified: d3d50a0 (2026-07-21)
 code:
   - mobile/src/screens/profile/PeopleScreen.tsx
   - mobile/src/screens/profile/PersonDetailScreen.tsx

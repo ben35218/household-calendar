@@ -48,9 +48,14 @@ function isRecordB64(s, max) {
 // An AEAD record ciphertext blob (a document's `enc` field), written by clients
 // during dual-write. Opaque to the server — we only check the shape. Returns an
 // error string if malformed, or null if valid. See docs/E2EE-SYNC-PLAN.md §3.2.
+// Signal-parity C3: the opaque envelope bumps the record `alg` to '…-v2' (the
+// collection moved inside the ciphertext). Both are valid at rest — reads accept
+// either and new writes are v2 — so the server, which only checks the shape,
+// allows both. Key/file-key wraps keep the v1 alg.
+const RECORD_ALGS = new Set(['xchacha20poly1305-ietf', 'xchacha20poly1305-ietf-v2']);
 function validateRecordEnvelope(enc) {
   if (!enc || typeof enc !== 'object') return 'invalid enc';
-  if (enc.alg !== 'xchacha20poly1305-ietf') return 'invalid enc.alg';
+  if (!RECORD_ALGS.has(enc.alg)) return 'invalid enc.alg';
   if (!isRecordB64(enc.nonce, 64)) return 'invalid enc.nonce'; // 24-byte nonce → 32 chars
   if (!isRecordB64(enc.ct, 2_000_000)) return 'invalid enc.ct';
   return null;
@@ -72,6 +77,10 @@ function pickRecordEnc(body) {
     const err = validateRecordEnvelope(body.enc);
     if (err) throw err;
     out.enc = { alg: body.enc.alg, nonce: body.enc.nonce, ct: body.enc.ct };
+    // Signal-parity D1/D2 key-scope discriminator: 'cal'/'trip' = sealed under a
+    // resource key (its keyVersion is a resource-key version, not an HDK version).
+    // Opaque to the server; preserved so a reader knows which key opens it.
+    if (body.enc.ks === 'cal' || body.enc.ks === 'trip') out.enc.ks = body.enc.ks;
     if (Number.isInteger(body.keyVersion)) out.keyVersion = body.keyVersion;
   }
   return out;

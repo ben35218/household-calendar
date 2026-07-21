@@ -88,7 +88,37 @@ your private key. The key primitives are in
 - **Endpoints:** `server/src/routes/auth.js`, `authPasskey.js` (mounted under
   `/api/auth`), `keys.js` (`/api/keys`).
 - **Client:** `screens/auth/*` (Login, Register, ForgotPassword), `store/auth.tsx`,
-  `lib/passkeys.ts`, `LinkDeviceScreen`, `AccountScreen`.
+  `lib/passkeys.ts`, `LinkDeviceScreen`, `AccountScreen`, `PrivacyDataScreen`.
+
+## Profile information architecture
+
+`ProfileHome` is an iOS-style drill-in hub. Identity and credentials are split
+from encryption/recovery across two screens so neither is cluttered:
+
+- **`AccountScreen`** (`Account`) — identity + location (header-check save),
+  Reminders, Sign-in (email + password change; password change requires the
+  E2EE key unlocked so it can re-wrap), Sign out, Delete account. Deep-link
+  param `{ section?: 'account' | 'reminders' | 'security' }`.
+- **`PrivacyDataScreen`** (`PrivacyData`) — the encryption status hero + inline
+  unlock UI, a **Recovery methods** roll-up (recovery code + Face ID/passkey,
+  each with a status badge — the non-password backstops, mirroring
+  `useRecoveryHealth`; the password is an everyday unlock, not a recovery
+  method, and a reset password can't decrypt at all), Devices
+  (sessions + held-reset cancel + link-device), and data controls (app lock,
+  screen security, transparency note, encrypted backup). Deep-link param
+  `{ focus?: 'unlock' | 'recovery' }`; `focus: 'unlock'` auto-presents Face ID
+  when a passkey is enrolled. This is the target of the locked-data prompt.
+
+Every account gets a recovery code by default at enrollment (issued via the
+one-time `RecoveryCodeModal`); the Recovery methods roll-up surfaces its status
+(backed by `useRecoveryHealth`). Its row opens a dedicated `RecoveryCodeScreen`
+that explains the code — including that it is **never stored and cannot be shown
+again** (only once, at creation) — and offers create / replace. Replacing
+invalidates the current code and is gated behind a confirm; the new code is
+surfaced by the app-root `RecoveryCodeModal`. A third method — a
+household member as a **dual-control** recovery backstop (guardian's sealed box +
+a 4-digit PIN) — is specified and built in
+[guardian-recovery.md](guardian-recovery.md).
 
 ## Encryption boundary
 

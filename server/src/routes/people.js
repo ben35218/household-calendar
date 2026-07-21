@@ -3,9 +3,10 @@ const multer  = require('multer');
 const Anthropic = require('@anthropic-ai/sdk');
 const Person  = require('../models/Person');
 const { requireAuth } = require('../middleware/auth');
+const { requireAiEnabled } = require('../middleware/aiConsent');
 const { meter, getConfig } = require('../middleware/usageMeter');
 const { isObjectId, pickRecordEnc } = require('../services/householdKey');
-const { plaintextCreateBlocked, E2EE_REQUIRED_MESSAGE } = require('../services/e2eePolicy');
+const { plaintextCreateBlocked, E2EE_REQUIRED_MESSAGE, stripSealedContent } = require('../services/e2eePolicy');
 
 const router = express.Router();
 router.use(requireAuth);
@@ -76,103 +77,13 @@ function parseVCards(raw) {
 }
 
 // ── CRUD ───────────────────────────────────────────────────────────────────────
-router.get('/', async (req, res) => {
-  try {
-    // Make sure the requesting member has a self-record in the roster.
-    await Person.ensureSelf(req.user);
-    const people = await Person.find({ userId: { $in: req.scopeIds } }).sort({ type: 1, name: 1 });
-    res.json(people);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-router.post('/', async (req, res) => {
-  try {
-    const { type, name, relationship, birthday, interests, notes, address, businessName, phone, email, deviceContactId } = req.body;
-    let enc;
-    try { enc = pickRecordEnc(req.body); }
-    catch (msg) { return res.status(400).json({ error: msg }); }
-    if (plaintextCreateBlocked(req.household, enc.enc)) {
-      return res.status(400).json({ error: E2EE_REQUIRED_MESSAGE });
-    }
-    const person = await Person.create({
-      ...(isObjectId(req.body._id) ? { _id: req.body._id } : {}),
-      userId: req.user._id,
-      type, name, relationship, birthday, interests, notes, address, businessName, phone, email, deviceContactId,
-      ...enc,
-    });
-    res.status(201).json(person);
-  } catch (err) {
-    res.status(400).json({ error: err.message });
-  }
-});
-
-// Client-driven self-Person seed. Post-drop the server can't create readable
-// content, so ensureSelf stops creating a plaintext self-record (see Person.js);
-// the client instead seeds an *encrypted* one and posts it here. Idempotent, and
-// accountId/type are stamped server-side (never trusted from the client) so this
-// is the undeletable "You" card. Mirrors POST / for the plaintext/enc columns.
-router.post('/self', async (req, res) => {
-  try {
-    let self = await Person.findOne({ accountId: req.user._id });
-    if (!self) {
-      let enc;
-      try { enc = pickRecordEnc(req.body); }
-      catch (msg) { return res.status(400).json({ error: msg }); }
-      if (plaintextCreateBlocked(req.household, enc.enc)) {
-        return res.status(400).json({ error: E2EE_REQUIRED_MESSAGE });
-      }
-      const { name, relationship, birthday, interests, notes, address, phone, email } = req.body;
-      self = await Person.create({
-        ...(isObjectId(req.body._id) ? { _id: req.body._id } : {}),
-        userId:    req.user._id,
-        accountId: req.user._id,
-        type:      'family',
-        name, relationship, birthday, interests, notes, address, phone, email,
-        ...enc,
-      });
-    }
-    if (!req.user.personId || String(req.user.personId) !== String(self._id)) {
-      await require('../models/User').updateOne({ _id: req.user._id }, { $set: { personId: self._id } });
-    }
-    res.status(201).json(self);
-  } catch (err) {
-    res.status(400).json({ error: err.message });
-  }
-});
-
-router.put('/:id', async (req, res) => {
-  try {
-    const existing = await Person.findOne({ _id: req.params.id, userId: { $in: req.scopeIds } });
-    if (!existing) return res.status(404).json({ error: 'Not found' });
-
-    const { type, name, relationship, birthday, interests, notes, address, phone, email } = req.body;
-    const update = { name, relationship, birthday, interests, notes, address, phone, email };
-    // Self-records always stay 'family'; everyone else can be re-typed freely.
-    update.type = existing.accountId ? 'family' : type;
-    try { Object.assign(update, pickRecordEnc(req.body)); }
-    catch (msg) { return res.status(400).json({ error: msg }); }
-
-    Object.assign(existing, update);
-    await existing.save();
-    res.json(existing);
-  } catch (err) {
-    res.status(400).json({ error: err.message });
-  }
-});
-
-router.delete('/:id', async (req, res) => {
-  try {
-    const person = await Person.findOne({ _id: req.params.id, userId: { $in: req.scopeIds } });
-    if (!person) return res.status(404).json({ error: 'Not found' });
-    if (person.accountId) return res.status(400).json({ error: 'You cannot remove your own profile card.' });
-    await person.deleteOne();
-    res.json({ ok: true });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+// Signal-parity C3b: person content CRUD (list/create/self/update/delete/bulk)
+// moved to the unified opaque store — the client reads its roster from the replica
+// and writes through /records. The self-Person seed + its accountId/type live
+// inside the sealed record now (the server can't stamp or read them), and the
+// "can't delete your own card" + roster-sort rules are enforced client-side. What
+// stays here is contact IMPORT + AI CLASSIFY, which return candidate data the
+// client seals + creates; neither writes a Person row.
 
 // ── Import ─────────────────────────────────────────────────────────────────────
 router.post('/import', upload.single('file'), async (req, res) => {
@@ -187,23 +98,8 @@ router.post('/import', upload.single('file'), async (req, res) => {
   }
 });
 
-router.post('/bulk', async (req, res) => {
-  try {
-    const { people: incoming } = req.body;
-    if (!Array.isArray(incoming) || !incoming.length) {
-      return res.status(400).json({ error: 'people array is required' });
-    }
-    const docs = incoming.map(({ type, name, relationship, birthday, interests, notes, address, businessName, phone, email, deviceContactId }) => ({
-      userId: req.user._id,
-      type, name, relationship, birthday: birthday || undefined, interests: interests || [],
-      notes, address, businessName, phone, email, deviceContactId: deviceContactId || undefined,
-    }));
-    const created = await Person.insertMany(docs, { ordered: false });
-    res.status(201).json({ created: created.length });
-  } catch (err) {
-    res.status(400).json({ error: err.message });
-  }
-});
+// POST /bulk was retired (Signal-parity C3b): bulk import seals + creates each
+// person client-side through /records (peopleApi.bulk).
 
 // ── AI-assisted import ─────────────────────────────────────────────────────────
 // Given raw device contacts, categorize each (family / friend / service) and
@@ -288,7 +184,7 @@ async function enrichProfessional(client, model, r) {
   }
 }
 
-router.post('/classify', meter('chat', 'contactImport'), async (req, res) => {
+router.post('/classify', meter('chat', 'contactImport'), requireAiEnabled, async (req, res) => {
   try {
     const { contacts, enrich } = req.body || {};
     if (!Array.isArray(contacts) || !contacts.length) {
@@ -297,8 +193,11 @@ router.post('/classify', meter('chat', 'contactImport'), async (req, res) => {
     const apiKey = process.env.ANTHROPIC_API_KEY;
     if (!apiKey) return res.status(500).json({ error: 'ANTHROPIC_API_KEY is not configured' });
 
-    // Only pass through the fields we need, keyed for round-tripping.
-    const clean = contacts.slice(0, 100).map((c, i) => ({
+    // Two projections (spec: ai-assistant.md). The MODEL sees name + company
+    // only — that's what drives family/friend/service classification. The full
+    // contact (phone/email/birthday) stays server-side in `src` and merges back
+    // into the results below, unseen by the model.
+    const src = contacts.slice(0, 100).map((c, i) => ({
       key: String(c.key ?? i),
       name: String(c.name ?? '').slice(0, 200),
       phone: c.phone ? String(c.phone).slice(0, 60) : undefined,
@@ -306,6 +205,7 @@ router.post('/classify', meter('chat', 'contactImport'), async (req, res) => {
       birthday: c.birthday ? String(c.birthday).slice(0, 10) : undefined,
       company: c.company ? String(c.company).slice(0, 200) : undefined,
     }));
+    const clean = src.map(({ key, name, company }) => ({ key, name, company }));
 
     const config = await getConfig();
     // Sonnet on all tiers: every plan uses the paid chat model.
@@ -327,7 +227,7 @@ router.post('/classify', meter('chat', 'contactImport'), async (req, res) => {
 
     const toolUse = resp.content.find((b) => b.type === 'tool_use' && b.name === 'classify_contacts');
     const raw = Array.isArray(toolUse?.input?.results) ? toolUse.input.results : [];
-    const byKey = new Map(clean.map((c) => [c.key, c]));
+    const byKey = new Map(src.map((c) => [c.key, c]));
     const results = raw
       .filter((r) => r && byKey.has(String(r.key)))
       .map((r) => {
@@ -349,7 +249,9 @@ router.post('/classify', meter('chat', 'contactImport'), async (req, res) => {
       });
 
     // Web-search enrichment for professionals (best-effort, bounded + parallel).
-    if (enrich !== false) {
+    // OPT-IN (spec): business details go into live web searches only when the
+    // user enabled the lookup for this import.
+    if (enrich === true) {
       const pros = results.filter((r) => r.type === 'service').slice(0, 8);
       const patches = await Promise.all(pros.map((r) => enrichProfessional(client, model, r)));
       pros.forEach((r, i) => {

@@ -1,7 +1,7 @@
 ---
 title: Maintenance (items, tasks, chores)
 status: current
-last-verified: b242e6c (2026-07-20)
+last-verified: 4d68a39 (2026-07-20)
 code:
   - mobile/src/screens/maintenance/
   - server/src/routes/{items,tasks,chores,taskTemplates,choreTemplates,odometer,manuals}.js
@@ -38,14 +38,38 @@ odometer tracking for mileage-based service.
   config (`reminderDaysBefore`, `alert2DaysBefore`, `alertAudience`,
   `alertUserIds`).
 - A `Chore` is the lighter household variant (recurrence, `assignedTo`,
-  `nextDueDate`, alerts) without item binding.
+  `nextDueDate`, alerts) without item binding. Tapping "+" on the chores list
+  opens an **Add Chore chooser** (`AddChoreScreen`) — mirroring the item form's
+  "what would you like to add?" scope step — offering *add a chore by hand*
+  (→ `ChoreForm`) or *use a template* (→ `ChoreTemplates`). The chooser
+  `replace`s itself so Back returns to the list, not the chooser.
+- **"Ask Calen" form-assist** on the task and chore forms fills fields from a
+  plain-language description (via the generic `formAssist` route — AI endpoints
+  here, incl. item photo scan and manual extract/auto-lookup, are refused
+  server-side when the account's AI toggle is off; see
+  [ai-assistant.md](ai-assistant.md)). A field the form doesn't advertise can
+  never be set by the assistant, so the schema advertises the whole editable
+  form: title/instructions(description)/assignee/due-date, the **icon** (a
+  `select` over the form's suggested glyph set), the **alert** timings
+  (`reminderDaysBefore`, `alert2DaysBefore`; chores also expose `alertAudience`),
+  and the **recurrence**. Because the generic route only accepts flat fields, the
+  `RepeatRule` is exposed as primitives (`repeatFrequency`, `repeatInterval`,
+  `repeatWeekday`, `repeatDayOfMonth`, `repeatMonths`) and reassembled client-side
+  (`lib/recurrence.ts` `applyRecurrenceAssistPatch`) — covering daily / every-N /
+  weekly-on-a-day / monthly-on-a-date / yearly-in-months; the niche "on the 2nd
+  Tuesday" ordinal form stays editable only on the Repeat screen. So a request
+  like "make laundry day Saturdays" now updates the repeat rule, not just the
+  next due date.
 - **Completion** recomputes the next due date via `services/recurrence.js`:
   `POST /tasks/:id/complete` logs a `TaskCompletion` and advances `nextDueDate`
   (or `nextDueKm`). `GET /tasks/completions` is the history log. Chore/task CRUD
   otherwise flows through the opaque `/records` store.
 - **Templates:** browse read-only catalogs — `GET /task-templates` (+ `/:id`,
   from `shared/seed/taskTemplates.json`) and `GET /chore-templates` — and add
-  them via the review screens.
+  them via the review screens. Templates are **reusable**: a household may add
+  the same template more than once (nothing blocks re-adding). A template that
+  already backs a record shows a non-blocking "In Use" hint but stays tappable;
+  the stored `templateId` drives only that hint, not any single-use limit.
 
 ### Odometer
 

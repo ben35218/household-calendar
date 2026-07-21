@@ -6,7 +6,7 @@ const mongoose = require('mongoose');
 const contentReportSchema = new mongoose.Schema({
   userId:      { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
   householdId: { type: mongoose.Schema.Types.ObjectId, ref: 'Household' },
-  // Which assistant surface produced it (calendar / maintenance / vacation / chat).
+  // Which assistant surface produced it (calendar / maintenance / trips / chat).
   surface:     { type: String, default: 'assistant' },
   // The flagged assistant message. Capped — enough to review, not a transcript.
   content:     { type: String, default: '', maxlength: 4000 },

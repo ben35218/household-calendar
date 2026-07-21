@@ -1,9 +1,15 @@
 const express = require('express');
 const crypto = require('crypto');
-const CalendarEvent   = require('../models/CalendarEvent');
+// Signal-parity C3b: events live in the unified opaque store. Source-event checks
+// are scope/existence lookups against `Record`; the accepted copy is created from
+// the recipient's client-sealed ciphertext (the server can't build readable
+// content). The plaintext .ics lane stays for non-account/SMS invites (D3).
+const Record          = require('../models/Record');
 const EventInvitation = require('../models/EventInvitation');
 const User            = require('../models/User');
 const { requireAuth } = require('../middleware/auth');
+const { isObjectId, pickRecordEnc } = require('../services/householdKey');
+const { stampHousehold } = require('../services/e2eePolicy');
 const { buildEventICS }       = require('../services/ics');
 const { sendEventInvitation } = require('../services/mailer');
 const { pushToUser }          = require('../services/notify');
@@ -32,6 +38,12 @@ router.get('/public/:id/ics', async (req, res) => {
       crypto.timingSafeEqual(Buffer.from(key), Buffer.from(invitation.shareToken));
     if (!ok) return res.status(404).json({ error: 'Invitation not found' });
 
+    // A sealed invite (D3) has no plaintext snapshot to build an .ics from —
+    // sealed invites are email-to-account, never SMS, so the public link is
+    // only ever hit for a plaintext invitation.
+    if (!invitation.event || !invitation.event.title) {
+      return res.status(404).json({ error: 'Invitation not found' });
+    }
     res.set('Content-Type', 'text/calendar; charset=utf-8');
     res.set('Content-Disposition', 'attachment; filename="invite.ics"');
     res.send(buildEventICS({ uid: invitation._id, event: invitation.event }));
@@ -47,6 +59,29 @@ router.use(requireAuth);
 function addressedToMe(user) {
   return { $or: [{ toUserId: user._id }, { toEmail: user.email }] };
 }
+
+// Resolve an invited email so the organizer's device can decide whether to seal
+// the snapshot (D3): a match with an enrolled identity key gets a sealed box;
+// anyone else gets the plaintext lane. The public key is safe to hand out — it's
+// the same fingerprint used for out-of-band safety-number checks, and `POST /`
+// already reveals account existence. Not exposed for the caller's own household
+// (they see the event directly — this is the cross-household invite surface).
+router.get('/lookup', async (req, res) => {
+  try {
+    const email = String(req.query.email || '').trim().toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      return res.status(400).json({ error: 'A valid email address is required' });
+    }
+    const u = await User.findOne({ email }).select('_id identityPublicKey householdId').lean();
+    const sameHousehold = u && req.user.householdId && String(u.householdId) === String(req.user.householdId);
+    res.json({
+      userExists: !!u,
+      identityPublicKey: u && !sameHousehold ? (u.identityPublicKey || null) : null,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
 // Push "Ben accepted/declined «Lake day»" to the sender's devices. Fire-and-
 // forget: a reply must land even if the sender has no push subscriptions.
@@ -98,29 +133,45 @@ router.post('/', async (req, res) => {
       }
     }
 
-    const source = await CalendarEvent.findOne({ _id: eventId, userId: { $in: req.scopeIds } }).lean();
+    // Signal-parity C3b: the source event lives in the opaque store — verify it's
+    // in the caller's scope (by id) without reading its content.
+    const source = await Record.exists({ _id: eventId, ...req.scopeFilter });
     if (!source) return res.status(404).json({ error: 'Event not found' });
 
-    // Prefer the client's decrypted snapshot; fall back to the source's
-    // plaintext while dual-write still carries it.
-    const snapshot = pickSnapshot(req.body.event) || pickSnapshot(source);
-    if (!snapshot) return res.status(400).json({ error: 'Event content is required' });
+    // D3 sealed lane: the client sealed the snapshot to the recipient's identity
+    // key (opaque here). Otherwise the plaintext lane — the client supplies the
+    // decrypted snapshot (the server can no longer read the sealed source).
+    const sealedEvent = typeof req.body.sealedEvent === 'string' ? req.body.sealedEvent : null;
+    const snapshot = sealedEvent ? null : pickSnapshot(req.body.event);
+    if (!snapshot && !sealedEvent) return res.status(400).json({ error: 'Event content is required' });
+    // guestListVisible is a sealed event field now — the organizer's device sends
+    // it so the guest-list gate below can read it off the invitation, not the event.
+    const guestListVisible = req.body.guestListVisible !== false;
 
     // Accounts are keyed by email, so only email invites resolve a recipient.
-    const recipient = toEmail ? await User.findOne({ email: toEmail }).select('_id householdId').lean() : null;
+    const recipient = toEmail
+      ? await User.findOne({ email: toEmail }).select('_id householdId identityPublicKey').lean()
+      : null;
     if (recipient && req.user.householdId && String(recipient.householdId) === String(req.user.householdId)) {
       return res.status(400).json({ error: 'That person is in your household and already sees this event' });
     }
+    // A sealed blob is only meaningful for an account with keys to open it.
+    if (sealedEvent && !(recipient && recipient.identityPublicKey)) {
+      return res.status(400).json({ error: 'That address has no encryption keys to seal to' });
+    }
 
     // Re-inviting the same address/number for the same event refreshes the
-    // pending invite (and resends) instead of stacking duplicates.
+    // pending invite (and resends) instead of stacking duplicates. Switching
+    // lanes (e.g. the recipient just enrolled keys) clears the other lane.
     let invitation = await EventInvitation.findOne({
       eventId,
       ...(toEmail ? { toEmail } : { toPhone }),
       status: 'pending',
     });
     if (invitation) {
-      invitation.event = snapshot;
+      if (sealedEvent) { invitation.sealedEvent = sealedEvent; invitation.event = undefined; }
+      else { invitation.event = snapshot; invitation.sealedEvent = undefined; }
+      invitation.guestListVisible = guestListVisible;
       await invitation.save();
     } else {
       invitation = await EventInvitation.create({
@@ -131,19 +182,22 @@ router.post('/', async (req, res) => {
         toPhone:    toPhone || undefined,
         toUserId:   recipient?._id,
         eventId,
-        event: snapshot,
+        guestListVisible,
+        ...(sealedEvent ? { sealedEvent } : { event: snapshot }),
       });
     }
 
     // Phone invites are texted from the organizer's device — nothing to send
     // here; the response carries the shareToken the client's SMS link needs.
+    // A sealed invite has no plaintext, so its email is notice-only (no .ics):
+    // the recipient opens the decrypted card in the app.
     if (toEmail) {
       await sendEventInvitation({
         toEmail,
         fromName: invitation.fromName,
-        event: snapshot,
+        event: sealedEvent ? null : snapshot,
         hasAccount: !!recipient,
-        ics: buildEventICS({ uid: invitation._id, event: snapshot }),
+        ics: sealedEvent ? null : buildEventICS({ uid: invitation._id, event: snapshot }),
       });
     }
 
@@ -158,8 +212,8 @@ router.post('/', async (req, res) => {
 // copy) never sees who else was invited.
 router.get('/sent', async (req, res) => {
   try {
-    const event = await CalendarEvent.findOne({ _id: req.query.eventId, userId: { $in: req.scopeIds } })
-      .select('_id').lean();
+    // C3b: existence/scope check against the opaque store.
+    const event = await Record.findOne({ _id: req.query.eventId, ...req.scopeFilter }).select('_id').lean();
     if (!event) return res.status(404).json({ error: 'Event not found' });
     const invitations = await EventInvitation.find({ eventId: event._id }).sort({ createdAt: -1 }).lean();
     res.json(invitations);
@@ -168,22 +222,18 @@ router.get('/sent', async (req, res) => {
   }
 });
 
-// The guest list as seen by a RECIPIENT of one invitation: who else the
-// organizer invited, gated on the source event's guestListVisible flag (a
-// plaintext scope field the organizer toggles on the event form). Missing flag
-// means visible — events predate the setting; a deleted source event hides the
-// list. The explicit select keeps shareToken and other internals out of the
-// response.
+// The guest list as seen by a RECIPIENT of one invitation: who else the organizer
+// invited, gated on guestListVisible. Signal-parity C3b: that flag is now a SEALED
+// event field, so the organizer's device stamps it onto the invitation at invite
+// time and the gate reads it there (the server can't read the sealed source
+// event). Missing flag means visible — invitations predate the setting.
 router.get('/:id/guests', async (req, res) => {
   try {
     const invitation = await EventInvitation
       .findOne({ _id: req.params.id, ...addressedToMe(req.user) }).lean();
     if (!invitation) return res.status(404).json({ error: 'Invitation not found' });
 
-    const event = invitation.eventId
-      ? await CalendarEvent.findById(invitation.eventId).select('guestListVisible').lean()
-      : null;
-    if (!event || event.guestListVisible === false) {
+    if (invitation.guestListVisible === false) {
       return res.json({ visible: false, guests: [] });
     }
 
@@ -215,30 +265,51 @@ router.get('/', async (req, res) => {
   }
 });
 
-// Accept: copy the snapshot into a CalendarEvent the recipient owns. The copy
-// is independent of the sender's original (edits don't sync), and is created
-// plaintext like any server-side write in the dual-write phase — the client's
-// lazy re-encrypt pass seals it on its next edit.
+// Upgrade a plaintext invitation to a sealed one (D3 lazily-claimed upgrade).
+// When a user registers after being invited and their inbox claims the invite,
+// their unlocked device seals the still-plaintext snapshot to its OWN identity
+// key and posts it here; the server stores the blob and drops the plaintext, so
+// the snapshot no longer sits in the clear at rest. No-op if already sealed.
+router.post('/:id/seal', async (req, res) => {
+  try {
+    const invitation = await EventInvitation.findOne({ _id: req.params.id, ...addressedToMe(req.user) });
+    if (!invitation) return res.status(404).json({ error: 'Invitation not found' });
+    const sealedEvent = typeof req.body?.sealedEvent === 'string' ? req.body.sealedEvent : null;
+    if (!sealedEvent) return res.status(400).json({ error: 'A sealed snapshot is required' });
+    if (!invitation.sealedEvent) {
+      invitation.sealedEvent = sealedEvent;
+      invitation.event = undefined;
+      invitation.toUserId = req.user._id;
+      await invitation.save();
+    }
+    res.json({ invitation });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Accept: the recipient owns an INDEPENDENT copy of the event (edits don't sync
+// with the sender's original). Signal-parity C3b: the server can't build readable
+// content, so the recipient's device seals its own copy — folding `invitationId`
+// inside the ciphertext (which flips the client's Delete action to "Leave") — and
+// passes the opaque `enc` + its client-minted `_id`. The server stores it as a
+// Record it can't read, in the recipient's household scope, and links it to the
+// invitation. (The decrypted snapshot the client seals came from `invitation.event`
+// or, for a D3 sealed invite, the recipient's own decrypt.)
 router.post('/:id/accept', async (req, res) => {
   try {
     const invitation = await EventInvitation.findOne({ _id: req.params.id, ...addressedToMe(req.user) });
     if (!invitation) return res.status(404).json({ error: 'Invitation not found' });
     if (invitation.status !== 'pending') return res.status(400).json({ error: 'Already replied' });
 
-    const s = invitation.event;
-    const event = await CalendarEvent.create({
-      userId: req.user._id,
-      invitationId: invitation._id,
-      calendarType: s.calendarType || 'activities',
-      title: s.title,
-      description: s.description,
-      location: s.location,
-      url: s.url,
-      phone: s.phone,
-      startDate: s.startDate,
-      endDate: s.endDate,
-      allDay: s.allDay !== false,
-    });
+    let enc;
+    try { enc = pickRecordEnc(req.body); } catch (msg) { return res.status(400).json({ error: String(msg) }); }
+    if (!enc.enc || !isObjectId(req.body._id)) {
+      return res.status(400).json({ error: 'A sealed event copy (_id + enc) is required' });
+    }
+    const data = { _id: req.body._id, userId: req.user._id, ...enc };
+    stampHousehold(req.household, data); // recipient's household attribution (C4)
+    const event = await Record.create(data);
 
     invitation.status = 'accepted';
     invitation.respondedAt = new Date();
@@ -247,7 +318,7 @@ router.post('/:id/accept', async (req, res) => {
     await invitation.save();
 
     notifySender(invitation, req.user, 'accepted');
-    res.json({ invitation, event });
+    res.json({ invitation, event: { _id: event._id } });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -280,7 +351,9 @@ router.post('/:id/leave', async (req, res) => {
     if (invitation.status !== 'accepted') return res.status(400).json({ error: 'Not attending this event' });
 
     if (invitation.acceptedEventId) {
-      await CalendarEvent.deleteOne({ _id: invitation.acceptedEventId, userId: { $in: req.scopeIds } });
+      // C3b: tombstone the recipient's opaque copy so the delete propagates to
+      // their other devices via the /records sync cursor.
+      await Record.updateOne({ _id: invitation.acceptedEventId, ...req.scopeFilter }, { deleted: true }, { timestamps: true });
     }
     invitation.status = 'left';
     invitation.respondedAt = new Date();
@@ -300,7 +373,12 @@ router.delete('/:id', async (req, res) => {
     if (!invitation) return res.status(404).json({ error: 'Invitation not found' });
 
     if (invitation.status === 'accepted' && invitation.acceptedEventId) {
-      await CalendarEvent.deleteOne({ _id: invitation.acceptedEventId, userId: invitation.toUserId });
+      // C3b: tombstone the recipient's opaque copy (keyed by their userId).
+      await Record.updateOne(
+        { _id: invitation.acceptedEventId, userId: invitation.toUserId },
+        { deleted: true },
+        { timestamps: true },
+      );
     }
     await invitation.deleteOne();
 
@@ -319,6 +397,11 @@ router.get('/:id/ics', async (req, res) => {
       $or: [{ toUserId: req.user._id }, { toEmail: req.user.email }, { fromUserId: req.user._id }],
     }).lean();
     if (!invitation) return res.status(404).json({ error: 'Invitation not found' });
+    // A sealed invite carries no plaintext to render — the recipient's app
+    // builds the .ics client-side from the decrypted snapshot.
+    if (!invitation.event || !invitation.event.title) {
+      return res.status(404).json({ error: 'No calendar file for a sealed invitation' });
+    }
 
     res.set('Content-Type', 'text/calendar; charset=utf-8');
     res.set('Content-Disposition', 'attachment; filename="invite.ics"');

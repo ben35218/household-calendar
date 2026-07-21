@@ -10,7 +10,6 @@ import {
   manualsApi,
   receiptsApi,
   tasksApi,
-  odometerApi,
   peopleApi,
   Manual,
   ManualCandidate,
@@ -19,12 +18,15 @@ import {
   Task,
   Person,
 } from '../../api';
+import { loadOdometerData, logOdometerReading } from '../../lib/odometer';
+import { createTaskFromManualExtract } from '../../lib/taskTemplates';
 import { Button, Card, Screen, Divider, ListRow, Input, RoundIconButton, CenteredLoader, IconAvatar, ScreenTitle, HeaderIconButton, Fab } from '../../components/ui';
-import AssistantIcon from '../../components/AssistantIcon';
+import CalenChatIcon from '../../components/CalenChatIcon';
 import QuotaBlockedNotice from '../../components/QuotaBlockedNotice';
 import { useAiEnabled } from '../../lib/privacyPrefs';
 import { recurrenceLabel, formatCalendarDate, mdiName } from '../../lib/recurrence';
 import { itemTypeConfig } from '../../lib/itemTypes';
+import { resolveTaskIcon } from '../../lib/maintenanceCategories';
 import { useCalendarColors } from '../../lib/calendarPrefs';
 import { pickDocument, takePhoto, pickImage, PickedFile } from '../../lib/media';
 import { uploadFile } from '../../lib/upload';
@@ -97,11 +99,20 @@ export default function ItemDetailScreen() {
   // Related-tasks list collapses to the first few until "Show all" is tapped.
   const [showAllTasks, setShowAllTasks] = useState(false);
 
-  const itemQ = useQuery({ queryKey: ['items', id], queryFn: async () => (await itemsApi.get(id)).data });
+  const itemQ = useQuery({
+    queryKey: ['items', id],
+    queryFn: async () => openRecord('Item', (await itemsApi.get(id)).data),
+  });
   const item = itemQ.data;
   const isVehicle = item?.type === 'vehicle';
 
-  const tasksQ = useQuery({ queryKey: ['tasks', 'forItem', id], queryFn: async () => (await tasksApi.list({ item: id })).data });
+  const tasksQ = useQuery({
+    queryKey: ['tasks', 'forItem', id],
+    queryFn: async () => {
+      const rows = (await tasksApi.list({ item: id })).data;
+      return Promise.all(rows.map((t) => openRecord('MaintenanceTask', t)));
+    },
+  });
 
   // Resolve the linked service professional's (decrypted) name from the roster —
   // the item only stores its ref id (Person names live in the E2EE blob).
@@ -119,9 +130,11 @@ export default function ItemDetailScreen() {
     enabled: !!proId,
   });
   const servicePro = proId ? peopleQ.data?.find((p) => p._id === proId) : undefined;
+  // Decrypted odometer state (Signal-parity D5): readings are sealed content;
+  // currentKm/kmPerDay/task estimates all derive on-device.
   const odoQ = useQuery({
     queryKey: ['odometer', id],
-    queryFn: async () => (await odometerApi.get(id)).data,
+    queryFn: () => loadOdometerData(id),
     enabled: isVehicle,
   });
 
@@ -135,14 +148,21 @@ export default function ItemDetailScreen() {
     },
   });
 
+  // Client-side log flow (D5): validates against the last decrypted reading,
+  // seals the log, refreshes mileage-task estimates, syncs the item field.
   const logOdo = useMutation({
-    mutationFn: () => odometerApi.log(id, { reading: Number(odomReading) }),
+    mutationFn: async () => {
+      if (!odoQ.data) throw new Error('Odometer data still loading — try again.');
+      await logOdometerReading(id, Number(odomReading), odoQ.data);
+    },
     onSuccess: () => {
       setOdomReading('');
       setOdoAdding(false);
       qc.invalidateQueries({ queryKey: ['odometer', id] });
+      qc.invalidateQueries({ queryKey: ['tasks'] });
       refreshItem();
     },
+    onError: (e: any) => Alert.alert('Could not log reading', e?.message || 'Try again.'),
   });
 
   const upload = useMutation({
@@ -326,18 +346,19 @@ export default function ItemDetailScreen() {
     onError: (e: any) => Alert.alert('Extract failed', e.response?.data?.error || 'Could not extract tasks.'),
   });
 
+  // Extracted tasks are built + sealed on-device now (Signal-parity D4) — the
+  // server /create-tasks route (plaintext, no enc) is gone.
   const createTasks = useMutation({
-    mutationFn: () => {
+    mutationFn: async () => {
       const tasks = extract!.tasks.filter((_, i) => extract!.selected.has(i));
-      return manualsApi.createTasks(extract!.manualId, {
-        tasks,
-        itemId: id,
-        currentKm: odoQ.data?.currentKm ?? undefined,
-      });
+      for (const t of tasks) {
+        await createTaskFromManualExtract(t, { itemId: id, currentKm: odoQ.data?.currentKm ?? undefined });
+      }
     },
     onSuccess: () => {
       setExtract(null);
       qc.invalidateQueries({ queryKey: ['tasks'] });
+      qc.invalidateQueries({ queryKey: ['calendar'] });
     },
   });
 
@@ -682,7 +703,10 @@ export default function ItemDetailScreen() {
             {(showAllTasks ? tasksQ.data : tasksQ.data.slice(0, TASKS_COLLAPSED_COUNT)).map((t: Task) => (
               <ListRow
                 key={t._id}
-                icon="construct-outline"
+                mdiIcon={resolveTaskIcon(
+                  t.icon,
+                  typeof t.categoryId === 'object' ? t.categoryId?.name : null,
+                )}
                 title={t.title}
                 subtitle={recurrenceLabel(t.recurrence)}
                 onPress={() => navigation.navigate('TaskDetail', { id: t._id })}
@@ -706,7 +730,7 @@ export default function ItemDetailScreen() {
     </Screen>
     {aiEnabled && (
       <Fab bg={accent} onPress={() => navigation.navigate('MaintenanceChat', { itemId: id, itemName: item?.name })}>
-        <AssistantIcon size={26} color="#fff" />
+        <CalenChatIcon size={26} color="#fff" />
       </Fab>
     )}
     </View>

@@ -6,6 +6,8 @@ import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { recipesApi, recipeScheduleApi, RecipeSchedule } from '../../api';
+import { openRecord, sealNew } from '../../lib/e2ee';
+import { RECIPE_SCHEDULE_ENC } from '../../lib/encSubsets';
 import { Button, Card, Screen, Divider, Badge, DateField, Input, CenteredLoader, ScreenTitle, HeaderIconButton } from '../../components/ui';
 import { formatCalendarDate } from '../../lib/recurrence';
 import { KitchenStackParamList } from '../../navigation/KitchenNavigator';
@@ -36,12 +38,16 @@ export default function RecipeDetailScreen() {
   const [shareEmailAddr, setShareEmailAddr] = useState('');
   const [shareSent, setShareSent] = useState(false);
 
-  const recipeQ = useQuery({ queryKey: ['recipes', id], queryFn: async () => (await recipesApi.get(id)).data });
+  const recipeQ = useQuery({ queryKey: ['recipes', id], queryFn: async () => openRecord('Recipe', (await recipesApi.get(id)).data) });
   const schedulesQ = useQuery({ queryKey: ['recipe-schedule', 'forRecipe', id], queryFn: async () => (await recipeScheduleApi.forRecipe(id)).data });
   const recipe = recipeQ.data;
 
   const schedule = useMutation({
-    mutationFn: () => recipeScheduleApi.schedule({ recipeId: id, scheduledDate: date }),
+    // Sealed create (Signal-parity D5): schedule notes are content.
+    mutationFn: async () => {
+      const payload = { recipeId: id, scheduledDate: date };
+      return recipeScheduleApi.schedule(await sealNew('RecipeSchedule', payload, RECIPE_SCHEDULE_ENC(payload)));
+    },
     onSuccess: () => {
       setScheduleOpen(false);
       qc.invalidateQueries({ queryKey: ['recipe-schedule'] });

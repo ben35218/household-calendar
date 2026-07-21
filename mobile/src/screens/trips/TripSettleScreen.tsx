@@ -39,7 +39,7 @@ export default function TripSettleScreen() {
   const { id } = useRoute<Rt>().params;
   const navigation = useNavigation<Nav>();
   const qc = useQueryClient();
-  const accent = useCalendarColors().colors.vacations;
+  const accent = useCalendarColors().colors.trips;
 
   const settleQ = useQuery({
     queryKey: ['trips', id, 'settlement'],

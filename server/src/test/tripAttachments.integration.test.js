@@ -1,6 +1,8 @@
-// Integration tests for E2EE trip-item attachments (Phase 4c): ciphertext upload
-// with a wrapped per-file key on private bookings, refusal on shared bookings
-// (collaborators hold no HDK), and ciphertext-preserving download headers.
+// Integration tests for E2EE trip-item attachments (Phase 4c + Signal-parity D2):
+// ciphertext upload with a wrapped per-file key on private bookings (Kf under the
+// HDK) AND on shared bookings (Kf under the TripKey — the retired §9.3 plaintext
+// lane), plus ciphertext-preserving download headers. The server is blind to
+// which key wrapped Kf; it only stores the opaque wrappedFileKey.
 const { test, before, after } = require('node:test');
 const assert = require('node:assert/strict');
 const {
@@ -58,18 +60,33 @@ test('encrypted attachment upload on a private booking stores the crypto metadat
   assert.match(dl.headers['content-type'], /application\/octet-stream/);
 });
 
-test('encrypted upload is refused on a shared trip (collaborators must be able to read)', async () => {
+test('D2: encrypted upload IS allowed on a shared booking (Kf wrapped under the TripKey)', async () => {
   const { owner, trip, item } = await setupBooking({ shared: true });
+  const attId = '66aabbccddeeff0011223399';
+  // The client wraps Kf under the TripKey (its wrap envelope carries ks:'trip');
+  // the server just stores the opaque wrappedFileKey — no 409 anymore.
   const res = await request()
     .post(`/api/trips/${trip._id}/items/${item._id}/attachments`)
     .set('Authorization', owner.auth)
     .field('encrypted', 'true')
-    .field('wrappedFileKey', b64u(96))
+    .field('_id', attId)
+    .field('wrappedFileKey', JSON.stringify({ alg: 'xchacha20poly1305-ietf', nonce: b64u(32), ct: b64u(80), ks: 'trip' }))
     .field('keyVersion', '1')
-    .attach('file', CIPHERTEXT, { filename: 'x.bin', contentType: 'application/octet-stream' });
-  assert.equal(res.status, 409);
+    .field('fileType', 'application/pdf')
+    .field('title', 'shared-receipt.pdf')
+    .attach('file', CIPHERTEXT, { filename: `${attId}.bin`, contentType: 'application/octet-stream' });
+  assert.equal(res.status, 201);
+  assert.equal(res.body.encrypted, true);
+  assert.ok(res.body.wrappedFileKey);
 
-  // Plaintext upload on the same shared booking is fine.
+  // Download still serves ciphertext as an opaque stream.
+  const dl = await request()
+    .get(`/api/trips/${trip._id}/items/${item._id}/attachments/${attId}/download`)
+    .set('Authorization', owner.auth);
+  assert.equal(dl.status, 200);
+  assert.match(dl.headers['content-type'], /application\/octet-stream/);
+
+  // Plaintext upload on the same shared booking is still fine (graceful fallback).
   const plain = await request()
     .post(`/api/trips/${trip._id}/items/${item._id}/attachments`)
     .set('Authorization', owner.auth)

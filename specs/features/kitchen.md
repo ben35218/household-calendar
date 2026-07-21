@@ -1,7 +1,7 @@
 ---
 title: Kitchen (recipes, meal planning, grocery)
 status: current
-last-verified: dad7c5a (2026-07-20)
+last-verified: 4d68a39 (2026-07-20)
 code:
   - mobile/src/screens/kitchen/
   - server/src/routes/recipes.js
@@ -29,7 +29,8 @@ hands-free cooking mode. Recipe capture and suggestions are AI-assisted.
   route. The `recipes` router is **AI/utility only**: `POST /recipes/from-url`,
   `/from-photo`, `/from-ai`, `/generate`, `/edit-with-ai` (capture/generate),
   `/suggest-recipes`, `/compute-ingredient-tags`, `/:id/share-email`.
-- All AI capture paths are consent-gated and annotated — see
+- All AI capture paths are consent-gated and annotated (and refused
+  server-side via `requireAiEnabled` when the account's AI toggle is off) — see
   [ai-assistant.md](ai-assistant.md).
 
 ### Meal planner & grocery

@@ -5,7 +5,7 @@ data section shows the summary; this file is the authoritative long form and the
 source for the website page. Update it whenever a Signal-parity item changes
 what the server stores.*
 
-Last updated: 2026-07-17.
+Last updated: 2026-07-20.
 
 ## The short version
 
@@ -57,7 +57,12 @@ requires it**:
 3. **AI phone calls.** When Calen calls a business for you, the event's title,
    date, and the business number necessarily leave encryption to make the
    call, and the call's outcome summary is stored so your household can see it.
-   Full transcripts are never stored on our servers.
+   Calls are **not recorded and no transcript is kept** — not by us and not by
+   the voice provider; the outcome summary is the only record of the call, and
+   it is generated under instructions to state the outcome only — no names,
+   contact details, or account numbers spoken on the call. Your phone number /
+   email are given to the caller only when you switch on "Share my contact
+   details if asked" for that call.
 
 ## AI features (Anthropic)
 
@@ -69,6 +74,13 @@ requires it**:
   your device — Anthropic sees the content you consented to share and opaque
   labels, nothing linkable to stored records. We send Anthropic no account
   identifiers; requests come from our servers, not your IP.
+- Since 2026-07-20, AI payloads are also **need-to-know**: your family and
+  friends appear to the AI by **name only** (no birthdays, addresses,
+  interests, or notes — the assistant fetches names on demand rather than
+  receiving your roster), phone numbers and booking confirmation codes are
+  replaced with "on file" markers, call transcripts don't exist at all (the
+  outcome summary is the only record of a call), and web lookups of
+  professional contacts run only when you turn them on for an import.
 - Anthropic does not train on this API traffic by default.
   <!-- G3 (OPS ACTION, Ben): request a Zero-Data-Retention agreement for the
   org via Anthropic sales/support, then update this bullet with the outcome

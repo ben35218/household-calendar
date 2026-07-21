@@ -66,6 +66,10 @@ async function dedupeCategoriesForScope(memberIds, preferredUserIds = [], opts =
   const topGroups = new Map();
   for (const cat of tops) {
     const key = norm(cat.name);
+    // A sealed category (Signal-parity D5) has no plaintext name — the server
+    // can't tell duplicates apart, so it must never merge them (all encrypted
+    // categories would collapse into one). Skip; the client owns dedupe there.
+    if (!key) continue;
     if (!topGroups.has(key)) topGroups.set(key, []);
     topGroups.get(key).push(cat);
   }
@@ -83,6 +87,7 @@ async function dedupeCategoriesForScope(memberIds, preferredUserIds = [], opts =
   const subs = await Category.find({ userId: { $in: memberIds }, parentId: { $ne: null } }).lean();
   const subGroups = new Map();
   for (const cat of subs) {
+    if (!norm(cat.name)) continue; // sealed name — never merge (see pass 1)
     const key = `${cat.parentId}::${norm(cat.name)}`;
     if (!subGroups.has(key)) subGroups.set(key, []);
     subGroups.get(key).push(cat);

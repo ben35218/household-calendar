@@ -8,3 +8,8 @@ dist/
 *.log
 .idea/
 .expo/
+
+# Stray Expo-prebuild artifacts accidentally generated at the repo root
+# (the app lives in mobile/; its config is mobile/app.json + mobile/eas.json).
+/ios/
+/app.json

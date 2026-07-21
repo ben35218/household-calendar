@@ -4,21 +4,21 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { MaterialCommunityIcons, Ionicons } from '@expo/vector-icons';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import { itemsApi, categoriesApi, propertiesApi, peopleApi, Item, Property, Person, CustomField, FormAssistField } from '../../api';
+import { itemsApi, propertiesApi, peopleApi, Item, Property, Person, CustomField, FormAssistField } from '../../api';
+import { loadCategories } from '../../lib/categories';
+import { ITEM_ENC } from '../../lib/encSubsets';
 import { sealNew, sealUpdate, openRecord } from '../../lib/e2ee';
 import { useAiEnabled } from '../../lib/privacyPrefs';
+import { ASSISTANT_NAME } from '../../config';
 import { takePhoto, pickImage } from '../../lib/media';
 import { uploadFile } from '../../lib/upload';
 
 // Encrypted item content (categoryId/type/dates stay plaintext).
-const ITEM_ENC = (p: Record<string, unknown>) => ({
-  name: p.name, manufacturer: p.manufacturer, modelNumber: p.modelNumber,
-  serialNumber: p.serialNumber, location: p.location, notes: p.notes, customFields: p.customFields,
-});
 import { Input, Select, Screen, SectionTitle, SwitchRow, DateField, useHeaderCheckButton, FormError, CenteredLoader } from '../../components/ui';
 import { form as fs, GroupCard, CardDivider } from '../../components/formStyles';
 import { useCalendarColors } from '../../lib/calendarPrefs';
 import FormAssist from '../../components/FormAssist';
+import HouseholdItemIcon from '../../components/HouseholdItemIcon';
 import { useFormAssist } from '../../hooks/useFormAssist';
 import { mdiName } from '../../lib/recurrence';
 import { ITEM_TYPES, itemTypeConfig, TYPE_CATEGORY_MATCH, VEHICLE_CATEGORY, ItemField } from '../../lib/itemTypes';
@@ -91,7 +91,8 @@ export default function ItemFormScreen() {
     [cfg]
   );
 
-  const categoriesQ = useQuery({ queryKey: ['categories', 'topLevel'], queryFn: async () => (await categoriesApi.list({ topLevel: 'true' })).data });
+  // Decrypted (names are sealed content — Signal-parity D5).
+  const categoriesQ = useQuery({ queryKey: ['categories', 'topLevel'], queryFn: () => loadCategories({ topLevel: 'true' }) });
   const propertiesQ = useQuery({ queryKey: ['properties'], queryFn: async () => (await propertiesApi.list()).data });
   // Item counts per property (propertyId is plaintext, so no decryption needed).
   // Drives the "delete empty property" affordance in the picker.
@@ -284,6 +285,7 @@ export default function ItemFormScreen() {
             qc.invalidateQueries({ queryKey: ['items'] });
             qc.invalidateQueries({ queryKey: ['tasks'] });
             qc.invalidateQueries({ queryKey: ['maintenance'] });
+            qc.invalidateQueries({ queryKey: ['calendar'] });
             if (form.propertyId === prop._id) set({ propertyId: null, location: '' });
           } catch (e: any) {
             Alert.alert('Could not delete property', e.response?.data?.error || 'Please try again.');
@@ -468,7 +470,7 @@ export default function ItemFormScreen() {
         <GroupCard>
           <TouchableOpacity style={styles.typeRow} activeOpacity={0.7} onPress={() => setStep(aiEnabled ? 'mode' : 'branch')}>
             <View style={[styles.typeAvatar, { backgroundColor: accent }]}>
-              <MaterialCommunityIcons name="package-variant" size={24} color="#fff" />
+              <HouseholdItemIcon size={26} color="#fff" />
             </View>
             <View style={{ flex: 1 }}>
               <Text style={styles.typeLabel}>Add a single item</Text>
@@ -485,6 +487,20 @@ export default function ItemFormScreen() {
               <Text style={styles.typeDesc}>Pick maintenance tasks from templates — items are created for you.</Text>
             </View>
           </TouchableOpacity>
+          {aiEnabled ? (
+            <>
+              <CardDivider />
+              <TouchableOpacity style={styles.typeRow} activeOpacity={0.7} onPress={() => navigation.navigate('Assistant', { initial: 'maintenance' })}>
+                <View style={[styles.typeAvatar, { backgroundColor: '#7C4DFF' }]}>
+                  <MaterialCommunityIcons name="creation" size={24} color="#fff" />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.typeLabel}>Add tasks with {ASSISTANT_NAME} AI</Text>
+                  <Text style={styles.typeDesc}>Chat with {ASSISTANT_NAME} to build a maintenance plan — tasks are created once you're done.</Text>
+                </View>
+              </TouchableOpacity>
+            </>
+          ) : null}
         </GroupCard>
       </Screen>
     );

@@ -8,7 +8,7 @@
 // default export is the File/Directory API). The legacy helpers are exactly what
 // we need for base64 file IO.
 import * as FileSystem from 'expo-file-system/legacy';
-import { encryptAttachment, decryptAttachment } from './e2ee';
+import { encryptAttachment, encryptAttachmentForResource, decryptAttachment } from './e2ee';
 
 // Standard base64 <-> bytes. Hermes ships no atob/btoa and expo-file-system
 // speaks standard base64, so keep this dependency-free and self-contained.
@@ -67,9 +67,31 @@ export async function encryptFileForUpload(
   return { uri: outUri, wrappedFileKey: sealed.wrappedFileKey, keyVersion: sealed.keyVersion };
 }
 
+// Signal-parity D2: encrypt an attachment whose per-file key wraps under a
+// RESOURCE key (a TripKey) — for a shared_shared trip booking's one shared
+// receipt. `resource` = the Trip id. Returns null if the resource key isn't held
+// (the caller falls back to the HDK path or a plaintext upload).
+export async function encryptFileForUploadResource(
+  kind: 'trip' | 'calendar',
+  collection: string,
+  id: string,
+  resource: string,
+  sourceUri: string,
+): Promise<EncryptedUpload | null> {
+  const b64 = await FileSystem.readAsStringAsync(sourceUri, { encoding: FileSystem.EncodingType.Base64 });
+  const sealed = await encryptAttachmentForResource(kind, collection, id, resource, base64ToBytes(b64));
+  if (!sealed) return null;
+  const outUri = `${FileSystem.cacheDirectory}enc-${id}.bin`;
+  await FileSystem.writeAsStringAsync(outUri, bytesToBase64(sealed.ciphertext), {
+    encoding: FileSystem.EncodingType.Base64,
+  });
+  return { uri: outUri, wrappedFileKey: sealed.wrappedFileKey, keyVersion: sealed.keyVersion };
+}
+
 // Decrypt a ciphertext file already downloaded to `cipherUri`, write the
 // plaintext to a cache file, and return its uri for opening/sharing. Null if we
-// can't decrypt (no HDK for that version, malformed blob).
+// can't decrypt (no key for that version, malformed blob). `resource` (a Trip id)
+// is needed only for a resource-wrapped file key (the wrap's ks routes it).
 export async function decryptDownloadedFile(
   collection: string,
   id: string,
@@ -77,9 +99,10 @@ export async function decryptDownloadedFile(
   wrappedFileKey: string,
   cipherUri: string,
   outName: string,
+  resource?: string,
 ): Promise<string | null> {
   const b64 = await FileSystem.readAsStringAsync(cipherUri, { encoding: FileSystem.EncodingType.Base64 });
-  const plain = await decryptAttachment(collection, id, keyVersion, wrappedFileKey, base64ToBytes(b64));
+  const plain = await decryptAttachment(collection, id, keyVersion, wrappedFileKey, base64ToBytes(b64), resource);
   if (!plain) return null;
   const outUri = `${FileSystem.cacheDirectory}${outName}`;
   await FileSystem.writeAsStringAsync(outUri, bytesToBase64(plain), { encoding: FileSystem.EncodingType.Base64 });

@@ -11,10 +11,12 @@ const { resolveShareTarget } = require('../services/phone');
 const { rateLimit } = require('../middleware/rateLimit');
 const { dedupeCategoriesForScope } = require('../services/dedupeCategories');
 const { validateHDKEnvelope, validateRotation, pickRecordEnc } = require('../services/householdKey');
-const { computeReadiness, DROP_FIELDS } = require('../services/dropReadiness');
-const { e2eeRequired } = require('../services/e2eePolicy');
+const { computeReadiness, DROP_FIELDS, DROP_FIELDS_VERSION } = require('../services/dropReadiness');
+const { e2eeRequired, stripSealedContent, AUTHOR_HIDDEN } = require('../services/e2eePolicy');
+const { alertHousehold, securityAlert } = require('../services/securityAlerts');
 const { dropPlaintext } = require('../scripts/dropPlaintext');
 const { CONTENT_MODELS } = require('../services/contentModels');
+const Record = require('../models/Record');
 const { sharedTripIds, excludeSharedFilter } = require('../services/tripSharing');
 const { outsideSharedCalendarKeys, excludeOutsideCalendarFilter } = require('../services/calendarSharing');
 const CustomCalendar = require('../models/CustomCalendar');
@@ -64,9 +66,17 @@ router.get('/', async (req, res) => {
     res.json({
       _id: req.household._id,
       name: req.household.name,
+      // The sealed settings blob (name + homeAddress — C2): post-drop the
+      // client decrypts the name from here.
+      enc: req.household.enc,
+      keyVersion: req.household.keyVersion,
       ownerId: req.household.ownerId,
       isOwner: String(req.household.ownerId) === String(req.user._id),
       e2eeActive: !!req.household.e2eeActive,
+      // Signal-parity pass-2: this household was dropped under an older
+      // DROP_FIELDS version and still has newer columns in plaintext — the
+      // client runs the re-seal-all backfill (dropMigration.reencryptForReDrop).
+      resealNeeded: !!req.household.e2eeActive && (req.household.dropFieldsVersion || 0) < DROP_FIELDS_VERSION,
       members,
     });
   } catch (err) {
@@ -119,10 +129,12 @@ router.get('/e2ee/stragglers', async (req, res) => {
       if (!fields) continue;
       const projection = fields.reduce((p, f) => ((p[f] = 1), p), { keyVersion: 1 });
       const rows = await Model.find({
-        userId: { $in: req.scopeIds },
+        // req.scopeFilter is itself an $or (householdId ∪ userId), so it must be
+        // $and-combined with the enc $or — spreading both into one object would
+        // clobber the scoping $or and leak across households.
+        $and: [req.scopeFilter, { $or: [{ enc: { $exists: false } }, { enc: null }] }],
         ...excludeSharedFilter(collection, sharedIds),
         ...excludeOutsideCalendarFilter(collection, sharedCalKeys),
-        $or: [{ enc: { $exists: false } }, { enc: null }],
       }).select(projection).limit(LIMIT).lean();
       if (rows.length) { collections.push({ collection, fields, records: rows }); total += rows.length; }
     }
@@ -144,12 +156,175 @@ router.post('/e2ee/seal', async (req, res) => {
     let encFields;
     try { encFields = pickRecordEnc(req.body); } catch (msg) { return res.status(400).json({ error: String(msg) }); }
     if (!encFields.enc) return res.status(400).json({ error: 'enc required' });
-    const r = await Model.updateOne(
-      { _id, userId: { $in: req.scopeIds } },
+    // Signal-parity C3b: route the seal to the right store. The 9 author-hidden
+    // collections migrated into the unified `Record` store (the source of truth
+    // post-cutover) — their re-seal target is `Record`, keyed by the same `_id`
+    // (the re-seal-all / straggler passes still READ the per-collection tables to
+    // get the plaintext to fold + the collection for a v1 decrypt, but the v2
+    // ciphertext lands in `Record`; requires migrateToRecords.js to have run — the
+    // documented C3b ops order). Trip/TripItem stay their own collections (the C4
+    // routing deviation), so they re-seal in place.
+    const target = AUTHOR_HIDDEN.has(collection) ? Record : Model;
+    const r = await target.updateOne(
+      { _id, ...req.scopeFilter },
       { $set: encFields },
     );
     if (!r.matchedCount) return res.status(404).json({ error: 'record not found in your household' });
     res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// B1 (Signal-parity plan) — eager re-encryption after rotation. Returns, per
+// collection, the enc-bearing records still sealed under an OLD key version so
+// an unlocked device can decrypt them (version→HDK map) and re-seal them under
+// the current version via /e2ee/seal. Once this drains to zero, /key/retire
+// (B3) can delete the old envelopes — upgrading member removal from "protects
+// future data" to "protects everything".
+router.get('/e2ee/old-versions', async (req, res) => {
+  try {
+    if (!req.household) return res.status(404).json({ error: 'No household' });
+    const current = req.household.currentKeyVersion || 0;
+    if (current < 2) return res.json({ total: 0, collections: [] }); // nothing older than v1 can exist
+    const LIMIT = 500;
+    const collections = [];
+    let total = 0;
+    // The D1/D2 guard (shared for reads + retire): a resource-sealed record's
+    // keyVersion is a resource-key version (CalendarKey/TripKey), not an HDK
+    // version — never re-seal it under the HDK.
+    const hdkOld = { enc: { $exists: true, $ne: null }, keyVersion: { $lt: current }, 'enc.ks': { $nin: ['cal', 'trip'] } };
+    // Signal-parity C3b: the 9 author-hidden collections live in the unified
+    // `Record` store (opaque — no collection field). The client decrypts each
+    // OPAQUELY (openOpaqueRecord recovers the type from the v2 ciphertext) and
+    // re-seals it through /records. Returned under the pseudo-collection 'Record'.
+    const recordRows = await Record.find({ ...req.scopeFilter, ...hdkOld })
+      .select('enc keyVersion').limit(LIMIT).lean();
+    if (recordRows.length) { collections.push({ collection: 'Record', records: recordRows }); total += recordRows.length; }
+    // Trip / TripItem stay their own collections (the C4 routing deviation) — the
+    // client decrypts them BY collection and re-seals via /e2ee/seal (which routes
+    // them back in place).
+    for (const collection of ['Trip', 'TripItem']) {
+      const rows = await CONTENT_MODELS[collection].find({ ...req.scopeFilter, ...hdkOld })
+        .select('enc keyVersion').limit(LIMIT).lean();
+      if (rows.length) { collections.push({ collection, records: rows }); total += rows.length; }
+    }
+    res.json({ total, collections, currentKeyVersion: current });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Re-seal + re-drop backfill (Signal-parity pass-2 insert). A household dropped
+// under an OLDER DROP_FIELDS version still carries the fields ADDED since (v2:
+// nextDueDate, odometer reading/notes, meal notes, category names — the
+// household name rides in the settings blob) in plaintext, and its old `enc`
+// blobs predate those fields. This endpoint lists every content record that
+// still has a plaintext DROP_FIELDS value (or no `enc` at all), together with
+// its current `enc`, so the owner's unlocked device can decrypt-merge-reseal:
+// fold the plaintext fields into a fresh `enc` under the current subset. Only
+// AFTER that (marked via /e2ee/reseal-complete) may scripts/reDropPlaintext.js
+// null the plaintext — never before, since the old enc doesn't contain them.
+router.get('/e2ee/reseal-all', async (req, res) => {
+  try {
+    if (!req.household) return res.status(404).json({ error: 'No household' });
+    const LIMIT = 1000;
+    const collections = [];
+    let total = 0;
+    // Same plaintext-lane exemptions as the straggler/drop paths (§9.3/§9.5).
+    const sharedIds = await sharedTripIds(CONTENT_MODELS.Trip, req.scopeIds);
+    const sharedCalKeys = await outsideSharedCalendarKeys(CustomCalendar, req.scopeIds);
+    for (const [collection, Model] of Object.entries(CONTENT_MODELS)) {
+      const fields = DROP_FIELDS[collection];
+      if (!fields) continue;
+      // "Needs re-seal" = a plaintext content column is still set, OR the record
+      // carries no ciphertext yet (a straggler predating this collection's enc).
+      const plaintextSet = fields.map((f) => ({ [f]: { $nin: [null, undefined] } }));
+      // Signal-parity C4: an HDK-sealed record that still carries a plaintext
+      // `userId` needs re-sealing too, so the backfill folds the author into `enc`
+      // before the re-drop nulls the column. (A resource-sealed `enc.ks` record
+      // keeps its userId — the §C4 routing deviation — so it's excluded here.)
+      const authorPending = AUTHOR_HIDDEN.has(collection)
+        ? [{ enc: { $exists: true }, 'enc.ks': { $exists: false }, userId: { $nin: [null, undefined] } }]
+        : [];
+      const rows = await Model.find({
+        // C3b/C4: scope by household (not userId ∈ scopeIds) so author-nulled
+        // sealed records — which carry no plaintext userId but may still hold a v4
+        // plaintext routing column to fold in — are found by the re-seal pass.
+        // req.scopeFilter is an $or, so $and-combine it with the "needs re-seal" $or
+        // (spreading both would clobber the scoping $or → cross-household leak).
+        $and: [
+          req.scopeFilter,
+          { $or: [...plaintextSet, ...authorPending, { enc: { $exists: false } }, { enc: null }] },
+        ],
+        ...excludeSharedFilter(collection, sharedIds),
+        ...excludeOutsideCalendarFilter(collection, sharedCalKeys),
+      }).select([...fields, 'enc', 'keyVersion', 'userId'].reduce((p, f) => ((p[f] = 1), p), {}))
+        .limit(LIMIT).lean();
+      if (rows.length) { collections.push({ collection, fields, records: rows }); total += rows.length; }
+    }
+    res.json({ total, collections, dropFieldsVersion: DROP_FIELDS_VERSION });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Mark the re-seal-all pass complete: every enc-bearing record now carries the
+// current DROP_FIELDS in its ciphertext, so the re-drop script may null the
+// plaintext. The client calls this only after re-sealing every record with zero
+// failures. Stamping the current version is the machine-checkable interlock the
+// script demands before the irreversible null (NEVER null before re-sealing).
+router.post('/e2ee/reseal-complete', async (req, res) => {
+  try {
+    if (!req.household) return res.status(404).json({ error: 'No household' });
+    await Household.updateOne({ _id: req.household._id }, { $set: { dropFieldsVersion: DROP_FIELDS_VERSION } });
+    res.json({ ok: true, dropFieldsVersion: DROP_FIELDS_VERSION });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// B3 — retire old key versions. Only when NOTHING is still sealed under them:
+// re-sealed records AND attachment file keys (Manual, TripItem attachments are
+// wrapped under a specific HDK version — deleting an envelope they still need
+// would orphan the file). On success the old HouseholdKeyEnvelope rows are
+// deleted, so a compromised member key exposes the current version only.
+router.post('/key/retire', async (req, res) => {
+  try {
+    if (!req.household) return res.status(404).json({ error: 'No household' });
+    const current = req.household.currentKeyVersion || 0;
+    if (current < 2) return res.json({ ok: true, retired: 0 });
+
+    // D1/D2: resource-sealed records use resource-key versions — exclude them from
+    // the HDK-version retirement accounting (see /e2ee/old-versions).
+    const hdkOld = { enc: { $exists: true, $ne: null }, keyVersion: { $lt: current }, 'enc.ks': { $nin: ['cal', 'trip'] } };
+    let remaining = 0;
+    // C3b: the 9 author-hidden collections live in the unified Record store; Trip/
+    // TripItem stay their own. Count old-version HDK records across both.
+    remaining += await Record.countDocuments({ ...req.scopeFilter, ...hdkOld });
+    for (const collection of ['Trip', 'TripItem']) {
+      remaining += await CONTENT_MODELS[collection].countDocuments({ ...req.scopeFilter, ...hdkOld });
+    }
+    const Manual = require('../models/Manual');
+    remaining += await Manual.countDocuments({
+      userId: { $in: req.scopeIds }, encrypted: true, keyVersion: { $lt: current },
+    });
+    remaining += await CONTENT_MODELS.TripItem.countDocuments({
+      userId: { $in: req.scopeIds },
+      attachments: { $elemMatch: { encrypted: true, keyVersion: { $lt: current } } },
+    });
+    if (remaining > 0) return res.status(409).json({ error: 'old-version records remain', remaining });
+
+    const del = await HouseholdKeyEnvelope.deleteMany({
+      householdId: req.household._id, keyVersion: { $lt: current },
+    });
+    if (del.deletedCount) {
+      await AuditLog.create({
+        userId: req.user._id, householdId: req.household._id, event: 'hdk_retired',
+        meta: { retiredBelow: current, envelopes: del.deletedCount },
+      });
+    }
+    res.json({ ok: true, retired: del.deletedCount });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -194,7 +369,15 @@ router.put('/', async (req, res) => {
   try {
     if (!req.household) return res.status(404).json({ error: 'No household' });
     const { name } = req.body;
-    if (name) await Household.updateOne({ _id: req.household._id }, { $set: { name } });
+    const update = {};
+    if (name) update.name = name;
+    // Re-sealed settings blob from the client (the name is content — C2).
+    try { Object.assign(update, pickRecordEnc(req.body)); }
+    catch (msg) { return res.status(400).json({ error: String(msg) }); }
+    // Steady-state write rule: a rename on an e2eeActive household stores only
+    // the re-sealed blob, never the plaintext name (C2).
+    stripSealedContent('Household', req.household, update);
+    if (Object.keys(update).length) await Household.updateOne({ _id: req.household._id }, { $set: update });
     res.json({ ok: true });
   } catch (err) {
     res.status(400).json({ error: err.message });
@@ -245,7 +428,7 @@ router.post('/key', async (req, res) => {
     // Atomically claim v1: only succeeds while the household is still at 0.
     const claimed = await Household.findOneAndUpdate(
       { _id: req.household._id, currentKeyVersion: 0 },
-      { $set: { currentKeyVersion: 1 } },
+      { $set: { currentKeyVersion: 1, lastKeyRotationAt: new Date() } },
     );
     if (!claimed) return res.status(409).json({ error: 'Household key already exists' });
 
@@ -307,6 +490,11 @@ router.post('/members/:userId/remove', async (req, res) => {
     await AuditLog.create({
       userId: target._id, householdId: oldId, event: 'member_removed', meta: { removedBy: req.user._id },
     });
+    securityAlert(alertHousehold(oldId, {
+      title: 'Member removed',
+      body: `${target.firstName} was removed from the household by ${req.user.firstName}. The encryption key will rotate.`,
+      tag: `member-${oldId}`,
+    }));
     res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -343,7 +531,7 @@ router.post('/key/rotate', async (req, res) => {
     // Compare-and-set the version so only one rotation from `current` wins.
     const claimed = await Household.findOneAndUpdate(
       { _id: req.household._id, currentKeyVersion: current },
-      { $set: { currentKeyVersion: req.body.keyVersion, keyRotationPending: false } },
+      { $set: { currentKeyVersion: req.body.keyVersion, keyRotationPending: false, lastKeyRotationAt: new Date() } },
     );
     if (!claimed) return res.status(409).json({ error: 'Key already rotated — please retry' });
 
@@ -359,6 +547,11 @@ router.post('/key/rotate', async (req, res) => {
       userId: req.user._id, householdId: req.household._id, event: 'hdk_rotated',
       meta: { keyVersion: req.body.keyVersion },
     });
+    securityAlert(alertHousehold(req.household._id, {
+      title: 'Household key rotated',
+      body: `${req.user.firstName} rotated your household's encryption key (now v${req.body.keyVersion}).`,
+      tag: `hdk-${req.household._id}`,
+    }));
     res.json({ ok: true, keyVersion: req.body.keyVersion });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -410,7 +603,9 @@ router.post('/invitations', async (req, res) => {
       {
         $set: {
           fromUserId: req.user._id, fromName, fromEmail: req.user.email,
-          householdName: req.household.name, toUserId,
+          // Post-drop the name is sealed (C2) — null switches the email + inbox
+          // to sender-name framing.
+          householdName: req.household.name || null, toUserId,
           toEmail: toEmail || undefined, toPhone: toPhone || undefined,
           status: 'pending', respondedAt: null, joinRequestId: null,
         },
@@ -419,7 +614,7 @@ router.post('/invitations', async (req, res) => {
     );
     // Phone invites carry no email to send — the inviter's device texts them.
     if (toEmail) {
-      sendHouseholdInvitation({ toEmail, fromName, householdName: req.household.name, hasAccount: !!recipient });
+      sendHouseholdInvitation({ toEmail, fromName, householdName: req.household.name || null, hasAccount: !!recipient });
     }
     res.status(201).json({ invitation, userExists: !!recipient });
   } catch (err) {
@@ -665,6 +860,11 @@ router.post('/join-requests/:id/approve', async (req, res) => {
       userId: requester._id, householdId: req.household._id, event: 'member_approved',
       meta: { approvedBy: req.user._id, keyVersion: version },
     });
+    securityAlert(alertHousehold(req.household._id, {
+      title: 'New household member',
+      body: `${req.user.firstName} approved a new member — they can now read household data.`,
+      tag: `member-${req.household._id}`,
+    }));
     res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ error: err.message });

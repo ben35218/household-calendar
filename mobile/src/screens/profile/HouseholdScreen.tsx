@@ -6,7 +6,11 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { householdApi, HouseholdMember, HouseholdInvitation, JoinRequestForApprover, JoinRequestMine } from '../../api';
 import { Button, Card, Input, SectionTitle } from '../../components/ui';
 import EncryptionSetupCard from '../../components/EncryptionSetupCard';
-import { ensureHouseholdKey, getHDK, wrapHDKForJoiner, publicKeyFingerprint } from '../../lib/e2ee';
+import { ensureHouseholdKey, activateBornEncryptedHousehold, getHDK, wrapHDKForJoiner, publicKeyFingerprint, openRecord, sealUpdate } from '../../lib/e2ee';
+import { HOUSEHOLD_ENC } from '../../lib/encSubsets';
+import { loadSafetyNumbers, markVerified, MemberSafety } from '../../lib/safetyNumbers';
+import { maintainKeyHygiene } from '../../lib/dropMigration';
+import { useAuth } from '../../store/auth';
 import { classifyRecipient, composeShareSms } from '../../lib/shareInvite';
 import { colors, spacing } from '../../theme';
 
@@ -16,9 +20,16 @@ import { colors, spacing } from '../../theme';
 // accepting an emailed invitation from the Invitations inbox.
 export default function HouseholdScreen() {
   const qc = useQueryClient();
+  const { user } = useAuth();
   const { data: household, isLoading, refetch } = useQuery({
     queryKey: ['household'],
-    queryFn: async () => (await householdApi.get()).data,
+    // Decrypt the sealed settings blob over the plaintext (C2): post-drop the
+    // household NAME only exists inside `enc`.
+    queryFn: async () => {
+      const hh = (await householdApi.get()).data;
+      const dec = await openRecord('Household', hh);
+      return { ...hh, name: dec.name ?? hh.name };
+    },
   });
 
   const [name, setName] = useState('');
@@ -81,6 +92,39 @@ export default function HouseholdScreen() {
     } catch { /* ignore */ }
   }, []);
 
+  // Safety numbers (A2): fingerprint + verified state per member, keyed by
+  // userId. 'changed' means a member's key differs from the one this device
+  // verified — surfaced as a warning until re-verified.
+  const [safety, setSafety] = useState<Record<string, MemberSafety>>({});
+  const loadSafety = useCallback(async () => {
+    try {
+      const rows = await loadSafetyNumbers(user?._id);
+      setSafety(Object.fromEntries(rows.map((r) => [r.userId, r])));
+    } catch { /* not enrolled yet / transient */ }
+  }, [user?._id]);
+  useEffect(() => { loadSafety(); }, [loadSafety]);
+
+  function showSafetyNumber(m: HouseholdMember) {
+    const s = safety[m._id];
+    if (!s) return;
+    const who = [m.firstName, m.lastName].filter(Boolean).join(' ') || m.email || 'This member';
+    const changed = s.status === 'changed';
+    Alert.alert(
+      changed ? 'Safety number changed!' : `Verify ${who}`,
+      (changed
+        ? `${who}'s security code is different from the one you verified. This can mean they re-installed or re-enrolled — or that someone else holds their account. Compare the new code with them in person or over a call before trusting it:\n\n`
+        : 'Compare this security code with the one on their device (in person or over a call). If they match, you know your encrypted data is shared with the right person:\n\n')
+        + s.fingerprint,
+      [
+        { text: 'Not now', style: 'cancel' },
+        {
+          text: s.status === 'verified' ? 'Verified ✓ (re-confirm)' : 'They match — mark verified',
+          onPress: async () => { await markVerified(m._id, s.fingerprint); await loadSafety(); },
+        },
+      ],
+    );
+  }
+
   useEffect(() => {
     loadKeyState();
     loadMine();
@@ -92,7 +136,17 @@ export default function HouseholdScreen() {
   async function saveName() {
     const trimmed = name.trim();
     if (!trimmed || trimmed === household?.name) return;
-    await householdApi.rename(trimmed);
+    // Seal the new name into the settings blob (C2); the decrypted homeAddress
+    // rides along so the re-seal never drops it. No-op without an HDK.
+    let body: Record<string, unknown> = { name: trimmed };
+    if (getHDK() && household?._id) {
+      const dec = (await openRecord('Household', (await householdApi.get()).data)) as unknown as Record<string, unknown>;
+      body = await sealUpdate('Household', String(household._id), body, HOUSEHOLD_ENC({
+        name: trimmed,
+        homeAddress: dec.homeAddress,
+      }));
+    }
+    await householdApi.rename(body);
     qc.invalidateQueries({ queryKey: ['household'] });
   }
 
@@ -212,8 +266,11 @@ export default function HouseholdScreen() {
               await householdApi.removeMember(m._id);
               await refetch();
               qc.invalidateQueries();
-              // Drive the rotation now (the server flagged it) while we're unlocked.
+              // Drive the rotation now (the server flagged it) while we're unlocked,
+              // then re-seal historical records under the new version and retire the
+              // old envelopes (B1/B3) so the removed member's key opens nothing.
               await ensureHouseholdKey();
+              void maintainKeyHygiene();
             } catch (e: any) {
               Alert.alert('Could not remove member', e?.response?.data?.error || 'Please try again.');
             } finally {
@@ -238,6 +295,15 @@ export default function HouseholdScreen() {
             setLeaving(true);
             try {
               await householdApi.leave();
+              // The fresh solo household is born unencrypted — mint its key and
+              // finish born-encrypted activation now so it never sits in a
+              // plaintext state the user has to fix by hand. (ensureHouseholdKey
+              // also re-arms the once-per-session activation latch on the
+              // household change.) Best-effort: if the key is locked, the normal
+              // on-unlock path still activates it.
+              if ((await ensureHouseholdKey()) === 'ready') {
+                await activateBornEncryptedHousehold().catch(() => {});
+              }
               await refetch();
               qc.invalidateQueries();
             } finally {
@@ -308,12 +374,24 @@ export default function HouseholdScreen() {
 
       <Card style={styles.card}>
         <SectionTitle>Members ({household.members.length})</SectionTitle>
+        {Object.values(safety).some((s) => s.status === 'changed') ? (
+          <Text style={styles.safetyChanged}>
+            A member's safety number changed since you verified it. Tap them to compare the new
+            code before trusting this household with anything sensitive.
+          </Text>
+        ) : null}
         {household.members.map((m: HouseholdMember) => {
           const display = [m.firstName, m.lastName].filter(Boolean).join(' ') || m.email || '?';
           const isMemberOwner = String(m._id) === String(household.ownerId);
           const canRemove = !!household.isOwner && !isMemberOwner;
+          const s = safety[m._id];
           return (
-            <View key={m._id} style={styles.memberRow}>
+            <TouchableOpacity
+              key={m._id}
+              style={styles.memberRow}
+              activeOpacity={s ? 0.7 : 1}
+              onPress={s ? () => showSafetyNumber(m) : undefined}
+            >
               <View style={styles.memberAvatar}>
                 <Text style={styles.memberInitial}>
                   {(m.firstName || m.email || '?').charAt(0).toUpperCase()}
@@ -323,6 +401,14 @@ export default function HouseholdScreen() {
                 <Text style={styles.memberName} numberOfLines={1}>{display}</Text>
                 {m.email ? <Text style={styles.memberEmail} numberOfLines={1}>{m.email}</Text> : null}
               </View>
+              {s ? (
+                <Ionicons
+                  name={s.status === 'verified' ? 'shield-checkmark' : s.status === 'changed' ? 'alert-circle' : 'shield-outline'}
+                  size={18}
+                  color={s.status === 'verified' ? colors.success : s.status === 'changed' ? colors.error : colors.textMuted}
+                  style={styles.safetyIcon}
+                />
+              ) : null}
               {isMemberOwner ? <Text style={styles.ownerChip}>Owner</Text> : null}
               {canRemove ? (
                 <TouchableOpacity
@@ -336,7 +422,7 @@ export default function HouseholdScreen() {
                     : <Ionicons name="person-remove-outline" size={18} color={colors.error} />}
                 </TouchableOpacity>
               ) : null}
-            </View>
+            </TouchableOpacity>
           );
         })}
 
@@ -392,7 +478,7 @@ export default function HouseholdScreen() {
       {/* Encryption status + §9 migration checklist — owner-only. Shows the
           current encrypted/not-encrypted state; while not yet encrypted it also
           surfaces the per-member readiness checklist. Members see their personal
-          status on the Sign-in & Security screen instead. */}
+          status on the Privacy & data screen instead. */}
       {household.isOwner ? <EncryptionSetupCard e2eeActive={household.e2eeActive} /> : null}
 
       {myRequest && myRequest.status === 'pending' ? (
@@ -402,14 +488,22 @@ export default function HouseholdScreen() {
             <Text style={styles.waitingTitle}>Waiting for approval</Text>
           </View>
           <Text style={styles.caption}>
-            A family member in “{myRequest.name}” needs to approve you on their device. This stays
-            pending until they're online.
+            A family member{myRequest.name ? ` in “${myRequest.name}”` : ''} needs to approve you on
+            their device. This stays pending until they're online.
           </Text>
           <Button title="Cancel request" variant="ghost" onPress={cancelRequest} loading={canceling} />
         </Card>
       ) : null}
 
       <Button title="Leave household" variant="danger" onPress={leave} loading={leaving} />
+
+      {/* Support handle: the household NAME is end-to-end encrypted (C2), so
+          support can only look an account up by this id. */}
+      {household?._id ? (
+        <Text style={styles.householdId} selectable>
+          Household ID: {String(household._id)}
+        </Text>
+      ) : null}
     </KeyboardAwareScrollView>
   );
 }
@@ -420,6 +514,7 @@ const styles = StyleSheet.create({
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.background },
   card: { marginBottom: spacing.md },
   caption: { fontSize: 12, color: colors.textMuted, marginTop: 4, marginBottom: spacing.sm, lineHeight: 17 },
+  householdId: { fontSize: 11, color: colors.textMuted, textAlign: 'center', marginTop: spacing.md },
   warn: { fontSize: 12, color: colors.warning ?? '#b26a00', marginBottom: spacing.sm },
   note: { fontSize: 12, color: colors.success, marginBottom: spacing.sm },
   emailAddRow: { position: 'relative', justifyContent: 'center' },
@@ -432,6 +527,8 @@ const styles = StyleSheet.create({
   requestActions: { flexDirection: 'row', gap: spacing.sm, marginTop: spacing.sm },
   actionBtn: { flex: 1 },
   fingerprint: { fontSize: 13, letterSpacing: 1, color: colors.primary, marginTop: 4, fontVariant: ['tabular-nums'] },
+  safetyIcon: { marginRight: spacing.sm },
+  safetyChanged: { fontSize: 12, color: colors.error, marginBottom: spacing.sm, lineHeight: 17 },
   waitingRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, marginBottom: 4 },
   waitingTitle: { fontSize: 15, fontWeight: '600', color: colors.text },
   memberRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 6 },

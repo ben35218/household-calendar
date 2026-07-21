@@ -37,6 +37,7 @@
       },
       "env": {
         "EXPO_PUBLIC_API_URL": "https://household-calendar-api.onrender.com",
+        "EXPO_PUBLIC_PASSKEY_RP_ID": "householdcalendar.com",
         "EXPO_PUBLIC_RC_IOS_KEY": "appl_fVFOKjziHJrHEUDeBLlPeEHGYzW"
       }
     },
@@ -44,6 +45,7 @@
       "autoIncrement": true,
       "env": {
         "EXPO_PUBLIC_API_URL": "https://household-calendar-api.onrender.com",
+        "EXPO_PUBLIC_PASSKEY_RP_ID": "householdcalendar.com",
         "EXPO_PUBLIC_RC_IOS_KEY": "appl_fVFOKjziHJrHEUDeBLlPeEHGYzW"
       }
     }

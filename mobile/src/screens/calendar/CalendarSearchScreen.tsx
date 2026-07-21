@@ -9,6 +9,7 @@ import { getHolidays } from '../../lib/holidays';
 import { useHolidayCalendars, holidayEnabledIds, useCalendarColors } from '../../lib/calendarPrefs';
 import { eventColor, ymd } from '../../lib/calendar';
 import { mdiName } from '../../lib/recurrence';
+import { resolveTaskIcon } from '../../lib/maintenanceCategories';
 import { CalendarStackParamList } from '../../navigation/CalendarNavigator';
 import { colors, spacing } from '../../theme';
 
@@ -46,11 +47,11 @@ export default function CalendarSearchScreen() {
     if (!data) return [];
     const out: Result[] = [];
     for (const e of data.events ?? []) {
-      out.push({ key: `e-${e._id}`, title: e.title, subtitle: 'Event', color: eventColor(e), icon: 'calendar', date: eventLd(e, e.startDate), nav: () => nav.navigate('EventForm', { eventId: e._id }) });
+      out.push({ key: `e-${e._id}`, title: e.title, subtitle: 'Event', color: eventColor(e), icon: 'calendar', date: eventLd(e, e.startDate), nav: () => nav.navigate('EventDetail', { eventId: e._id }) });
     }
     for (const t of data.tasks ?? []) {
       if (!t.nextDueDate) continue;
-      out.push({ key: `t-${t._id}`, title: t.title, subtitle: 'Maintenance task', color: calColors.maintenance, icon: 'wrench', date: ld(t.nextDueDate), nav: () => nav.navigate('TaskDetail', { id: t._id }) });
+      out.push({ key: `t-${t._id}`, title: t.title, subtitle: 'Maintenance task', color: calColors.maintenance, icon: resolveTaskIcon(t.icon, typeof t.categoryId === 'object' ? t.categoryId?.name : null), date: ld(t.nextDueDate), nav: () => nav.navigate('TaskDetail', { id: t._id }) });
     }
     for (const c of data.chores ?? []) {
       out.push({ key: `c-${c._id}`, title: c.title, subtitle: 'Chore', color: calColors.chores, icon: mdiName(c.icon), date: c.nextDueDate ? ld(c.nextDueDate) : '', nav: () => nav.navigate('ChoreDetail', { id: c._id }) });
@@ -62,7 +63,7 @@ export default function CalendarSearchScreen() {
     }
     for (const t of data.trips ?? []) {
       const start = t.ranges?.[0]?.start;
-      out.push({ key: `trip-${t.id}`, title: t.name, subtitle: 'Trip', color: t.color || calColors.vacations, icon: 'bag-suitcase', date: start ? ld(start) : '', nav: () => nav.navigate('TripDetail', { id: t.id }) });
+      out.push({ key: `trip-${t.id}`, title: t.name, subtitle: 'Trip', color: t.color || calColors.trips, icon: 'bag-suitcase', date: start ? ld(start) : '', nav: () => nav.navigate('TripDetail', { id: t.id }) });
     }
     for (const b of data.birthdays ?? []) {
       out.push({ key: `b-${b.id}`, title: `${b.name}'s Birthday`, subtitle: 'Birthday', color: calColors.birthdays, icon: 'cake-variant', date: ld(b.date), nav: () => nav.navigate('CalendarDay', { date: ld(b.date) }) });

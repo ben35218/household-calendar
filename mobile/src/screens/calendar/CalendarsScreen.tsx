@@ -24,7 +24,7 @@ const LINK_TARGETS: Record<string, keyof CalendarStackParamList> = {
   maintenance: 'MaintenanceHome',
   chores: 'ChoresHome',
   recipes: 'KitchenHome',
-  vacations: 'Vacations',
+  trips: 'Trips',
   birthdays: 'Birthdays',
   weather: 'Weather',
 };

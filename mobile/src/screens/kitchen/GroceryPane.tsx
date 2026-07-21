@@ -9,6 +9,7 @@ import {
   recipeScheduleApi, settingsApi,
   GroceryItem, OrganizedGroceryList, GrocerySessionState,
 } from '../../api';
+import { loadGroceryList } from '../../lib/groceryList';
 import { Card, Divider, Input } from '../../components/ui';
 import AiUsageBanner from '../../components/AiUsageBanner';
 import { KitchenStackParamList } from '../../navigation/KitchenNavigator';
@@ -36,8 +37,15 @@ export default function GroceryPane({ weekStart, onShowPlanner }: { weekStart: D
   const [subDraft, setSubDraft] = useState('');
   const hydrating = useRef(false);
 
-  const groceryQ = useQuery({ queryKey: ['grocery-list', start], queryFn: async () => (await recipeScheduleApi.groceryList(start)).data.groceryList });
   const settingsQ = useQuery({ queryKey: ['settings'], queryFn: async () => (await settingsApi.get()).data });
+  // Built client-side over the decrypted recipes + schedules (Signal-parity D5
+  // — ingredients are sealed content the server can't aggregate).
+  const frequency = settingsQ.data?.groceryFrequency ?? 'weekly';
+  const groceryQ = useQuery({
+    queryKey: ['grocery-list', start, frequency],
+    queryFn: () => loadGroceryList(start, frequency),
+    enabled: !!settingsQ.data,
+  });
   const sessionQ = useQuery({ queryKey: ['grocery-session', start], queryFn: async () => (await recipeScheduleApi.sessionGet(start)).data });
 
   // Hydrate session when the week (or its saved session) loads.

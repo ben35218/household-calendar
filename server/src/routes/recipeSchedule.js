@@ -3,7 +3,10 @@ const Anthropic = require('@anthropic-ai/sdk');
 const RecipeSchedule = require('../models/RecipeSchedule');
 const ShoppingSession = require('../models/ShoppingSession');
 const { requireAuth } = require('../middleware/auth');
+const { requireAiEnabled } = require('../middleware/aiConsent');
 const { meter } = require('../middleware/usageMeter');
+const { isObjectId, pickRecordEnc } = require('../services/householdKey');
+const { plaintextCreateBlocked, E2EE_REQUIRED_MESSAGE, stripSealedContent } = require('../services/e2eePolicy');
 
 const client = new Anthropic();
 
@@ -13,7 +16,7 @@ router.use(requireAuth);
 router.get('/', async (req, res) => {
   try {
     const { start, end } = req.query;
-    const filter = { userId: { $in: req.scopeIds } };
+    const filter = { ...req.scopeFilter };
     if (start || end) {
       filter.scheduledDate = {};
       if (start) filter.scheduledDate.$gte = new Date(start);
@@ -29,69 +32,17 @@ router.get('/', async (req, res) => {
   }
 });
 
-// Grocery list for a week — aggregate ingredients from all scheduled recipes
-router.get('/grocery-list', async (req, res) => {
-  try {
-    const { weekStart } = req.query;
-    if (!weekStart) return res.status(400).json({ error: 'weekStart required (YYYY-MM-DD)' });
-
-    const start = new Date(weekStart);
-    start.setHours(0, 0, 0, 0);
-    const end = new Date(start);
-    // A biweekly shopper's list covers the full two weeks until the next trip.
-    const biweekly = ((req.household || req.user).groceryFrequency ?? 'weekly') === 'biweekly';
-    end.setDate(end.getDate() + (biweekly ? 13 : 6));
-    end.setHours(23, 59, 59, 999);
-
-    const schedules = await RecipeSchedule.find({
-      userId: { $in: req.scopeIds },
-      scheduledDate: { $gte: start, $lte: end },
-    }).populate('recipeId').sort('scheduledDate').lean();
-
-    // Aggregate ingredients across all recipes for the week
-    const ingredientMap = {};
-    for (const s of schedules) {
-      const recipe = s.recipeId;
-      if (!recipe?.ingredients) continue;
-      const multiplier = (s.servings && recipe.servings) ? s.servings / recipe.servings : 1;
-      for (const ing of recipe.ingredients) {
-        const key = ing.name.toLowerCase().trim();
-        if (!ingredientMap[key]) {
-          ingredientMap[key] = { name: ing.name, entries: [] };
-        }
-        ingredientMap[key].entries.push({
-          recipeTitle: recipe.title,
-          amount: ing.amount || '',
-          unit: ing.unit || '',
-          multiplier,
-        });
-      }
-    }
-
-    const groceryList = Object.values(ingredientMap)
-      .sort((a, b) => a.name.localeCompare(b.name));
-
-    const recipes = schedules.map(s => ({
-      scheduleId: s._id,
-      scheduledDate: s.scheduledDate,
-      notes: s.notes,
-      servings: s.servings,
-      recipe: s.recipeId
-        ? { _id: s.recipeId._id, title: s.recipeId.title, servings: s.recipeId.servings }
-        : null,
-    }));
-
-    res.json({ weekStart: start, weekEnd: end, groceryList, recipes });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+// GET /grocery-list was removed (Signal-parity D5): it aggregated
+// Recipe.ingredients server-side, which is sealed content the server can't read
+// post-drop. The client builds the week's grocery list itself over its decrypted
+// recipes + schedules (mobile lib/groceryList.ts) and only the resulting item
+// names reach the AI organize endpoint below (explicit consent, as before).
 
 router.get('/session', async (req, res) => {
   const { weekStart } = req.query;
   if (!weekStart) return res.status(400).json({ error: 'weekStart required' });
   try {
-    const session = await ShoppingSession.findOne({ userId: { $in: req.scopeIds }, weekStart }).lean();
+    const session = await ShoppingSession.findOne({ ...req.scopeFilter, weekStart }).lean();
     res.json(session?.state ?? {});
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -103,7 +54,7 @@ router.put('/session', async (req, res) => {
   if (!weekStart) return res.status(400).json({ error: 'weekStart required' });
   try {
     await ShoppingSession.findOneAndUpdate(
-      { userId: { $in: req.scopeIds }, weekStart },
+      { ...req.scopeFilter, weekStart },
       { $set: { state }, $setOnInsert: { userId: req.user._id } },  // $in can't seed userId on insert
       { upsert: true, new: true }
     );
@@ -113,7 +64,7 @@ router.put('/session', async (req, res) => {
   }
 });
 
-router.post('/organize-grocery-list', meter('aiHelper'), async (req, res) => {
+router.post('/organize-grocery-list', meter('aiHelper'), requireAiEnabled, async (req, res) => {
   try {
     const { items, store, sectionOrder } = req.body; // items: [{ name, entries: [{ amount, unit, recipeTitle }] }]
     if (!items?.length) return res.status(400).json({ error: 'items required' });
@@ -178,14 +129,25 @@ Respond with ONLY valid JSON (no markdown):
 
 router.post('/', async (req, res) => {
   try {
+    let enc;
+    try { enc = pickRecordEnc(req.body); }
+    catch (msg) { return res.status(400).json({ error: String(msg) }); }
+    if (plaintextCreateBlocked(req.household, enc.enc)) {
+      return res.status(400).json({ error: E2EE_REQUIRED_MESSAGE });
+    }
     const { recipeId, scheduledDate, servings, notes } = req.body;
-    const schedule = await RecipeSchedule.create({
+    const data = {
+      ...(isObjectId(req.body._id) ? { _id: req.body._id } : {}),
       userId: req.user._id,
       recipeId,
       scheduledDate: new Date(scheduledDate),
       servings,
       notes,
-    });
+      ...enc,
+    };
+    // Steady-state write rule: a sealed meal-plan note stores no plaintext.
+    stripSealedContent('RecipeSchedule', req.household, data);
+    const schedule = await RecipeSchedule.create(data);
     const populated = await RecipeSchedule.findById(schedule._id).populate('recipeId').lean();
     res.status(201).json(populated);
   } catch (err) {
@@ -196,7 +158,7 @@ router.post('/', async (req, res) => {
 router.get('/for-recipe/:recipeId', async (req, res) => {
   try {
     const schedules = await RecipeSchedule.find({
-      userId: { $in: req.scopeIds },
+      ...req.scopeFilter,
       recipeId: req.params.recipeId,
     }).sort('scheduledDate').lean();
     res.json(schedules);
@@ -208,7 +170,7 @@ router.get('/for-recipe/:recipeId', async (req, res) => {
 router.put('/:id', async (req, res) => {
   try {
     const { scheduledDate, servings, notes } = req.body;
-    const schedule = await RecipeSchedule.findOne({ _id: req.params.id, userId: { $in: req.scopeIds } });
+    const schedule = await RecipeSchedule.findOne({ _id: req.params.id, ...req.scopeFilter });
     if (!schedule) return res.status(404).json({ error: 'Not found' });
 
     const oldDate = new Date(schedule.scheduledDate);
@@ -238,16 +200,22 @@ router.put('/:id', async (req, res) => {
     const oldWeekStart = weekStartFor(oldDate);
     const newWeekStart = weekStartFor(newDate);
 
-    schedule.scheduledDate = newDate;
-    if (servings !== undefined) schedule.servings = servings || null;
-    if (notes !== undefined) schedule.notes = notes;
+    const set = { scheduledDate: newDate };
+    if (servings !== undefined) set.servings = servings || null;
+    if (notes !== undefined) set.notes = notes;
+    // Re-encrypted content from the client (dual-write).
+    try { Object.assign(set, pickRecordEnc(req.body)); }
+    catch (msg) { return res.status(400).json({ error: String(msg) }); }
+    // Steady-state write rule: a sealed meal-plan note isn't re-stored plaintext.
+    stripSealedContent('RecipeSchedule', req.household, set);
+    Object.assign(schedule, set);
     await schedule.save();
 
     const weekChanged = oldWeekStart !== newWeekStart;
     if (weekChanged) {
       const updates = [
         ShoppingSession.updateOne(
-          { userId: { $in: req.scopeIds }, weekStart: newWeekStart },
+          { ...req.scopeFilter, weekStart: newWeekStart },
           { $unset: { 'state.organizedList': 1 } }
         ),
       ];
@@ -257,7 +225,7 @@ router.put('/:id', async (req, res) => {
       if (new Date(oldWeekStart) >= today) {
         updates.push(
           ShoppingSession.updateOne(
-            { userId: { $in: req.scopeIds }, weekStart: oldWeekStart },
+            { ...req.scopeFilter, weekStart: oldWeekStart },
             { $unset: { 'state.organizedList': 1 } }
           )
         );
@@ -274,7 +242,7 @@ router.put('/:id', async (req, res) => {
 
 router.delete('/:id', async (req, res) => {
   try {
-    const schedule = await RecipeSchedule.findOneAndDelete({ _id: req.params.id, userId: { $in: req.scopeIds } });
+    const schedule = await RecipeSchedule.findOneAndDelete({ _id: req.params.id, ...req.scopeFilter });
     if (!schedule) return res.status(404).json({ error: 'Not found' });
     res.json({ message: 'Deleted' });
   } catch (err) {

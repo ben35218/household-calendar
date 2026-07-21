@@ -30,6 +30,13 @@
               @update:model-value="v => setTokenLimit(t, v)"
               placeholder="∞" density="compact" variant="outlined" hide-details />
 
+            <div class="rl font-weight-bold">Weekly call limit (min)</div>
+            <v-text-field
+              v-for="t in TIERS" :key="'wcl'+t"
+              :model-value="callMinutesDisplay(config.tiers[t].weeklyCallSecondsLimit)"
+              @update:model-value="v => setCallMinutes(t, v)"
+              placeholder="∞" density="compact" variant="outlined" hide-details />
+
             <template v-for="a in ACTIONS" :key="'row'+a">
               <div class="rl text-medium-emphasis">{{ actionLabel(a) }} count</div>
               <v-text-field
@@ -40,8 +47,9 @@
             </template>
           </div>
           <p class="text-caption text-medium-emphasis mt-2">
-            <strong>Weekly token limit</strong> is the enforced cap (total Claude tokens per week; blank = unlimited).
-            The per-action <em>counts</em> below are analytics only and no longer cap usage.
+            <strong>Weekly token limit</strong> is the enforced cap for text AI (total Claude tokens per week; blank = unlimited).
+            <strong>Weekly call limit</strong> is a separate cap for assistant phone calls, in minutes of connected call time per week
+            (blank = unlimited; ~$0.08/min in Vapi cost). The per-action <em>counts</em> below are analytics only and no longer cap usage.
           </p>
         </v-card-text>
       </v-card>
@@ -63,6 +71,23 @@
             <v-text-field v-model.number="config.fees.pct" label="Processor fee %" type="number" step="0.1" density="compact" variant="outlined" class="mb-1" hide-details />
             <v-text-field v-model.number="config.fees.flat" label="Processor flat fee $" type="number" step="0.01" density="compact" variant="outlined" class="mb-1" hide-details />
             <v-text-field v-model.number="config.guards.mapsPerDay" label="Maps calls / household / day" type="number" density="compact" variant="outlined" hide-details />
+          </v-card-text>
+        </v-card>
+
+        <v-card class="flex-1-1" rounded="lg" variant="outlined" style="min-width: 320px">
+          <v-card-title class="text-subtitle-1 font-weight-bold">Admin accounts</v-card-title>
+          <v-card-text>
+            <v-switch
+              v-model="config.admin.unlimitedAi"
+              color="primary"
+              density="compact"
+              hide-details
+              label="Admins get unlimited AI" />
+            <p class="text-caption text-medium-emphasis mt-1">
+              When on, users with the <strong>admin</strong> role skip the weekly AI token and
+              call-time budgets (for internal team use and testing). Turn off to meter admins
+              exactly like everyone else. Usage is always tracked either way.
+            </p>
           </v-card-text>
         </v-card>
       </div>
@@ -141,6 +166,14 @@ function setTokenLimit(tier, v) {
   const trimmed = String(v).trim();
   config.value.tiers[tier].weeklyTokenLimit = trimmed === '' ? null : Number(trimmed);
 }
+// The call budget is stored in seconds but edited in whole minutes for readability.
+function callMinutesDisplay(seconds) {
+  return seconds === null || seconds === undefined ? '' : String(Math.round(seconds / 60));
+}
+function setCallMinutes(tier, v) {
+  const trimmed = String(v).trim();
+  config.value.tiers[tier].weeklyCallSecondsLimit = trimmed === '' ? null : Math.round(Number(trimmed) * 60);
+}
 
 const money = (n) => (n < 0 ? '-$' : '$') + Math.abs(n).toFixed(2);
 
@@ -176,6 +209,7 @@ async function load() {
   loading.value = true;
   try {
     const { data } = await monetizationApi.get();
+    if (!data.admin) data.admin = { unlimitedAi: true }; // predates the admin-policy section
     config.value = data;
   } finally {
     loading.value = false;
@@ -185,8 +219,8 @@ async function load() {
 async function save() {
   saving.value = true;
   try {
-    const { tiers, costs, models, activity, fees, guards } = config.value;
-    await monetizationApi.update({ tiers, costs, models, activity, fees, guards });
+    const { tiers, costs, models, activity, fees, guards, admin } = config.value;
+    await monetizationApi.update({ tiers, costs, models, activity, fees, guards, admin });
     savedAt.value = new Date().toLocaleTimeString();
   } finally {
     saving.value = false;

@@ -1,11 +1,29 @@
 import * as ImagePicker from 'expo-image-picker';
 import * as DocumentPicker from 'expo-document-picker';
+import * as FileSystem from 'expo-file-system/legacy';
 
 // A file ready to append to a multipart FormData (React Native shape).
 export interface PickedFile {
   uri: string;
   name: string;
   type: string;
+}
+
+// How a picked file is presented to Claude: images and PDFs are sent inline as
+// multimodal content blocks; anything else is announced to the model as a plain
+// filename note (it can't read the bytes).
+export type AttachmentKind = 'image' | 'document' | 'other';
+
+export function classifyAttachment(mime: string): AttachmentKind {
+  if (mime.startsWith('image/')) return 'image';
+  if (mime === 'application/pdf') return 'document';
+  return 'other';
+}
+
+// Read a picked file's bytes as base64 (no data: prefix) for the chat transport,
+// which carries attachments inline in the JSON request body.
+export function readFileBase64(file: PickedFile): Promise<string> {
+  return FileSystem.readAsStringAsync(file.uri, { encoding: FileSystem.EncodingType.Base64 });
 }
 
 function inferName(uri: string, fallback: string): string {

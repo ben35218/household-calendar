@@ -6,6 +6,7 @@ import { useNavigation, useRoute, RouteProp, StackActions } from '@react-navigat
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { recipesApi, recipeScheduleApi, Recipe, Ingredient } from '../../api';
 import { sealNew, sealUpdate, openRecord } from '../../lib/e2ee';
+import { RECIPE_SCHEDULE_ENC } from '../../lib/encSubsets';
 
 // Encrypted recipe content (imageUrl/sourceUrl/instructionIngredients stay plaintext).
 const RECIPE_ENC = (p: Record<string, unknown>) => ({
@@ -16,7 +17,7 @@ const RECIPE_ENC = (p: Record<string, unknown>) => ({
 import { Button, Input, Screen, SectionTitle, useHeaderCheckButton, FormError, CenteredLoader } from '../../components/ui';
 import { form as fs, GroupCard, CardDivider } from '../../components/formStyles';
 import StepIngredientLinker from '../../components/StepIngredientLinker';
-import AssistantIcon from '../../components/AssistantIcon';
+import CalenChatIcon from '../../components/CalenChatIcon';
 import AiUsageBanner from '../../components/AiUsageBanner';
 import { useAiEnabled } from '../../lib/privacyPrefs';
 import { takePhoto, pickImage } from '../../lib/media';
@@ -233,7 +234,9 @@ export default function RecipeFormScreen() {
       // to that date, then return to the Meals/Planner view (not the detail page).
       if (!isEdit && newId && scheduleDate) {
         try {
-          await recipeScheduleApi.schedule({ recipeId: newId, scheduledDate: scheduleDate });
+          // Sealed create (Signal-parity D5): schedule notes are content.
+          const payload = { recipeId: newId, scheduledDate: scheduleDate };
+          await recipeScheduleApi.schedule(await sealNew('RecipeSchedule', payload, RECIPE_SCHEDULE_ENC(payload)));
           qc.invalidateQueries({ queryKey: ['recipe-schedule'] });
           qc.invalidateQueries({ queryKey: ['grocery-list'] });
         } catch {
@@ -429,7 +432,7 @@ export default function RecipeFormScreen() {
               onPress={() => navigation.navigate('RecipeAssistant', { scheduleDate })}
               accessibilityLabel="AI Assistant"
             >
-              <AssistantIcon size={20} color="#fff" />
+              <CalenChatIcon size={20} color="#fff" />
             </TouchableOpacity>
           </View>
           {importer === 'url' ? (

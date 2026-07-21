@@ -4,7 +4,7 @@ import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
 import { Ionicons } from '@expo/vector-icons';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import { inventoryApi, recipesApi } from '../../api';
+import { recipesApi } from '../../api';
 import { Button, Card, Chip, Input } from '../../components/ui';
 import AiUsageBanner from '../../components/AiUsageBanner';
 import { useCalendarColors } from '../../lib/calendarPrefs';
@@ -36,8 +36,8 @@ export default function FindRecipesScreen() {
     setError('');
     setBusy(true);
     try {
-      const { data } = await inventoryApi.suggestRecipes({ query: queryText.trim() });
-      setSuggestions((data as { recipes: Suggestion[] }).recipes);
+      const { data } = await recipesApi.suggestRecipes({ query: queryText.trim() });
+      setSuggestions(data.recipes);
     } catch (e: any) {
       setError(e?.response?.data?.error || 'Failed to suggest recipes');
     } finally {

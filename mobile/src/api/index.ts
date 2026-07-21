@@ -1,10 +1,38 @@
 import api from './client';
 
+// Signal-parity C3b: the per-collection content groups (tasks/chores/items/…)
+// route their CRUD through the unified opaque store instead of a per-collection
+// route (whose request line leaked the type). `store()` is the client chokepoint
+// (lib/recordStore) — lazily required so api/index has no import cycle with the
+// lib layer. The screens keep calling `tasksApi.create(await sealNew(...))` etc.
+// unchanged; the group method just re-points the sealed payload at /records +
+// the replica. Non-content methods (templates, complete, AI generate) keep their
+// own routes.
+import type * as RecordStore from '../lib/recordStore'; // type-only: no runtime cycle
+const store = (): typeof RecordStore => require('../lib/recordStore');
+
+// C3b: flip a sealed boolean/field on a content record by re-sealing it (the
+// server can't set a field inside `enc`). Used by pause/resume, which toggle the
+// sealed `active` column. Reads the decrypted record from the replica, merges the
+// change, re-seals the full subset, and routes the update through the store.
+async function reseal(
+  collection: string,
+  subset: (p: Record<string, unknown>) => Record<string, unknown>,
+  id: string,
+  changes: Record<string, unknown>,
+) {
+  const { sealUpdate } = require('../lib/e2ee');
+  const rep = require('../lib/replica') as typeof import('../lib/replica');
+  const existing = (await rep.getAll<Record<string, unknown>>(collection)).find((r) => r._id === id) ?? {};
+  const merged = { ...existing, ...changes };
+  return store().update(collection, id, await sealUpdate(collection, id, merged, subset(merged)));
+}
+
 // Typed endpoint groups ported from client/src/services/api.js. Wave 1 (Tasks &
 // Chores) fills out the maintenance surface: tasks, chores, their templates,
 // plus the supporting groups their screens need (categories, items, history,
-// settings, odometer, people). Remaining groups (inventory, recipes, trips, …)
-// follow the same one-line-per-endpoint pattern and land with their waves.
+// settings, odometer, people). Remaining groups (recipes, trips, …) follow the
+// same one-line-per-endpoint pattern and land with their waves.
 
 export interface User {
   _id: string;
@@ -13,6 +41,13 @@ export interface User {
   lastName?: string;
   role?: 'user' | 'admin';
   householdId?: string; // used as the RevenueCat app_user_id
+  // Whether the account knows a real password. false for passwordless signups —
+  // the unlock UI then offers recovery/passkey instead of a password field.
+  hasPassword?: boolean;
+  // True after a forgot-password reset until the E2EE password factor is re-wrapped
+  // under the new password: the old-password envelope can't decrypt, so the unlock
+  // UI hides the password field and steers to the recovery code / passkey.
+  e2eePasswordStale?: boolean;
 }
 
 export interface AuthResponse {
@@ -33,7 +68,7 @@ export interface PasskeyChallenge {
 export const authApi = {
   login: (data: { email: string; password: string }) =>
     api.post<AuthResponse>('/auth/login', data),
-  register: (data: { email: string; password: string; firstName: string; lastName?: string }) =>
+  register: (data: { email: string; password: string; firstName: string; lastName?: string; passwordless?: boolean }) =>
     api.post<AuthResponse>('/auth/register', data),
   me: () => api.get<User>('/auth/me'),
   updateEmail: (data: { email: string; password: string }) => api.put('/auth/email', data),
@@ -49,11 +84,31 @@ export const authApi = {
   passkeyChallenge: (data: { email: string }) => api.post<PasskeyChallenge>('/auth/passkey/challenge', data),
   passkeyLogin: (data: { challengeId: string; response: unknown }) =>
     api.post<AuthResponse>('/auth/passkey/login', data),
-  // Permanent account + data deletion (Apple 5.1.1(v)). Re-auth with the
-  // password; the session token is invalid immediately afterwards.
-  deleteAccount: (data: { password: string }) =>
+  // Permanent account + data deletion (Apple 5.1.1(v)). Accounts with a
+  // password re-auth with it; passwordless (passkey/OAuth) accounts rely on the
+  // session token. The session token is invalid immediately afterwards.
+  deleteAccount: (data: { password?: string }) =>
     api.delete<{ ok: boolean }>('/auth/account', { data }),
+  // Device sessions (Signal-parity F2) + the F1 pending-reset hold state.
+  sessions: () => api.get<DeviceSessionsResponse>('/auth/sessions'),
+  revokeSession: (sid: string) => api.delete<{ ok: boolean }>(`/auth/sessions/${sid}`),
+  cancelReset: () => api.post<{ ok: boolean }>('/auth/reset/cancel'),
 };
+
+export interface DeviceSession {
+  _id: string;
+  deviceName: string;
+  platform: string;
+  createdAt: string;
+  lastSeenAt: string;
+  current: boolean;
+}
+export interface DeviceSessionsResponse {
+  sessions: DeviceSession[];
+  // Set while a password reset from an unknown device is being held (F1);
+  // any signed-in device can cancel it.
+  pendingResetHoldUntil: string | null;
+}
 
 // Report objectionable AI-generated content (Apple 1.2).
 export const moderationApi = {
@@ -70,6 +125,7 @@ export interface StoredKeyMaterial {
   wrappedPrivateKey: unknown[];
   keyEnrolledAt: string | null;
   keySchemaVersion: number;
+  recoverySetupAt: string | null;
 }
 
 export const keysApi = {
@@ -79,7 +135,49 @@ export const keysApi = {
   removeFactor: (factor: string, credentialId?: string) =>
     api.delete(`/keys/factors/${factor}`, { params: credentialId ? { credentialId } : {} }),
   publicKey: (userId: string) => api.get<{ userId: string; identityPublicKey: string }>(`/keys/public/${userId}`),
+  // Confirm a non-password recovery factor is in place (recovery code saved
+  // and/or passkey enrolled). Idempotent server-side.
+  recoveryComplete: () => api.post<{ recoverySetupAt: string | null }>('/keys/recovery-complete'),
+  // Signal-parity F4 — QR device linking. A blind relay between two of the
+  // account's own devices: the new (locked) device opens a slot, the existing
+  // (unlocked) device seals the account secret to the scanned ephemeral key, and
+  // the server only ferries the opaque `sealedPayload`.
+  linkStart: (data: { ephemeralPublicKey: string; deviceName?: string }) =>
+    api.post<{ linkId: string; expiresAt: string }>('/keys/link/start', data),
+  linkComplete: (data: { linkId: string; sealedPayload: string }) =>
+    api.post<{ ok: boolean }>('/keys/link/complete', data),
+  linkPoll: (linkId: string) =>
+    api.get<{ status: 'pending' | 'sealed' | 'consumed'; sealedPayload?: string }>(`/keys/link/${linkId}`),
+
+  // Guardian recovery (dual-control). A household member helps the user recover,
+  // but neither party alone can open the key: the guardian's sealed box + the
+  // user's 4-digit PIN. Server stores the opaque `outer` blind and blind-relays
+  // the re-sealed handoff. See specs/features/guardian-recovery.md.
+  guardianStatus: () =>
+    api.get<{ armed: boolean; guardianUserId?: string; guardianName?: string | null; armedAt?: string }>('/keys/guardian'),
+  guardianArm: (data: { guardianUserId: string; guardianFingerprint: string; outer: string }) =>
+    api.put<{ armed: boolean }>('/keys/guardian', data),
+  guardianDisarm: () => api.delete<{ armed: boolean }>('/keys/guardian'),
+  guardianRequest: (data: { ephemeralPublicKey: string; fingerprint: string }) =>
+    api.post<{ requestId: string; expiresAt: string }>('/keys/guardian/request', data),
+  guardianRequests: () =>
+    api.get<{ requests: GuardianRequest[] }>('/keys/guardian/requests'),
+  guardianApprove: (data: { requestId: string; sealedPayload: string }) =>
+    api.post<{ ok: boolean }>('/keys/guardian/approve', data),
+  guardianPoll: (requestId: string) =>
+    api.get<{ status: 'pending' | 'sealed'; sealedPayload?: string }>(`/keys/guardian/request/${requestId}`),
 };
+
+// A pending recovery request surfaced to the guardian, carrying the requester's
+// opaque `outer` blob (which the guardian unseals + re-seals locally).
+export interface GuardianRequest {
+  requestId: string;
+  userId: string;
+  requesterName: string;
+  fingerprint: string;
+  ephemeralPublicKey: string;
+  outer: string;
+}
 
 // ----- Recurrence (shared by tasks, chores, and their templates) -------------
 
@@ -104,6 +202,12 @@ export interface LinkedRef {
   // Present when the ref is populated with extra fields (e.g. an item's type,
   // used to show the item's category icon).
   type?: string;
+  icon?: string;
+  color?: string;
+  // Populated refs carry their enc blob so the client can decrypt the (sealed)
+  // name post-drop via openRecord on the ref itself.
+  keyVersion?: number;
+  enc?: { alg: string; nonce: string; ct: string };
 }
 
 export interface Task {
@@ -125,6 +229,7 @@ export interface Task {
   recurrence?: Recurrence;
   reminderDaysBefore?: number | null;
   alert2DaysBefore?: number | null;
+  reminderTime?: string | null;
   alertAudience?: 'everyone' | 'owner';
   // Explicit alert recipients; empty/absent = everyone.
   alertUserIds?: string[];
@@ -132,6 +237,9 @@ export interface Task {
   intervalKm?: number;
   lastServiceKm?: number;
   nextDueKm?: number;
+  updatedAt?: string;
+  keyVersion?: number;
+  enc?: { alg: string; nonce: string; ct: string };
 }
 
 export interface Completion {
@@ -143,23 +251,57 @@ export interface Completion {
 }
 
 export const tasksApi = {
-  list: (params?: Record<string, unknown>) => api.get<Task[]>('/tasks', { params }),
-  get: (id: string) => api.get<Task>(`/tasks/${id}`),
-  create: (data: Record<string, unknown>) => api.post<Task>('/tasks', data),
-  update: (id: string, data: Record<string, unknown>) => api.put<Task>(`/tasks/${id}`, data),
-  delete: (id: string) => api.delete(`/tasks/${id}`),
+  // C3b: CRUD routes through the unified opaque store (lib/recordStore); the
+  // screens still call these with a sealNew/sealUpdate payload.
+  list: (params?: Record<string, unknown>) => store().list<Task>('MaintenanceTask', params),
+  get: (id: string) => store().get<Task>('MaintenanceTask', id),
+  create: (data: Record<string, unknown>) => store().create<Task>('MaintenanceTask', data),
+  update: (id: string, data: Record<string, unknown>) => store().update<Task>('MaintenanceTask', id, data),
+  delete: (id: string) => store().remove('MaintenanceTask', id),
   complete: (id: string, data?: Record<string, unknown>) =>
     api.post<{ task: Task; completion: Completion }>(`/tasks/${id}/complete`, data),
-  pause: (id: string) => api.post(`/tasks/${id}/pause`),
-  resume: (id: string) => api.post(`/tasks/${id}/resume`),
-  fromTemplate: (
-    data:
-      | { templateIds: string[]; categoryId?: string }
-      | { selections: Array<{ templateId: string; itemId?: string; categoryId?: string }> }
-  ) => api.post<Task[]>('/tasks/from-template', data),
+  // C3b: pause/resume flip the sealed `active` field → re-seal client-side.
+  pause: (id: string) => reseal('MaintenanceTask', require('../lib/encSubsets').TASK_ENC, id, { active: false }),
+  resume: (id: string) => reseal('MaintenanceTask', require('../lib/encSubsets').TASK_ENC, id, { active: true }),
+  // Template instantiation happens client-side now (lib/taskTemplates —
+  // Signal-parity D4): the app builds + seals template tasks and POSTs /tasks.
   templates: (params?: Record<string, unknown>) => api.get<TaskTemplate[]>('/task-templates', { params }),
   template: (id: string) => api.get<TaskTemplate>(`/task-templates/${id}`),
   completions: (params?: Record<string, unknown>) => api.get<Completion[]>('/tasks/completions', { params }),
+};
+
+// ----- Unified opaque record store (Signal-parity C3) ------------------------
+// The server stores every content record in ONE collection with no plaintext
+// type; the type + content ride inside the opaque `enc` blob (v2 envelope). Reads
+// are a single householdId + updatedAt sync cursor; writes are opaque. This is the
+// destination the per-collection routes fold into (C3b). See lib/records.ts.
+export interface RecordRow {
+  _id: string;
+  householdId?: string;
+  userId?: string;
+  keyVersion?: number;
+  enc?: { alg: string; nonce: string; ct: string; ks?: 'cal' | 'trip' };
+  scope?: { kind: 'calendar' | 'trip'; resource: string; version: number };
+  deleted?: boolean;
+  updatedAt?: string;
+  createdAt?: string;
+}
+
+export interface RecordSyncResponse {
+  records: RecordRow[];
+  serverTime: string;
+}
+
+export const recordsApi = {
+  // Incremental LWW pull: every record in scope updated after `since`, tombstones
+  // included (a deleted row arrives with deleted:true so replicas converge).
+  sync: (since?: string | null) =>
+    api.get<RecordSyncResponse>('/records/sync', { params: since ? { since } : {} }),
+  create: (data: { _id?: string; enc: unknown; keyVersion?: number; scope?: unknown }) =>
+    api.post<RecordRow>('/records', data),
+  update: (id: string, data: { enc: unknown; keyVersion?: number; scope?: unknown }) =>
+    api.put<RecordRow>(`/records/${id}`, data),
+  remove: (id: string) => api.delete(`/records/${id}`),
 };
 
 export interface TaskTemplate {
@@ -200,6 +342,8 @@ export interface ChoreAssignee {
   _id?: string;
   accountId?: string;
   name?: string;
+  keyVersion?: number;
+  enc?: { alg: string; nonce: string; ct: string };
 }
 
 export interface Chore {
@@ -214,7 +358,11 @@ export interface Chore {
   recurrence?: Recurrence;
   reminderDaysBefore?: number | null;
   alert2DaysBefore?: number | null;
+  reminderTime?: string | null;
   alertAudience?: 'everyone' | 'owner';
+  updatedAt?: string;
+  keyVersion?: number;
+  enc?: { alg: string; nonce: string; ct: string };
 }
 
 export interface ChoreTemplate {
@@ -226,14 +374,15 @@ export interface ChoreTemplate {
 }
 
 export const choresApi = {
-  list: (params?: Record<string, unknown>) => api.get<Chore[]>('/chores', { params }),
-  get: (id: string) => api.get<Chore>(`/chores/${id}`),
-  create: (data: Record<string, unknown>) => api.post<Chore>('/chores', data),
-  update: (id: string, data: Record<string, unknown>) => api.put<Chore>(`/chores/${id}`, data),
-  delete: (id: string) => api.delete(`/chores/${id}`),
-  pause: (id: string) => api.post(`/chores/${id}/pause`),
-  resume: (id: string) => api.post(`/chores/${id}/resume`),
-  fromTemplate: (data: { templateIds: string[] }) => api.post<Chore[]>('/chores/from-template', data),
+  list: (params?: Record<string, unknown>) => store().list<Chore>('Chore', params),
+  get: (id: string) => store().get<Chore>('Chore', id),
+  create: (data: Record<string, unknown>) => store().create<Chore>('Chore', data),
+  update: (id: string, data: Record<string, unknown>) => store().update<Chore>('Chore', id, data),
+  delete: (id: string) => store().remove('Chore', id),
+  pause: (id: string) => reseal('Chore', require('../lib/encSubsets').CHORE_ENC, id, { active: false }),
+  resume: (id: string) => reseal('Chore', require('../lib/encSubsets').CHORE_ENC, id, { active: true }),
+  // Template instantiation happens client-side now (Signal-parity D4): the app
+  // builds + seals template chores and POSTs /chores.
   templates: (params?: Record<string, unknown>) => api.get<ChoreTemplate[]>('/chore-templates', { params }),
   template: (id: string) => api.get<ChoreTemplate>(`/chore-templates/${id}`),
 };
@@ -242,18 +391,26 @@ export const choresApi = {
 
 export interface Category {
   _id: string;
+  // Content (sealed into enc — Signal-parity D5); decrypt via lib/categories.
   name: string;
   color?: string;
   icon?: string;
   parent?: string | null;
+  parentId?: string | null;
+  sortOrder?: number;
+  updatedAt?: string;
+  keyVersion?: number;
+  enc?: { alg: string; nonce: string; ct: string };
 }
 
 export const categoriesApi = {
-  list: (params?: Record<string, unknown>) => api.get<Category[]>('/categories', { params }),
-  create: (data: Record<string, unknown>) => api.post<Category>('/categories', data),
-  update: (id: string, data: Record<string, unknown>) => api.put<Category>(`/categories/${id}`, data),
-  delete: (id: string, reassignTo?: string) =>
-    api.delete(`/categories/${id}`, { data: { reassignTo } }),
+  list: (params?: Record<string, unknown>) => store().list<Category>('Category', params),
+  create: (data: Record<string, unknown>) => store().create<Category>('Category', data),
+  update: (id: string, data: Record<string, unknown>) => store().update<Category>('Category', id, data),
+  // Reassign-on-delete is client-side now (the server can't read categoryId to
+  // rebucket sealed items): the screen re-seals affected items to `reassignTo`
+  // before removing the category. The delete itself is a plain tombstone.
+  delete: (id: string, _reassignTo?: string) => store().remove('Category', id),
 };
 
 export interface Property {
@@ -326,11 +483,14 @@ export interface Item {
 }
 
 export const itemsApi = {
-  list: (params?: Record<string, unknown>) => api.get<Item[]>('/items', { params }),
-  get: (id: string) => api.get<Item>(`/items/${id}`),
-  create: (data: Record<string, unknown>) => api.post<Item>('/items', data),
-  update: (id: string, data: Record<string, unknown>) => api.put<Item>(`/items/${id}`, data),
-  delete: (id: string) => api.delete(`/items/${id}`),
+  // C3b: item CRUD routes through the unified store. manuals/receipts (which stay
+  // their own collections) are fetched separately by the detail screen, not
+  // populated here.
+  list: (params?: Record<string, unknown>) => store().list<Item>('Item', params),
+  get: (id: string) => store().get<Item>('Item', id),
+  create: (data: Record<string, unknown>) => store().create<Item>('Item', data),
+  update: (id: string, data: Record<string, unknown>) => store().update<Item>('Item', id, data),
+  delete: (id: string) => store().remove('Item', id),
   // fromPhoto is handled via lib/upload (multipart); endpoint: POST /items/from-photo
 };
 
@@ -345,8 +505,12 @@ export interface ManualCandidate {
 export interface ExtractedTask {
   title: string;
   description?: string;
+  notes?: string;
   priority?: 'low' | 'medium' | 'high';
   recurrence?: Recurrence;
+  estimatedDurationMins?: number;
+  estimatedCost?: number;
+  intervalKm?: number;
 }
 
 export const manualsApi = {
@@ -358,36 +522,14 @@ export const manualsApi = {
     ),
   extractTasks: (id: string) =>
     api.post<{ tasks: ExtractedTask[]; manualTitle?: string }>(`/manuals/${id}/extract-tasks`),
-  createTasks: (id: string, data: Record<string, unknown>) => api.post(`/manuals/${id}/create-tasks`, data),
+  // Extracted-task creation happens client-side now (lib/taskTemplates —
+  // Signal-parity D4): the app builds + seals each reviewed task and POSTs /tasks.
   delete: (id: string) => api.delete(`/manuals/${id}`),
   // upload is handled via lib/upload (multipart, field 'file'); endpoint:
   //   POST /manuals/items/:itemId/upload
   // download is a token-query URL built in the screen via downloadUrl():
   //   GET /manuals/:id/download?token=…
 };
-
-export interface InventoryItem {
-  _id: string;
-  name: string;
-  quantity?: string;
-  category?: string;
-  purchaseDate?: string;
-  expirationDate?: string;
-  notes?: string;
-  status?: 'active' | 'used' | 'thrown_out';
-  statusDate?: string;
-  wasteReason?: string;
-}
-
-export interface ReceiptExtraction {
-  storeName?: string;
-  items: {
-    name: string;
-    quantity?: string;
-    category?: string;
-    estimated_days_until_expiry?: number | null;
-  }[];
-}
 
 export interface Ingredient {
   amount?: string;
@@ -415,11 +557,14 @@ export interface Recipe {
 }
 
 export const recipesApi = {
-  list: () => api.get<Recipe[]>('/recipes'),
-  get: (id: string) => api.get<Recipe>(`/recipes/${id}`),
-  create: (data: Record<string, unknown>) => api.post<Recipe>('/recipes', data),
-  update: (id: string, data: Record<string, unknown>) => api.put<Recipe>(`/recipes/${id}`, data),
-  delete: (id: string) => api.delete(`/recipes/${id}`),
+  // C3b: recipe CRUD routes through the unified store; the AI generate/from-url/
+  // from-photo helpers below keep their own routes (they return a draft the client
+  // seals + creates).
+  list: () => store().list<Recipe>('Recipe'),
+  get: (id: string) => store().get<Recipe>('Recipe', id),
+  create: (data: Record<string, unknown>) => store().create<Recipe>('Recipe', data),
+  update: (id: string, data: Record<string, unknown>) => store().update<Recipe>('Recipe', id, data),
+  delete: (id: string) => store().remove('Recipe', id),
   fromUrl: (url: string) => api.post<Partial<Recipe>>('/recipes/from-url', { url }),
   generateFromAi: (description: string) => api.post<Partial<Recipe>>('/recipes/generate', { description }),
   editWithAi: (recipe: Record<string, unknown>, instruction: string) =>
@@ -428,30 +573,46 @@ export const recipesApi = {
     api.post<{ instructionIngredients: number[][] }>('/recipes/compute-ingredient-tags', { ingredients, instructions }),
   // Styled recipe email sent by the server (share sheet emails are plain text).
   shareEmail: (id: string, email: string) => api.post(`/recipes/${id}/share-email`, { email }),
+  suggestRecipes: (params: { query: string }) =>
+    api.post<{ recipes: RecipeSuggestion[] }>('/recipes/suggest-recipes', params),
   // fromPhoto handled via lib/upload (field 'photo'): POST /recipes/from-photo
 };
+
+export interface RecipeSuggestion {
+  title: string;
+  description?: string;
+  time?: string;
+  usedIngredients?: string[];
+  needsOther?: string[];
+}
 
 export interface RecipeSchedule {
   _id: string;
   recipeId: { _id: string; title?: string } | string;
   scheduledDate: string;
   servings?: number;
+  notes?: string;
+  updatedAt?: string;
+  keyVersion?: number;
+  enc?: { alg: string; nonce: string; ct: string };
 }
 
 export interface GroceryItem {
   name: string;
   amount?: string;
+  // Per-recipe source entries (built client-side by lib/groceryList; the AI
+  // organize endpoint consolidates them into a single amount).
+  entries?: { recipeTitle?: string; amount?: string; unit?: string; multiplier?: number }[];
 }
 
 export const recipeScheduleApi = {
-  list: (params?: Record<string, unknown>) => api.get<RecipeSchedule[]>('/recipe-schedule', { params }),
-  schedule: (data: { recipeId: string; scheduledDate: string; servings?: number }) =>
-    api.post('/recipe-schedule', data),
-  update: (id: string, data: Record<string, unknown>) => api.put(`/recipe-schedule/${id}`, data),
-  remove: (id: string) => api.delete(`/recipe-schedule/${id}`),
-  forRecipe: (recipeId: string) => api.get<RecipeSchedule[]>(`/recipe-schedule/for-recipe/${recipeId}`),
-  groceryList: (weekStart: string) =>
-    api.get<{ groceryList: GroceryItem[] }>('/recipe-schedule/grocery-list', { params: { weekStart } }),
+  // C3b: meal-plan entries route through the unified store (callers seal first via
+  // sealNew 'RecipeSchedule'); the grocery list + organize/session stay their own.
+  list: (params?: Record<string, unknown>) => store().list<RecipeSchedule>('RecipeSchedule', params),
+  schedule: (data: Record<string, unknown>) => store().create<RecipeSchedule>('RecipeSchedule', data),
+  update: (id: string, data: Record<string, unknown>) => store().update<RecipeSchedule>('RecipeSchedule', id, data),
+  remove: (id: string) => store().remove('RecipeSchedule', id),
+  forRecipe: (recipeId: string) => store().list<RecipeSchedule>('RecipeSchedule', { recipeId }),
   organizeGroceryList: (items: GroceryItem[], sectionOrder?: string[]) =>
     api.post<OrganizedGroceryList>('/recipe-schedule/organize-grocery-list', {
       items,
@@ -476,21 +637,6 @@ export interface GrocerySessionState {
   organizedList?: OrganizedGroceryList | null;
 }
 
-export const inventoryApi = {
-  list: (params?: Record<string, unknown>) => api.get<InventoryItem[]>('/inventory', { params }),
-  create: (data: Record<string, unknown>) => api.post<InventoryItem>('/inventory', data),
-  update: (id: string, data: Record<string, unknown>) => api.put<InventoryItem>(`/inventory/${id}`, data),
-  consume: (id: string, data: { action: 'used' | 'thrown_out'; wasteReason?: string }) =>
-    api.post(`/inventory/${id}/consume`, data),
-  delete: (id: string) => api.delete(`/inventory/${id}`),
-  fromText: (text: string) => api.post<ReceiptExtraction>('/inventory/from-receipt-text', { text }),
-  batch: (items: Record<string, unknown>[]) => api.post('/inventory/batch', { items }),
-  suggestRecipes: (params: { itemNames?: string[]; ingredientMode?: string; query?: string }) =>
-    api.post('/inventory/suggest-recipes', params),
-  // fromPhoto (receipt) handled via lib/upload (field 'photo'):
-  //   POST /inventory/from-receipt-photo
-};
-
 export const historyApi = {
   list: (params?: Record<string, unknown>) => api.get<Completion[]>('/history', { params }),
 };
@@ -502,9 +648,12 @@ export interface Settings {
   birthday?: string;
   phone?: string;
   timezone?: string;
+  // Server-side mirror of the device's AI consent toggle (middleware/aiConsent).
+  aiEnabled?: boolean;
   homeAddress?: string;
   reminderLeadDays?: number;
-  groceryShoppingDay?: number;
+  // null when the household hasn't configured a shopping day yet.
+  groceryShoppingDay?: number | null;
   // Shopping cadence; for 'biweekly', groceryAnchor (YYYY-MM-DD, a known
   // shopping day) fixes which alternating week is the shopping week.
   groceryFrequency?: 'weekly' | 'biweekly';
@@ -524,22 +673,40 @@ export const settingsApi = {
 
 export interface OdometerLog {
   _id: string;
-  reading: number;
+  // Content (sealed into enc; post-drop the plaintext column is null and the
+  // client decrypts) — see lib/odometer.ts.
+  reading?: number;
   notes?: string;
   recordedAt: string;
+  updatedAt?: string;
+  keyVersion?: number;
+  enc?: { alg: string; nonce: string; ct: string };
 }
 
+// Raw rows only (Signal-parity D5): currentKm / kmPerDay / remaining-km
+// enrichment are computed client-side over the decrypted logs (lib/odometer).
 export interface OdometerStatus {
-  currentKm: number | null;
-  kmPerDay?: number | null;
   logs?: OdometerLog[];
-  mileageTasks?: unknown[];
+  mileageTasks?: Task[];
 }
 
 export const odometerApi = {
-  get: (itemId: string) => api.get<OdometerStatus>(`/vehicles/${itemId}/odometer`),
-  log: (itemId: string, data: Record<string, unknown>) => api.post(`/vehicles/${itemId}/odometer`, data),
-  delete: (itemId: string, logId: string) => api.delete(`/vehicles/${itemId}/odometer/${logId}`),
+  // C3b: odometer logs live in the unified store; assemble the status client-side
+  // from the replica (logs for this vehicle + its mileage-tracked tasks). Callers
+  // seal the reading first (sealNew 'OdometerLog') and validate against the prior
+  // decrypted reading client-side (lib/odometer).
+  get: async (itemId: string): Promise<{ data: OdometerStatus }> => {
+    await store().refresh();
+    const rep = require('../lib/replica') as typeof import('../lib/replica');
+    const logs = (await rep.getAll<OdometerLog>('OdometerLog'))
+      .filter((l) => String((l as { itemId?: string }).itemId) === itemId)
+      .sort((a, b) => new Date(b.recordedAt).getTime() - new Date(a.recordedAt).getTime());
+    const mileageTasks = (await rep.getAll<Task>('MaintenanceTask'))
+      .filter((t) => String((t as { itemId?: string }).itemId) === itemId && t.intervalKm != null && t.active !== false);
+    return { data: { logs, mileageTasks } };
+  },
+  log: (itemId: string, data: Record<string, unknown>) => store().create<OdometerLog>('OdometerLog', data),
+  delete: (_itemId: string, logId: string) => store().remove('OdometerLog', logId),
 };
 
 export interface Person {
@@ -583,14 +750,26 @@ export interface ClassifiedContact {
 }
 
 export const peopleApi = {
-  list: (params?: Record<string, unknown>) => api.get<Person[]>('/people', { params }),
-  create: (data: Record<string, unknown>) => api.post<Person>('/people', data),
-  createSelf: (data: Record<string, unknown>) => api.post<Person>('/people/self', data),
-  update: (id: string, data: Record<string, unknown>) => api.put<Person>(`/people/${id}`, data),
-  delete: (id: string) => api.delete(`/people/${id}`),
-  bulk: (people: Record<string, unknown>[]) => api.post('/people/bulk', { people }),
-  // AI-assisted import: categorize + pre-fill (+ web-search enrich professionals).
-  classify: (contacts: ImportContact[], enrich = true) =>
+  // C3b: person CRUD routes through the unified store. The self-Person is just a
+  // create with accountId set (the client seeds it — the server can no longer
+  // create readable content); bulk import creates each sealed person client-side.
+  list: (params?: Record<string, unknown>) => store().list<Person>('Person', params),
+  create: (data: Record<string, unknown>) => store().create<Person>('Person', data),
+  createSelf: (data: Record<string, unknown>) => store().create<Person>('Person', data),
+  update: (id: string, data: Record<string, unknown>) => store().update<Person>('Person', id, data),
+  delete: (id: string) => store().remove('Person', id),
+  bulk: async (people: Record<string, unknown>[]) => {
+    const { sealNew } = require('../lib/e2ee');
+    const { PERSON_ENC } = require('../lib/encSubsets');
+    const created = await Promise.all(
+      people.map(async (p) => store().create<Person>('Person', await sealNew('Person', p, PERSON_ENC(p)))),
+    );
+    return { data: created.map((r: { data: Person }) => r.data) };
+  },
+  // AI-assisted import: categorize + pre-fill. The model sees each contact's
+  // name + company only. Web-search enrichment of professionals is OPT-IN
+  // (spec: ai-assistant.md) — it sends business details into live searches.
+  classify: (contacts: ImportContact[], enrich = false) =>
     api.post<{ results: ClassifiedContact[] }>('/people/classify', { contacts, enrich }),
 };
 
@@ -605,6 +784,8 @@ export interface HouseholdMember {
 
 export interface Household {
   _id: string;
+  // Content since Signal-parity C2: sealed into the settings blob (`enc`,
+  // collection 'Household'); post-drop decrypt via openRecord to display it.
   name: string;
   ownerId: string;
   isOwner?: boolean;
@@ -612,7 +793,12 @@ export interface Household {
   // True once the household's plaintext has been dropped (§9). Gates the
   // client-side encrypted self-Person seed.
   e2eeActive?: boolean;
+  // Signal-parity pass-2: dropped under an older DROP_FIELDS version → the owner
+  // device runs the re-seal-all backfill (dropMigration.reencryptForReDrop).
+  resealNeeded?: boolean;
   members: HouseholdMember[];
+  keyVersion?: number;
+  enc?: { alg: string; nonce: string; ct: string };
 }
 
 // Approve-on-device join (Phase 2).
@@ -668,7 +854,8 @@ export interface RotationPayload {
 
 export const householdApi = {
   get: () => api.get<Household>('/household'),
-  rename: (name: string) => api.put<Household>('/household', { name }),
+  // Callers seal the name into the settings blob first (C2 — see HouseholdScreen).
+  rename: (data: Record<string, unknown>) => api.put<Household>('/household', data),
   // Invite by email or phone (replaces the join code). Phone invites resolve to
   // an account by the invitee's saved phone; the caller texts them separately.
   invite: (target: { email?: string; phone?: string }) =>
@@ -700,11 +887,28 @@ export const householdApi = {
   stragglers: () => api.get<E2eeStragglers>('/household/e2ee/stragglers'),
   seal: (payload: { collection: string; _id: string; enc: unknown; keyVersion?: number }) =>
     api.post('/household/e2ee/seal', payload),
+  // B1/B3 (Signal-parity plan): records still sealed under an old HDK version,
+  // and old-envelope retirement once they've all been re-sealed.
+  oldVersions: () => api.get<E2eeOldVersions>('/household/e2ee/old-versions'),
+  retireKey: () => api.post<{ ok: boolean; retired: number }>('/household/key/retire'),
   // Born-encrypted activation: flip a fresh mandated household E2EE-live once its
   // records already carry ciphertext (§9). Idempotent; the server no-ops for
   // exempt/grandfathered households.
   activate: () => api.post<E2eeActivateResult>('/household/e2ee/activate'),
+  // Re-seal + re-drop backfill (Signal-parity pass-2): records that still hold a
+  // plaintext DROP_FIELDS value the current enc predates, for the decrypt-merge-
+  // reseal pass; then a stamp that unblocks the server null script.
+  resealAll: () => api.get<E2eeResealAll>('/household/e2ee/reseal-all'),
+  resealComplete: () => api.post<{ ok: boolean; dropFieldsVersion: number }>('/household/e2ee/reseal-complete'),
 };
+
+// Re-seal-all pass: per collection, records needing their newer content fields
+// folded into `enc`, served with their current plaintext DROP_FIELDS + old enc.
+export interface E2eeResealAll {
+  total: number;
+  dropFieldsVersion: number;
+  collections: E2eeStragglerGroup[];
+}
 
 export interface E2eeActivateResult {
   status: 'committed' | 'already-active' | 'not-required' | 'not-ready' | 'stragglers' | 'dry-run';
@@ -719,6 +923,17 @@ export interface E2eeStragglerGroup {
 export interface E2eeStragglers {
   total: number;
   collections: E2eeStragglerGroup[];
+}
+
+// B1: records still sealed under an old HDK version (enc + keyVersion only —
+// the client decrypts via its version→HDK map and re-seals under current).
+export interface E2eeOldVersions {
+  total: number;
+  currentKeyVersion?: number;
+  collections: {
+    collection: string;
+    records: { _id: string; enc: { alg: string; nonce: string; ct: string }; keyVersion: number }[];
+  }[];
 }
 
 export interface E2eeReadinessMember {
@@ -904,13 +1119,17 @@ export const tripsApi = {
   removeAttachment: (id: string, itemId: string, attId: string) =>
     api.delete(`/trips/${id}/items/${itemId}/attachments/${attId}`),
   // Sharing by outside email → invitation → collaborator (mirrors calendars).
-  // Set the full list of outside emails. Decrypt-on-share (§9.3): on an E2EE
-  // household the first outside email must include the client-decrypted trip +
-  // items so the server can re-write them as plaintext for collaborators (who
-  // hold no HDK).
-  // Set the trip's outside-share list. Entries are addressed by email or phone.
-  setShareRecipients: (id: string, recipients: { email?: string; phone?: string }[], decrypted?: { trip: unknown; items: unknown[] }) =>
-    api.put<{ sharedWithOutside: { email?: string; phone?: string }[] }>(`/trips/${id}/share`, decrypted ? { recipients, decrypted } : { recipients }),
+  // Signal-parity D2: sharing no longer flips the trip to plaintext (the 409
+  // decrypt-on-share lane is retired). The trip stays sealed and migrates onto a
+  // TripKey on the owner's next unlock. Because the Trip's name/destination are
+  // sealed, the client passes a plaintext { tripName, destination } snapshot for
+  // the invitation display rows only. Entries are addressed by email or phone.
+  setShareRecipients: (
+    id: string,
+    recipients: { email?: string; phone?: string }[],
+    snapshot?: { tripName?: string; destination?: string },
+  ) =>
+    api.put<{ sharedWithOutside: { email?: string; phone?: string }[] }>(`/trips/${id}/share`, { recipients, ...snapshot }),
   unshare: (id: string) => api.delete(`/trips/${id}/share`),
   leaveShare: (id: string) => api.post(`/trips/${id}/leave-share`),
   removeCollaborator: (id: string, userId: string) => api.delete(`/trips/${id}/collaborators/${userId}`),
@@ -920,7 +1139,34 @@ export const tripsApi = {
     api.post<{ invitation: TripInvitation; tripId: string; name: string }>(`/trips/invitations/${id}/accept`),
   declineInvitation: (id: string) =>
     api.post<{ invitation: TripInvitation }>(`/trips/invitations/${id}/decline`),
+  // D2 TripKey envelope lifecycle (see lib/tripKeys.ts) — same shape as the D1
+  // calendar key routes, keyed by the Trip _id.
+  keys: (id: string) => api.get<ResourceKeyEnvelopes>(`/trips/${id}/keys`),
+  mintKey: (id: string, payload: { keyVersion: number; household: { hdkVersion: number; wrappedKey: string }; members?: { userId: string; wrappedKey: string }[] }) =>
+    api.post<{ ok: boolean; keyVersion: number }>(`/trips/${id}/keys`, payload),
+  wrapMembers: (id: string, payload: { keyVersion: number; members: { userId: string; wrappedKey: string }[] }) =>
+    api.post<{ ok: boolean; wrapped: number }>(`/trips/${id}/keys/members`, payload),
+  pendingKeys: () => api.get<TripKeyPending[]>('/trips/keys/pending'),
 };
+
+// ----- TripKeys (Signal-parity D2: per-resource content keys) -----------------
+// The TripKey envelopes for one shared trip: the household wrap (I'm in the owning
+// household → unwrap via my HDK) and/or my own member wrap (I'm a collaborator).
+// Shape-compatible with the D1 CalendarKeyEnvelopes so lib/e2ee reuses one loader.
+export interface ResourceKeyEnvelopes {
+  currentKeyVersion: number;
+  household: { keyVersion: number; hdkVersion: number; wrappedKey: string }[];
+  member: { keyVersion: number; wrappedKey: string }[];
+}
+// The owner's wrap-on-approve work list (one entry per trip needing work).
+export interface TripKeyPending {
+  tripId: string;
+  currentKeyVersion: number;
+  needsMint: boolean;
+  rotationPending: boolean;
+  collaborators: { userId: string; identityPublicKey: string }[];
+  missingMembers: { userId: string; identityPublicKey: string }[];
+}
 
 // A per-trip sharing invitation addressed to me. Accepting makes me a
 // collaborator with live access to the itinerary.
@@ -953,6 +1199,8 @@ export interface CalendarEvent {
   travelDistanceKm?: string | null;
   reminderMinutes?: number | null;
   alert2Minutes?: number | null;
+  // Set when Calen's cancellation call got the business to confirm.
+  cancelled?: boolean;
   recurrence?: {
     freq: string;
     interval?: number;
@@ -1002,7 +1250,9 @@ export interface CalendarTripOverlay {
   ranges: { start: string; end: string; label?: string }[];
 }
 
-// The /calendar aggregate (server: services/calendarData.js).
+// The assembled calendar view. Built entirely client-side now (C3b:
+// lib/calendarData.loadCalendarData decrypts the opaque /records feed over the
+// replica and runs the shared @household/calendar engine) — no server aggregate.
 export interface CalendarData {
   tasks: Task[];
   chores: Chore[];
@@ -1011,17 +1261,6 @@ export interface CalendarData {
   recipes: CalendarRecipeSchedule[];
   groceryShopping: { id: string; date: string }[];
   trips: CalendarTripOverlay[];
-}
-
-export interface CalendarRaw {
-  events: CalendarEvent[];
-  tasks: Task[];
-  chores: Chore[];
-  people: Person[];
-  recipeSchedules: Record<string, unknown>[];
-  trips: Trip[];
-  selfId: string;
-  groceryShoppingDay: number;
 }
 
 // A file attachment on a calendar event (photo / PDF). Same shape as Receipt,
@@ -1047,13 +1286,27 @@ export const eventAttachmentsApi = {
   //   GET /calendar/attachments/:id/download
 };
 
+// C3b: an outside-shared calendar's event seals under its CalendarKey (D1,
+// enc.ks==='cal'); the unified store routes it by the plaintext `scope` lane, so
+// derive scope from the event's calendarType (the CalendarKey resource) + version.
+// An HDK event (no ks) has no scope.
+function withCalScope(data: Record<string, unknown>): Record<string, unknown> {
+  const enc = data.enc as { ks?: string } | undefined;
+  if (enc?.ks === 'cal' && data.calendarType && !data.scope) {
+    return { ...data, scope: { kind: 'calendar', resource: data.calendarType, version: data.keyVersion } };
+  }
+  return data;
+}
+
 export const calendarApi = {
-  get: (params?: { from?: string; to?: string }) => api.get<CalendarData>('/calendar', { params }),
-  getRaw: (params?: { from?: string; to?: string }) => api.get<CalendarRaw>('/calendar/raw', { params }),
-  getEvent: (id: string) => api.get<CalendarEvent>(`/calendar/events/${id}`),
-  createEvent: (data: Record<string, unknown>) => api.post<CalendarEvent>('/calendar/events', data),
-  updateEvent: (id: string, data: Record<string, unknown>) => api.put<CalendarEvent>(`/calendar/events/${id}`, data),
-  deleteEvent: (id: string) => api.delete(`/calendar/events/${id}`),
+  // The calendar view is assembled client-side (lib/calendarData.loadCalendarData
+  // over the replica); the server /calendar aggregate + /calendar/events CRUD
+  // routes were retired in C3b. Event CRUD routes through the unified opaque store
+  // (with the D1 cal scope).
+  getEvent: (id: string) => store().get<CalendarEvent>('CalendarEvent', id),
+  createEvent: (data: Record<string, unknown>) => store().create<CalendarEvent>('CalendarEvent', withCalScope(data)),
+  updateEvent: (id: string, data: Record<string, unknown>) => store().update<CalendarEvent>('CalendarEvent', id, withCalScope(data)),
+  deleteEvent: (id: string) => store().remove('CalendarEvent', id),
 };
 
 // ----- Custom calendars (Calendars → Add Calendar) ----------------------------
@@ -1103,6 +1356,26 @@ export interface CalendarInvitation {
   createdAt: string;
 }
 
+// ----- CalendarKeys (Signal-parity D1: per-resource content keys) -------------
+// The CalendarKey wrapped to me for one outside-shared calendar: the household
+// wrap (I'm in the owning household → unwrap via my HDK) and/or my own member
+// wrap (I'm a collaborator → unwrap via my identity key).
+export interface CalendarKeyEnvelopes {
+  calendarKey: string;
+  currentKeyVersion: number;
+  household: { keyVersion: number; hdkVersion: number; wrappedKey: string }[];
+  member: { keyVersion: number; wrappedKey: string }[];
+}
+// The owner's wrap-on-approve work list (one entry per calendar needing work).
+export interface CalendarKeyPending {
+  calendarKey: string;
+  currentKeyVersion: number;
+  needsMint: boolean;
+  rotationPending: boolean;
+  collaborators: { userId: string; access: CalendarAccess; identityPublicKey: string }[];
+  missingMembers: { userId: string; identityPublicKey: string }[];
+}
+
 export const customCalendarsApi = {
   list: () => api.get<CustomCalendarRecord[]>('/calendars'),
   create: (data: CustomCalendarPayload) => api.post<CustomCalendarRecord>('/calendars', data),
@@ -1114,6 +1387,13 @@ export const customCalendarsApi = {
     api.post<{ invitation: CalendarInvitation; calendar: CustomCalendarRecord }>(`/calendars/invitations/${id}/accept`),
   declineInvitation: (id: string) =>
     api.post<{ invitation: CalendarInvitation }>(`/calendars/invitations/${id}/decline`),
+  // D1 CalendarKey envelope lifecycle (see lib/calendarKeys.ts).
+  keys: (key: string) => api.get<CalendarKeyEnvelopes>(`/calendars/${key}/keys`),
+  mintKey: (key: string, payload: { keyVersion: number; household: { hdkVersion: number; wrappedKey: string }; members?: { userId: string; wrappedKey: string }[] }) =>
+    api.post<{ ok: boolean; keyVersion: number }>(`/calendars/${key}/keys`, payload),
+  wrapMembers: (key: string, payload: { keyVersion: number; members: { userId: string; wrappedKey: string }[] }) =>
+    api.post<{ ok: boolean; wrapped: number }>(`/calendars/${key}/keys/members`, payload),
+  pendingKeys: () => api.get<CalendarKeyPending[]>('/calendars/keys/pending'),
 };
 
 // ----- Event invitations (cross-household sharing by email) -------------------
@@ -1144,7 +1424,13 @@ export interface EventInvitation {
   // Capability secret for the public .ics link carried by an SMS invite.
   shareToken?: string;
   eventId?: string;
-  event: InvitationEventSnapshot;
+  // The plaintext snapshot lane (non-account email/SMS recipients). Absent when
+  // the snapshot is sealed to a known account (D3 — sealedEvent below); the
+  // recipient's device decrypts sealedEvent back into this shape for display.
+  event?: InvitationEventSnapshot;
+  // The sealed snapshot lane (D3): an anonymous sealed box of the snapshot to the
+  // recipient's identity key. Opaque; only the recipient opens it (lib/e2ee).
+  sealedEvent?: string;
   // 'left' = accepted then later left the event (copy deleted).
   status: 'pending' | 'accepted' | 'declined' | 'left';
   respondedAt?: string;
@@ -1159,12 +1445,23 @@ export const invitationsApi = {
   // The organizer's invitee list for one of their events.
   sentForEvent: (eventId: string) =>
     api.get<EventInvitation[]>('/invitations/sent', { params: { eventId } }),
+  // Resolve an invited email so the organizer's device can decide whether to
+  // seal the snapshot (D3): a non-null identityPublicKey means "seal to this key".
+  lookup: (email: string) =>
+    api.get<{ userExists: boolean; identityPublicKey: string | null }>('/invitations/lookup', { params: { email } }),
   // Address with either email or phone. Phone invites are recorded here but
-  // texted from the sender's own device (see EventInviteesScreen).
-  send: (data: { eventId: string; email?: string; phone?: string; event: InvitationEventSnapshot }) =>
+  // texted from the sender's own device (see EventInviteesScreen). A known
+  // account with keys gets `sealedEvent` (client-sealed) instead of `event`.
+  send: (data: { eventId: string; email?: string; phone?: string; event?: InvitationEventSnapshot; sealedEvent?: string }) =>
     api.post<{ invitation: EventInvitation; userExists: boolean }>('/invitations', data),
-  accept: (id: string) =>
-    api.post<{ invitation: EventInvitation; event: CalendarEvent }>(`/invitations/${id}/accept`),
+  // Upgrade a claimed plaintext invite to a sealed one (D3): the recipient
+  // re-seals the snapshot to its own key; the server drops the plaintext.
+  seal: (id: string, sealedEvent: string) =>
+    api.post<{ invitation: EventInvitation }>(`/invitations/${id}/seal`, { sealedEvent }),
+  // The recipient passes the (decrypted) snapshot so a sealed invite's copy can
+  // be built server-side; a plaintext invite ignores it.
+  accept: (id: string, event?: InvitationEventSnapshot) =>
+    api.post<{ invitation: EventInvitation; event: CalendarEvent }>(`/invitations/${id}/accept`, { event }),
   decline: (id: string) => api.post<{ invitation: EventInvitation }>(`/invitations/${id}/decline`),
   // Recipient: leave an accepted event (deletes their copy).
   leave: (id: string) => api.post<{ invitation: EventInvitation }>(`/invitations/${id}/leave`),
@@ -1197,6 +1494,11 @@ export interface BillingStatus {
   tokensUsed: number;
   weeklyTokenLimit: number | null; // null = unlimited
   tokenPct: number;                // 0–100 (0 when unlimited)
+  // Weekly assistant CALL-TIME budget — the separate enforced metric for phone
+  // calls, in connected seconds. Its own gauge alongside the token gauge.
+  callSecondsUsed: number;
+  weeklyCallSecondsLimit: number | null; // null = unlimited
+  callSecondsPct: number;                // 0–100 (0 when unlimited)
   // Per-action counts (analytics / detail; no longer the enforced cap).
   usage: Record<string, number>;
   // 'user' = free tier (each member has their own allowance); 'household' = paid
@@ -1205,7 +1507,7 @@ export interface BillingStatus {
   quotas: Record<string, number | null>;
   resetsAt?: string; // ISO instant of the next weekly usage reset (Wed 5PM ET)
   hasHousehold: boolean;
-  catalog: { key: string; label: string; price: number; weeklyTokenLimit?: number | null }[];
+  catalog: { key: string; label: string; price: number; weeklyTokenLimit?: number | null; weeklyCallSecondsLimit?: number | null }[];
   // Subscription lifecycle (paid plans only).
   subscription?: BillingSubscription;
   // Per-member share of the pooled weekly tokens (household-scoped plans only).
@@ -1249,6 +1551,63 @@ export const weatherApi = {
   get: () => api.get<WeatherData>('/weather'),
   range: (from: string, to: string) => api.get('/weather/range', { params: { from, to } }),
   outlook: () => api.get<{ weeks: OutlookWeek[] }>('/weather/outlook'),
+};
+
+// ----- Assistant phone calls (server: routes/calls.js) -----------------------
+// Calls Calen placed via call_business. Listing refreshes pending calls from
+// Vapi server-side. Outcomes are resolved on the event view — never surfaced
+// on the Calen assistant view.
+
+export interface PhoneCallRecord {
+  _id: string;
+  callId: string;
+  eventId?: string;
+  eventTitle?: string;
+  eventDate?: string;
+  action: 'cancel' | 'reschedule';
+  phone: string | null; // the business number dialed
+  status: string; // queued/ringing/in-progress → ended | failed
+  endedReason: string | null;
+  summary: string | null;
+  // Vapi's post-call judgement of the goal ("did the business confirm the
+  // cancellation?"). Drives the Invitations outcome notice; a confirmed cancel
+  // also sets the event's `cancelled` flag server-side.
+  outcome: 'confirmed' | 'unconfirmed' | null;
+  durationSeconds: number | null;
+  seen: boolean;
+  // Whether the outcome notice was dismissed in Invitations → New.
+  acknowledged: boolean;
+  createdAt: string;
+}
+
+export const callsApi = {
+  list: () => api.get<PhoneCallRecord[]>('/calls'),
+  // The Interaction view payload: the record, refreshed live from Vapi. No
+  // transcript or recording exists anywhere — those artifacts are disabled at
+  // the voice provider (spec: ai-assistant.md); the summary is the record.
+  get: (id: string) => api.get<PhoneCallRecord>(`/calls/${id}`),
+  // G1 alias link-back: chat-placed calls store an aliased event id (real ids
+  // never reach the model); the assistant screen patches the real one on.
+  link: (id: string, eventId: string) => api.patch<{ ok: boolean }>(`/calls/${id}/link`, { eventId }),
+  // The event view's "Call to Cancel" card: sends the decrypted event snapshot
+  // (E2EE households — the server can't read the stored row).
+  cancelEvent: (event: { _id: string; title: string; startDate: string; phone: string }) =>
+    api.post<PhoneCallRecord>('/calls/cancel-event', { event }),
+  // The Event Action screen: Calen calls the business to cancel or reschedule.
+  // `feeAccepted` = proceed even if the business charges a cancellation/
+  // reschedule fee; `windows` (reschedule only) = pre-formatted date/time-window
+  // labels in preference order. Sends the decrypted event snapshot, like
+  // cancelEvent above. `shareContact` (per-call opt-in, spec ai-assistant.md)
+  // lets the AI caller give the user's phone/email if the business asks to
+  // verify identity — off by default; the caller always has the user's name.
+  eventAction: (payload: {
+    event: { _id: string; title: string; startDate: string; phone: string };
+    action: 'cancel' | 'reschedule';
+    feeAccepted: boolean;
+    windows?: string[];
+    shareContact?: boolean;
+  }) => api.post<PhoneCallRecord>('/calls/event-action', payload),
+  ack: (id: string) => api.post<PhoneCallRecord>(`/calls/${id}/ack`),
 };
 
 // Native push device registration (server: routes/notifications.js).
@@ -1295,9 +1654,9 @@ export const formAssistApi = {
     fields: FormAssistField[];
     current: Record<string, unknown>;
     prompt: string;
-    // When true, the server injects the household's saved contacts (name +
-    // address for friends/family; name/service/address/phone for services) so
-    // the assistant can resolve people/businesses the user names.
+    // When true, saved PROFESSIONAL contacts (name/service/address/phone) may
+    // be attached so the assistant can resolve businesses the user names.
+    // Friends/family are never included (spec: name-only in AI payloads).
     includeContacts?: boolean;
   }) => api.post<FormAssistResponse>('/form-assist', data),
 };

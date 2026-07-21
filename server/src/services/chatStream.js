@@ -11,8 +11,69 @@
 // `collectSideEffects(block, result, acc)` callback, which may also mutate the
 // tool result in place to strip private fields before it's sent back to the model.
 
-const { generateFollowups } = require('./chatSuggestions');
 const { recordTokens } = require('../middleware/usageMeter');
+
+// Image types Claude accepts inline. HEIC and other formats can't be sent as an
+// image block, so they fall through to the filename-note path below.
+const SUPPORTED_IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp']);
+
+// Data minimization (spec: ai-assistant.md): cap how much of the resent chat
+// history reaches the model each turn.
+const MAX_HISTORY_MESSAGES = 20;
+
+// Follow-up chips come from the SAME conversation via this tool — the model
+// calls it at the end of its turn. This replaced a second model call that
+// re-sent the transcript to a separate (uncached) context.
+const FOLLOWUPS_TOOL_NAME = 'suggest_followups';
+const FOLLOWUPS_TOOL = {
+  name: FOLLOWUPS_TOOL_NAME,
+  description:
+    'Call this exactly once at the END of your turn, alongside or after your final reply text: suggest 2-3 short things the user might tap to say next. First person, max ~6 words each, concrete next actions (confirmations, refinements, follow-up questions) — no generic chit-chat. Do not mention or repeat the suggestions in your reply text, and do not add reply text after calling this.',
+  input_schema: {
+    type: 'object',
+    properties: {
+      suggestions: {
+        type: 'array',
+        items: { type: 'string' },
+        description: '2-3 short follow-up chips, phrased as the user',
+      },
+    },
+    required: ['suggestions'],
+  },
+};
+
+// Last MAX_HISTORY_MESSAGES entries, trimmed so the window starts on a user
+// message (the API requires the first message to be from the user).
+function capHistory(messages) {
+  let recent = messages.slice(-MAX_HISTORY_MESSAGES);
+  while (recent.length && recent[0].role !== 'user') recent = recent.slice(1);
+  return recent.length ? recent : messages.slice(-1);
+}
+
+// Turn a client chat message into the Anthropic `content` field. Plain messages
+// stay a string; a message with attachments becomes an array of content blocks:
+// each image/PDF attachment as its own block, then the user's text last. Files
+// Claude can't read (e.g. HEIC, .eml) are announced as a short text note so the
+// model at least knows something was attached.
+function toApiContent(message) {
+  const attachments = Array.isArray(message.attachments) ? message.attachments : [];
+  if (!attachments.length) return message.content;
+
+  const blocks = [];
+  for (const a of attachments) {
+    if (a.kind === 'image' && a.data && SUPPORTED_IMAGE_TYPES.has(a.type)) {
+      blocks.push({ type: 'image', source: { type: 'base64', media_type: a.type, data: a.data } });
+    } else if (a.kind === 'document' && a.data && a.type === 'application/pdf') {
+      blocks.push({ type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: a.data } });
+    } else {
+      blocks.push({ type: 'text', text: `[Attached file "${a.name || 'file'}" (${a.type || 'unknown type'}) — I can't view this file type.]` });
+    }
+  }
+  if (message.content) blocks.push({ type: 'text', text: message.content });
+  // A message must have some content; if the text was empty and nothing usable
+  // attached, fall back to a placeholder so the API call doesn't reject.
+  return blocks.length ? blocks : message.content || '(no content)';
+}
 
 async function streamChat(res, opts) {
   const {
@@ -61,9 +122,10 @@ async function streamChat(res, opts) {
     res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
   };
 
-  const apiMessages = messages.map((m) => ({ role: m.role, content: m.content }));
+  const apiMessages = capHistory(messages).map((m) => ({ role: m.role, content: toApiContent(m) }));
   const sideEffects = {};
   let accumulated = '';
+  let suggestedFollowups = [];
 
   try {
     // eslint-disable-next-line no-constant-condition
@@ -72,7 +134,7 @@ async function streamChat(res, opts) {
         model,
         max_tokens: maxTokens,
         system: cachedSystem,
-        tools,
+        tools: [...tools, FOLLOWUPS_TOOL],
         messages: apiMessages,
       });
       stream.on('text', (delta) => {
@@ -96,6 +158,16 @@ async function streamChat(res, opts) {
       const toolResults = [];
       for (const block of final.content) {
         if (block.type !== 'tool_use') continue;
+        // Follow-up chips are harvested here, not delegated to the caller —
+        // every chat surface gets them for free.
+        if (block.name === FOLLOWUPS_TOOL_NAME) {
+          suggestedFollowups = (Array.isArray(block.input?.suggestions) ? block.input.suggestions : [])
+            .filter((s) => typeof s === 'string' && s.trim())
+            .map((s) => s.trim())
+            .slice(0, 3);
+          toolResults.push({ type: 'tool_result', tool_use_id: block.id, content: '{"ok":true}' });
+          continue;
+        }
         send('tool', { name: block.name });
         let result;
         try {
@@ -114,9 +186,7 @@ async function streamChat(res, opts) {
     }
 
     const override = typeof followupsOverride === 'function' ? followupsOverride(sideEffects) : null;
-    const followups = Array.isArray(override) && override.length
-      ? override
-      : await generateFollowups(client, apiMessages, accumulated);
+    const followups = Array.isArray(override) && override.length ? override : suggestedFollowups;
     send('done', { reply: accumulated, followups, tokensUsed, ...sideEffects });
     res.end();
   } catch (err) {

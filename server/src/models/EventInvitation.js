@@ -2,13 +2,19 @@ const mongoose = require('mongoose');
 const crypto = require('crypto');
 
 // A cross-household calendar-event invitation, addressed by EMAIL or by PHONE
-// (SMS). Like shared trips (services/tripSharing.js), sharing an event outside
-// the household is a deliberate step across the E2EE boundary: the inviting
-// client supplies a PLAINTEXT snapshot of the event at invite time, which is
-// what the recipient sees (and what the emailed .ics is built from). The source
-// CalendarEvent is never touched — accepting creates an independent copy owned
-// by the recipient, so the snapshot here is the complete contract between the
-// two households.
+// (SMS). Sharing an event outside the household is a deliberate step across the
+// E2EE boundary. Two snapshot lanes (Signal-parity D3):
+//   - PLAINTEXT `event`: for non-account email/SMS recipients (a recipient with
+//     no keys can't receive ciphertext) — this is what the emailed/public .ics
+//     is built from (scope contract #1).
+//   - SEALED `sealedEvent`: when the invited address is an account with enrolled
+//     keys, the organizer's device seals the snapshot to the recipient's
+//     identity public key (an anonymous sealed box — crypto/openJsonFromMember);
+//     no plaintext reaches the server. A lazily-claimed plaintext invite upgrades
+//     to this on claim (the recipient re-seals to itself; see routes/invitations).
+// The source CalendarEvent is never touched — accepting creates an independent
+// copy owned by the recipient, so the snapshot here is the complete contract
+// between the two households.
 const eventInvitationSchema = new mongoose.Schema({
   fromUserId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
   // Display snapshot of the sender, so the recipient's list renders without a
@@ -31,17 +37,32 @@ const eventInvitationSchema = new mongoose.Schema({
 
   // The source event (informational — the snapshot below is authoritative).
   eventId: { type: mongoose.Schema.Types.ObjectId, ref: 'CalendarEvent' },
+  // The PLAINTEXT snapshot lane (non-account email/SMS recipients). Absent when
+  // the snapshot is sealed to a known account (sealedEvent below). `title`/
+  // `startDate` are NOT schema-required — a sealed invite carries no plaintext —
+  // but the pre('validate') hook requires one lane or the other.
   event: {
-    title:        { type: String, required: true },
+    title:        String,
     description:  String,
     location:     String,
     url:          String,
     phone:        String,
-    startDate:    { type: Date, required: true },
+    startDate:    Date,
     endDate:      Date,
     allDay:       { type: Boolean, default: true },
     calendarType: { type: String, enum: ['activities', 'appointments'], default: 'activities' },
   },
+  // The SEALED snapshot lane (D3): an anonymous sealed box (b64url) of the event
+  // snapshot to the recipient's identityPublicKey. Opaque to the server; only
+  // the recipient's unlocked device opens it. Mutually exclusive with a plaintext
+  // `event` — a lazily-claimed plaintext invite drops `event` when this is set.
+  sealedEvent: { type: String },
+
+  // Signal-parity C3b: guestListVisible is a SEALED event field now, so the server
+  // can't read it off the source event to gate the recipient's guest-list view.
+  // The organizer's device stamps it onto the invitation at invite time; the
+  // /:id/guests gate reads it here. Missing = visible (predates the setting).
+  guestListVisible: { type: Boolean, default: true },
 
   // 'left' = the recipient accepted, then later left the event (their copy is
   // deleted but the organizer's invitee list still shows they were invited).
@@ -54,6 +75,10 @@ const eventInvitationSchema = new mongoose.Schema({
 
 eventInvitationSchema.pre('validate', function () {
   if (!this.toEmail && !this.toPhone) throw new Error('An invitee email or phone number is required');
+  // Exactly one snapshot lane: a plaintext event (with the minimum display
+  // fields) OR a sealed blob. A sealed invite carries no plaintext at all.
+  const hasPlaintext = !!(this.event && this.event.title && this.event.startDate);
+  if (!hasPlaintext && !this.sealedEvent) throw new Error('Event content is required');
 });
 
 eventInvitationSchema.index({ toEmail: 1, status: 1 });

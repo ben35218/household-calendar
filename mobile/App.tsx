@@ -7,6 +7,7 @@ import { queryClient } from './src/lib/queryClient';
 import { AuthProvider } from './src/store/auth';
 import RootNavigator from './src/navigation/RootNavigator';
 import RecoveryCodeModal from './src/components/RecoveryCodeModal';
+import PrivacyShield from './src/components/PrivacyShield';
 
 export default function App() {
   return (
@@ -18,6 +19,9 @@ export default function App() {
             <RootNavigator />
             {/* One-time E2EE recovery code, shown right after enrollment */}
             <RecoveryCodeModal />
+            {/* Screen-security cover: hides decrypted content from the
+                app-switcher snapshot while backgrounded (Signal-parity A3) */}
+            <PrivacyShield />
           </AuthProvider>
         </QueryClientProvider>
       </KeyboardProvider>

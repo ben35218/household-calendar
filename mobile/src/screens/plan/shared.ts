@@ -75,6 +75,15 @@ export function humanTokens(n: number | null | undefined): string | null {
   return String(n);
 }
 
+// Call-time budget is stored in seconds but reads best in minutes: "15 min",
+// "1.5 min", "45 sec" (sub-minute, so a small "used" value isn't shown as "0 min").
+export function humanCallSeconds(seconds: number | null | undefined): string | null {
+  if (seconds == null) return null;
+  if (seconds < 60) return `${Math.round(seconds)} sec`;
+  const mins = seconds / 60;
+  return `${Number.isInteger(mins) ? mins : mins.toFixed(1)} min`;
+}
+
 // Marketing copy per tier. The server catalog stays the source of truth for
 // label/price/limits; only the benefit phrasing lives client-side. Model claims
 // mirror the server's MonetizationConfig.models (free = fast model, paid = the

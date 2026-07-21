@@ -3,10 +3,11 @@ import { ActivityIndicator, View, StyleSheet } from 'react-native';
 import { NavigationContainer, DarkTheme, useNavigationContainerRef } from '@react-navigation/native';
 import { useAuth } from '../store/auth';
 import { useReminderScheduler } from '../hooks/useReminderScheduler';
+import { useAppLock } from '../hooks/useAppLock';
+import { useSelfPersonSeed } from '../hooks/useSelfPersonSeed';
 import { usePrivacyPrefs } from '../lib/privacyPrefs';
 import AuthNavigator from './AuthNavigator';
 import AppNavigator from './AppNavigator';
-import { setActiveRoute } from './activeRoute';
 import { RootStackParamList } from './types';
 import { colors } from '../theme';
 
@@ -35,6 +36,15 @@ export default function RootNavigator() {
   // the pending schedule (the hook's cleanup path).
   useReminderScheduler(isLoggedIn && !bootstrapping && remindersEnabled);
 
+  // App lock (Signal-parity A4): relock the in-memory keys after the configured
+  // background window; no-op while the pref is "never".
+  useAppLock(isLoggedIn && !bootstrapping);
+
+  // Seed the encrypted "You" Person once unlocked (mandatory E2EE: the server no
+  // longer creates it), so person-assignment UIs always have at least the user —
+  // not only after the People screen is opened.
+  useSelfPersonSeed(isLoggedIn && !bootstrapping);
+
   if (bootstrapping) {
     return (
       <View style={styles.splash}>
@@ -43,12 +53,8 @@ export default function RootNavigator() {
     );
   }
 
-  // Publish the active route so app-wide overlays (StorageBanner) can scope
-  // themselves to Profile screens.
-  const syncRoute = () => setActiveRoute(navRef.getCurrentRoute()?.name ?? null);
-
   return (
-    <NavigationContainer theme={navTheme} ref={navRef} onReady={syncRoute} onStateChange={syncRoute}>
+    <NavigationContainer theme={navTheme} ref={navRef}>
       {isLoggedIn ? <AppNavigator /> : <AuthNavigator />}
     </NavigationContainer>
   );

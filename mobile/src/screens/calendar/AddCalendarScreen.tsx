@@ -285,7 +285,7 @@ export default function AddCalendarScreen() {
     chores: 'ChoresHome',
     recipes: 'KitchenHome',
     maintenance: 'MaintenanceHome',
-    vacations: 'Vacations',
+    trips: 'Trips',
     birthdays: 'Birthdays',
     weather: 'Weather',
   };

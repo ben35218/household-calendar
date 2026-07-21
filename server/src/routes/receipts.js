@@ -39,7 +39,7 @@ const upload = multer({
 // the opaque bytes plus a wrapped per-file key and a client-minted _id.
 router.post('/items/:itemId/upload', upload.single('file'), async (req, res) => {
   try {
-    const item = await Item.findOne({ _id: req.params.itemId, userId: { $in: req.scopeIds } });
+    const item = await Item.findOne({ _id: req.params.itemId, ...req.scopeFilter });
     if (!item) return res.status(404).json({ error: 'Item not found' });
     if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
 
@@ -65,7 +65,7 @@ router.post('/items/:itemId/upload', upload.single('file'), async (req, res) => 
 
 router.get('/:id/download', async (req, res) => {
   try {
-    const receipt = await Receipt.findOne({ _id: req.params.id, userId: { $in: req.scopeIds } });
+    const receipt = await Receipt.findOne({ _id: req.params.id, ...req.scopeFilter });
     if (!receipt) return res.status(404).json({ error: 'Not found' });
 
     const filepath = path.join(uploadDir, receipt.storageKey);
@@ -86,7 +86,7 @@ router.get('/:id/download', async (req, res) => {
 
 router.delete('/:id', async (req, res) => {
   try {
-    const receipt = await Receipt.findOneAndDelete({ _id: req.params.id, userId: { $in: req.scopeIds } });
+    const receipt = await Receipt.findOneAndDelete({ _id: req.params.id, ...req.scopeFilter });
     if (!receipt) return res.status(404).json({ error: 'Not found' });
     if (receipt.storageKey) {
       const filepath = path.join(uploadDir, receipt.storageKey);

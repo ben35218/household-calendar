@@ -13,7 +13,7 @@ import * as replica from './replica';
 // the server CONTENT_MODELS / DROP_FIELDS map.
 const EXPORT_COLLECTIONS = [
   'CalendarEvent', 'Person', 'MaintenanceTask', 'Chore', 'Recipe',
-  'Trip', 'TripItem', 'Item', 'FoodInventory',
+  'Trip', 'TripItem', 'Item',
 ];
 
 const CHUNK = 1024 * 1024;

@@ -22,13 +22,18 @@ export default function KitchenScreen() {
   const params = useRoute<RouteProp<KitchenStackParamList, 'KitchenHome'>>().params;
   const scrollToDate = params?.scrollToDate;
   const paneParam = params?.pane;
+  const weekStartParam = params?.weekStart;
   const accent = useCalendarColors().colors.recipes;
 
   // The Planner and Grocery panes share one shopping period (a week — or two,
   // for biweekly shoppers — starting on the grocery shopping day) so flipping
   // between them shows the same span.
   const settingsQ = useQuery({ queryKey: ['settings'], queryFn: async () => (await settingsApi.get()).data });
-  const groceryDay = settingsQ.data?.groceryShoppingDay ?? 6;
+  // configuredDay is null until the household picks a shopping day (no schedule
+  // by default). The planner still needs concrete week boundaries, so period
+  // math falls back to Saturday — but the summary card reads "Not set".
+  const configuredDay = settingsQ.data?.groceryShoppingDay ?? null;
+  const groceryDay = configuredDay ?? 6;
   const frequency: GroceryFrequency = settingsQ.data?.groceryFrequency ?? 'weekly';
   const anchor = settingsQ.data?.groceryAnchor ?? null;
   const periodDays = periodDaysOf(frequency);
@@ -37,10 +42,25 @@ export default function KitchenScreen() {
   const [weekStart, setWeekStart] = useState(() => startOfWeek(new Date(), 6));
 
   // Realign the period once settings load, and again if the schedule changes
-  // (the schedule modal only invalidates the settings query).
+  // (the schedule modal only invalidates the settings query). A pending
+  // `weekStart` param (from the calendar's grocery icon) takes precedence, so
+  // don't clobber it here — its own effect below aligns and clears it.
+  // `weekStartParam` is intentionally NOT a dep: this must not re-fire (and snap
+  // back to the current period) when the param effect clears the param.
   useEffect(() => {
-    if (settingsLoaded) setWeekStart(periodStartOf(new Date(), groceryDay, frequency, anchor));
+    if (settingsLoaded && !weekStartParam) setWeekStart(periodStartOf(new Date(), groceryDay, frequency, anchor));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [settingsLoaded, groceryDay, frequency, anchor]);
+
+  // Land on the shopping period containing a requested date (the calendar's
+  // grocery icon passes its day). Wait for settings so the period aligns to the
+  // real grocery day/frequency, then clear the param so it isn't re-applied.
+  useEffect(() => {
+    if (weekStartParam && settingsLoaded) {
+      setWeekStart(periodStartOf(new Date(`${weekStartParam}T00:00:00`), groceryDay, frequency, anchor));
+      navigation.setParams({ weekStart: undefined });
+    }
+  }, [weekStartParam, settingsLoaded, groceryDay, frequency, anchor, navigation]);
 
   // Landing here to reveal a freshly-scheduled recipe: make sure the Planner
   // is the active pane so PlannerPane can scroll there.
@@ -88,7 +108,7 @@ export default function KitchenScreen() {
           <Ionicons name="calendar-outline" size={18} color={accent} />
           <View style={styles.scheduleCardText}>
             <Text style={styles.scheduleCardTitle}>Grocery Schedule</Text>
-            <Text style={styles.scheduleCardSummary}>{scheduleSummary(groceryDay, frequency)}</Text>
+            <Text style={styles.scheduleCardSummary}>{scheduleSummary(configuredDay, frequency)}</Text>
           </View>
           <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
         </Card>

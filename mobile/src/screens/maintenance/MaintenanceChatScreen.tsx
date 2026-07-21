@@ -5,19 +5,14 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useChat } from '../../hooks/useChat';
 import ChatScreen from '../chat/ChatScreen';
 import AiUsageBanner from '../../components/AiUsageBanner';
-import { ASSISTANT_NAME } from '../../config';
 import { itemsApi, tasksApi, householdApi } from '../../api';
 import { getHDK, openRecord, sealNew } from '../../lib/e2ee';
+import { TASK_ENC } from '../../lib/encSubsets';
+import { createAliasContext } from '../../lib/aiPayload';
 import { MaintenanceStackParamList } from '../../navigation/MaintenanceNavigator';
 import { colors, radius, spacing } from '../../theme';
 
 type Rt = RouteProp<MaintenanceStackParamList, 'MaintenanceChat'>;
-
-// Encrypted maintenance-task content (mirrors TaskFormScreen).
-const TASK_ENC = (p: Record<string, unknown>) => ({
-  title: p.title, description: p.description, instructions: p.instructions,
-  estimatedCost: p.estimatedCost, estimatedDurationMins: p.estimatedDurationMins,
-});
 
 // Maintenance Assistant — ports client/src/views/MaintenanceChatView.vue.
 // Scoped to one item; surfaces a banner when tasks get created and refreshes
@@ -32,12 +27,18 @@ export default function MaintenanceChatScreen() {
   // needn't read stored plaintext for the system prompt. Dormant pre-drop.
   const ephemeralRef = React.useRef<Record<string, unknown> | null>(null);
 
+  // G1: prompt-bound records leave with ids aliased; result ids resolve back.
+  // The top-level `itemId` stays real — it's the authz/metering routing field
+  // the server checks against plaintext metadata, and it never enters a prompt.
+  const aliasCtx = React.useMemo(() => createAliasContext(), []);
+
   const chat = useChat({
     endpoint: '/maintenance/chat',
     contextEndpoint: `/maintenance/chat/context?itemId=${itemId}`,
     // Post-drop the DB summary is sealed — POST the decrypted item instead.
     contextBody: () => (ephemeralRef.current ? { itemId, ...ephemeralRef.current } : null),
     buildBody: (messages) => ({ itemId, messages, ...(ephemeralRef.current || {}) }),
+    transformResult: aliasCtx.resolveAliases,
     onResult: async (data) => {
       // Post-drop the server hands back proposed tasks for the client to create
       // *encrypted* (§9.1 P4d); pre-drop the server already created them.
@@ -56,9 +57,11 @@ export default function MaintenanceChatScreen() {
         }
         if (created.length) setCreatedTasks((prev) => prev.concat(created));
         qc.invalidateQueries({ queryKey: ['tasks', 'forItem', itemId] });
+        qc.invalidateQueries({ queryKey: ['calendar'] });
       } else if (data.tasksCreated?.length) {
         setCreatedTasks((prev) => prev.concat(data.tasksCreated!));
         qc.invalidateQueries({ queryKey: ['tasks', 'forItem', itemId] });
+        qc.invalidateQueries({ queryKey: ['calendar'] });
       }
     },
     toolLabels: {
@@ -81,7 +84,7 @@ export default function MaintenanceChatScreen() {
             .then(({ data }) => Promise.all(data.map((t) => openRecord('MaintenanceTask', t as any))))
             .catch(() => []),
         ]);
-        ephemeralRef.current = { item, tasks };
+        ephemeralRef.current = { item: aliasCtx.sanitize(item), tasks: aliasCtx.sanitize(tasks) };
         chat.loadContext(); // refresh the summary with the decrypted records
       } catch { /* non-fatal */ }
     })();
@@ -122,8 +125,6 @@ export default function MaintenanceChatScreen() {
       chat={chat}
       surface="maintenance"
       banner={banner}
-      accessory="wrench"
-      emptyText={`Hi, I'm ${ASSISTANT_NAME}. In this chat I help set up maintenance tasks${itemName ? ` for ${itemName}` : ''}.`}
       emptyHint='e.g. "What maintenance does my HVAC system need?"'
       placeholder="Ask about maintenance tasks…"
     />

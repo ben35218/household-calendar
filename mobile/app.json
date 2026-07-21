@@ -10,6 +10,9 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "app.householdcalendar.mobile",
+      "associatedDomains": [
+        "webcredentials:householdcalendar.com"
+      ],
       "infoPlist": {
         "CFBundleDisplayName": "Calen",
         "ITSAppUsesNonExemptEncryption": false,

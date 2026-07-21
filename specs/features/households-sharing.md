@@ -1,7 +1,7 @@
 ---
 title: Households & sharing
 status: current
-last-verified: b242e6c (2026-07-20)
+last-verified: d3d50a0 (2026-07-21)
 code:
   - mobile/src/screens/profile/HouseholdScreen.tsx
   - server/src/routes/household.js
@@ -79,7 +79,10 @@ verification. The cryptographic mechanics are in
   removed, a member joins/leaves, the key rotates, or a new device signs in.
 - **Safety numbers** (`mobile/src/lib/safetyNumbers.ts`) are a human-comparable
   digest of a member's identity public key, verified from HouseholdScreen; state
-  is device-local and resets if the key changes.
+  is device-local (`unverified` / `verified` / `changed`). HouseholdScreen shows a
+  per-member status, lets you compare and mark verified, and flags a **`changed`**
+  member (key differs from the one this device last verified) so re-verification
+  is prompted after a key change.
 
 ### Cross-household sharing
 

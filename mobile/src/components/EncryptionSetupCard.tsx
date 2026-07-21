@@ -1,25 +1,31 @@
 import React, { useCallback, useState } from 'react';
 import { View, Text, StyleSheet, ActivityIndicator, Alert } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
+import { useQueryClient } from '@tanstack/react-query';
 import { Ionicons } from '@expo/vector-icons';
 import { Card, SectionTitle, Button } from './ui';
-import { getReadiness, reencryptStragglers } from '../lib/dropMigration';
-import { getHDK } from '../lib/e2ee';
+import { getReadiness } from '../lib/dropMigration';
+import { getHDK, activateBornEncryptedHousehold } from '../lib/e2ee';
 import type { E2eeReadiness } from '../api';
 import { colors, spacing } from '../theme';
 
-// Owner-facing §9 migration checklist, shown on HouseholdScreen only while the
-// household hasn't switched to full E2EE yet (and only to the owner). Regular
-// members see just the personal status hero in Account's Sign-in & Security
-// section — this card is
-// the one place the household-wide "is everyone ready" plumbing surfaces.
-// The final, irreversible plaintext drop itself is operator-run
-// (scripts/dropPlaintext.js --commit) — this card prepares and verifies.
+// Owner-facing encryption status, shown on HouseholdScreen only while the
+// household hasn't finished switching to full E2EE (and only to the owner).
+// Regular members see just the personal status hero in Account's Sign-in &
+// Security section — this card is the one place the household-wide "is everyone
+// ready" plumbing surfaces.
+//
+// E2EE is mandatory: every household activates on its own the next time the
+// owner's key is unlocked (see lib/e2ee maybeActivateBornEncrypted). This card
+// mirrors that as an explicit "Turn on encryption now" action — it seals any
+// stragglers and drops the server's plaintext copy via the self-serve
+// /household/e2ee/activate endpoint (no operator step). The endpoint enforces
+// the readiness gate server-side, so it can never strand an un-enrolled member.
 export default function EncryptionSetupCard({ e2eeActive = false }: { e2eeActive?: boolean }) {
+  const qc = useQueryClient();
   const [readiness, setReadiness] = useState<E2eeReadiness | null>(null);
   const [error, setError] = useState('');
-  const [sealing, setSealing] = useState(false);
-  const [progress, setProgress] = useState<{ sealed: number; total: number } | null>(null);
+  const [activating, setActivating] = useState(false);
 
   const load = useCallback(async () => {
     if (e2eeActive) return; // already encrypted — no setup checklist to fetch
@@ -32,27 +38,28 @@ export default function EncryptionSetupCard({ e2eeActive = false }: { e2eeActive
   }, [e2eeActive]);
   useFocusEffect(useCallback(() => { load(); }, [load]));
 
-  async function runReencrypt() {
+  async function runActivate() {
     if (!getHDK()) {
-      Alert.alert('Locked', 'Unlock your encryption first (Profile → Account → Sign-in & Security).');
+      Alert.alert('Locked', 'Unlock your encryption first (Profile → Privacy & data).');
       return;
     }
-    setSealing(true);
-    setProgress({ sealed: 0, total: 0 });
+    setActivating(true);
     try {
-      const res = await reencryptStragglers((p) => setProgress(p));
-      Alert.alert(
-        'Done',
-        res.total === 0
-          ? 'Every record was already encrypted.'
-          : `Encrypted ${res.sealed} of ${res.total} records${res.failed ? `, ${res.failed} failed` : ''}.`,
-      );
+      const ok = await activateBornEncryptedHousehold();
+      if (ok) {
+        qc.invalidateQueries({ queryKey: ['household'] }); // flip the card to "Encrypted"
+        Alert.alert('Encryption on', 'Your household is now end-to-end encrypted. Only members with a key can read its data.');
+      } else {
+        Alert.alert(
+          'Almost there',
+          'Not everyone has set up their key yet. Encryption turns on automatically once every member is ready.',
+        );
+      }
       await load();
     } catch (e: any) {
       Alert.alert('Could not finish', e?.message || 'Please try again.');
     } finally {
-      setSealing(false);
-      setProgress(null);
+      setActivating(false);
     }
   }
 
@@ -83,8 +90,8 @@ export default function EncryptionSetupCard({ e2eeActive = false }: { e2eeActive
         <Text style={[styles.statusText, { color: colors.textMuted }]}>Not encrypted yet</Text>
       </View>
       <Text style={styles.note}>
-        Your household is switching to full end-to-end encryption. Everyone must have their key set up and be on a
-        current app version; then support completes the switch.
+        Your household is switching to full end-to-end encryption. It turns on automatically once every member has
+        set up their key and saved a recovery method — or you can turn it on now.
       </Text>
 
       {readiness ? (
@@ -125,18 +132,16 @@ export default function EncryptionSetupCard({ e2eeActive = false }: { e2eeActive
             );
           })}
 
-          {sealing ? (
+          {activating ? (
             <View style={styles.rowCenter}>
               <ActivityIndicator color={colors.primary} />
-              <Text style={styles.progressText}>
-                Encrypting… {progress ? `${progress.sealed}/${progress.total}` : ''}
-              </Text>
+              <Text style={styles.progressText}>Turning on encryption…</Text>
             </View>
           ) : (
-            <Button title="Encrypt older records" variant="ghost" onPress={runReencrypt} />
+            <Button title="Turn on encryption now" onPress={runActivate} />
           )}
           <Text style={styles.hint}>
-            Encrypts anything created before your key existed. Safe to run more than once.
+            Encrypts everything and drops the server’s plaintext copy. Safe to run more than once.
           </Text>
         </>
       ) : null}

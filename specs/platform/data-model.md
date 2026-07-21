@@ -1,7 +1,7 @@
 ---
 title: Data model
 status: current
-last-verified: b242e6c (2026-07-20)
+last-verified: 4d68a39 (2026-07-20)
 code:
   - server/src/models/Record.js        # the live opaque content store
   - server/src/models/encFields.js
@@ -68,7 +68,8 @@ versioned (`DROP_FIELDS_VERSION`); notable additions over time: `nextDueDate`,
 
 ## Identity, keys & sharing (plaintext by necessity)
 
-- **Identity/keys:** `User` (email, name, timestamps, auth factors, public key),
+- **Identity/keys:** `User` (email, name, timestamps, auth factors, public key,
+  `aiEnabled` — the server-side mirror of the device's AI consent toggle),
   `HouseholdKeyEnvelope` (HDK sealed per member × version), `ResourceKeyEnvelope`
   (calendar/trip keys for cross-household sharing), `DeviceLink`.
 - **Household/membership:** `Household` — **name + `homeAddress`/`lat`/`lon` are

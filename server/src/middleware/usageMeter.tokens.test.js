@@ -2,6 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert');
 const {
   totalTokens, effectiveTokens, enforcedTokens, upgradeBaselineUpdate, currentPeriodKey,
+  effectiveCallSeconds, enforcedCallSeconds, recordCallSecondsById, adminUnlimited,
 } = require('./usageMeter');
 
 const P = currentPeriodKey();
@@ -48,11 +49,55 @@ test('enforcedTokens: per-user on free, pooled (effective) on paid', () => {
   assert.equal(enforcedTokens({ user, household }, P), 800);
 });
 
+test('effectiveCallSeconds subtracts the mid-week upgrade baseline, floored at 0', () => {
+  const hh = {
+    usageCallSeconds: { [P]: { seconds: 500 } },
+    usageCallSecondsBaseline: { [P]: { seconds: 200 } },
+  };
+  assert.equal(effectiveCallSeconds(hh, P), 300);
+  assert.equal(effectiveCallSeconds({ usageCallSeconds: { [P]: { seconds: 80 } } }, P), 80);
+  assert.equal(effectiveCallSeconds({}, P), 0);
+});
+
+test('enforcedCallSeconds: per-user on free, pooled (effective) on paid', () => {
+  const user = { usageCallSeconds: { [P]: { seconds: 42 } } };
+  const household = {
+    plan: 'premium',
+    usageCallSeconds: { [P]: { seconds: 900 } },
+    usageCallSecondsBaseline: { [P]: { seconds: 100 } },
+  };
+  assert.equal(enforcedCallSeconds({ user, household: { plan: 'free' } }, P), 42);
+  assert.equal(enforcedCallSeconds({ user: {}, household: null }, P), 0);
+  assert.equal(enforcedCallSeconds({ user, household }, P), 800);
+});
+
+test('recordCallSecondsById returns the rounded seconds (0/negative → no-op)', () => {
+  // No ids → nothing to write, but the rounded seconds are reported back.
+  assert.equal(recordCallSecondsById({}, 71.4), 71);
+  assert.equal(recordCallSecondsById({}, 0), 0);
+  assert.equal(recordCallSecondsById({}, -5), 0);
+});
+
+test('adminUnlimited: only admins, and only while the config toggle allows it', () => {
+  const admin = { role: 'admin' };
+  const member = { role: 'user' };
+  // Default / toggle on → admins exempt, non-admins never.
+  assert.equal(adminUnlimited({ admin: { unlimitedAi: true } }, admin), true);
+  assert.equal(adminUnlimited({ admin: { unlimitedAi: true } }, member), false);
+  // Missing section defaults to exempt (backfilled to true elsewhere).
+  assert.equal(adminUnlimited({}, admin), true);
+  // Toggle off → admins are metered like everyone else.
+  assert.equal(adminUnlimited({ admin: { unlimitedAi: false } }, admin), false);
+  // No user → never exempt.
+  assert.equal(adminUnlimited({ admin: { unlimitedAi: true } }, null), false);
+});
+
 test('upgradeBaselineUpdate snapshots tokens on a strict upgrade only', () => {
   const household = {
     plan: 'free',
     usage: { [P]: { chat: 5, breakdown: { chat: { calendar: 5 } } } },
     usageTokens: { [P]: { tokens: 1234, byAction: { chat: 1234 } } },
+    usageCallSeconds: { [P]: { seconds: 90 } },
   };
   const up = upgradeBaselineUpdate(household, 'premium');
   assert.equal(up.usageTokensBaseline[P].tokens, 1234);
@@ -60,6 +105,8 @@ test('upgradeBaselineUpdate snapshots tokens on a strict upgrade only', () => {
   assert.ok(!('byAction' in up.usageTokensBaseline[P]));
   // Count baseline drops the analytics breakdown sub-object.
   assert.ok(!('breakdown' in up.usageBaseline[P]));
+  // Call-time pool is also baselined so it restarts fresh on upgrade.
+  assert.equal(up.usageCallSecondsBaseline[P].seconds, 90);
 
   // Same tier or downgrade → no baseline (can't be used to wipe the counter).
   assert.deepEqual(upgradeBaselineUpdate({ ...household, plan: 'premium' }, 'premium'), {});

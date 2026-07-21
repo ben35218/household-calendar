@@ -2,6 +2,11 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const {
   computeNextDueDate,
+  anchorRecurrence,
+  seedDueDate,
+  avgKmPerDay,
+  estimateDateFromKm,
+  computeNextDueKm,
   expandRecurringEvent,
   expandRecurringTaskChore,
   birthdayOccurrences,
@@ -264,6 +269,14 @@ test('event ending before the window is excluded', () => {
   assert.equal(data.events.length, 0);
 });
 
+test('no grocery markers when no shopping day is configured', () => {
+  const data = assembleCalendarData({
+    fromDate: new Date('2026-01-01'), toDate: new Date('2026-01-31'),
+    // groceryShoppingDay omitted → defaults to null (unset).
+  });
+  assert.deepEqual(data.groceryShopping, []);
+});
+
 test('biweekly grocery days follow the anchor parity', () => {
   const base = {
     fromDate: new Date('2026-01-01'), toDate: new Date('2026-01-31'),
@@ -280,4 +293,66 @@ test('biweekly grocery days follow the anchor parity', () => {
     assembleCalendarData({ ...base, groceryAnchor: '2026-01-17' }).groceryShopping.map(g => g.date),
     ['2026-01-03', '2026-01-17', '2026-01-31'],
   );
+});
+
+// ── anchorRecurrence / seedDueDate (moved from server services/recurrence) ────
+test('anchorRecurrence: monthly+ intervals anchor to the 1st, weekly to the created weekday', () => {
+  const mon = new Date(2026, 6, 13, 9, 0, 0); // Monday, July 13 2026
+  const monthly = anchorRecurrence({ type: 'interval', intervalValue: 3, intervalUnit: 'months', weekOfMonth: 2, dayOfWeek: 4 }, mon);
+  assert.equal(monthly.dayOfMonth, 1);
+  assert.equal(monthly.weekOfMonth, undefined);
+  const weekly = anchorRecurrence({ type: 'interval', intervalValue: 1, intervalUnit: 'weeks' }, mon);
+  assert.equal(weekly.dayOfWeek, 1);
+  const cal = anchorRecurrence({ type: 'calendar', months: [10], dayOfMonth: 15 }, mon);
+  assert.equal(cal.dayOfMonth, 1);
+  const daily = anchorRecurrence({ type: 'interval', intervalValue: 3, intervalUnit: 'days' }, mon);
+  assert.equal(daily.dayOfMonth, undefined);
+});
+
+test('seedDueDate: month-anchored interval starts on the next occurrence of that month', () => {
+  const july = new Date(2026, 6, 13);
+  // September anchor still ahead this year → Sep 1 2026.
+  const sep = seedDueDate({ type: 'interval', intervalValue: 1, intervalUnit: 'years', months: [9], dayOfMonth: 1 }, july);
+  assert.equal(sep.getFullYear(), 2026);
+  assert.equal(sep.getMonth(), 8);
+  // March already passed → next year.
+  const mar = seedDueDate({ type: 'interval', intervalValue: 1, intervalUnit: 'years', months: [3], dayOfMonth: 1 }, july);
+  assert.equal(mar.getFullYear(), 2027);
+  assert.equal(mar.getMonth(), 2);
+  // No month anchor → falls through to computeNextDueDate.
+  const plain = seedDueDate({ type: 'interval', intervalValue: 2, intervalUnit: 'weeks' }, july);
+  assert.equal(ymd(plain), ymd(computeNextDueDate({ recurrence: { type: 'interval', intervalValue: 2, intervalUnit: 'weeks' } }, july)));
+});
+
+// ── mileage helpers (moved from server services/recurrence) ──────────────────
+test('avgKmPerDay needs >= 2 logs across >= 1 day, then averages', () => {
+  assert.equal(avgKmPerDay(null), null);
+  assert.equal(avgKmPerDay([{ reading: 100, recordedAt: '2026-01-01' }]), null);
+  assert.equal(avgKmPerDay([
+    { reading: 100, recordedAt: '2026-01-01' },
+    { reading: 100, recordedAt: '2026-01-01' },
+  ]), null); // zero elapsed days
+  // Unsorted input is sorted by recordedAt: (1200-1000)/10 days = 20 km/day.
+  assert.equal(avgKmPerDay([
+    { reading: 1200, recordedAt: '2026-01-11' },
+    { reading: 1000, recordedAt: '2026-01-01' },
+  ]), 20);
+});
+
+test('estimateDateFromKm projects remaining km at the given rate', () => {
+  assert.equal(estimateDateFromKm(5000, 4000, null), null);
+  assert.equal(estimateDateFromKm(5000, 4000, 0), null);
+  // Already past the threshold → due now (today).
+  assert.equal(ymd(estimateDateFromKm(5000, 5200, 50)), ymd(new Date()));
+  // 1000 km at 50/day → 20 days out.
+  const d = estimateDateFromKm(5000, 4000, 50);
+  const expected = new Date();
+  expected.setDate(expected.getDate() + 20);
+  assert.equal(ymd(d), ymd(expected));
+});
+
+test('computeNextDueKm is service reading + interval', () => {
+  assert.equal(computeNextDueKm({ intervalKm: 8000 }, 50000), 58000);
+  assert.equal(computeNextDueKm({ intervalKm: null }, 50000), null);
+  assert.equal(computeNextDueKm({ intervalKm: 8000 }, null), null);
 });

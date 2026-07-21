@@ -2,11 +2,10 @@ const express = require('express');
 const path = require('path');
 const Anthropic = require('@anthropic-ai/sdk');
 const { addDays } = require('date-fns');
-const MaintenanceTask = require('../models/MaintenanceTask');
-const Item = require('../models/Item');
+const Record = require('../models/Record');
 const Manual = require('../models/Manual');
-const Category = require('../models/Category');
 const { requireAuth } = require('../middleware/auth');
+const { requireAiEnabled } = require('../middleware/aiConsent');
 const { computeNextDueDate, anchorRecurrence } = require('../services/recurrence');
 const { extractTextFromPdf } = require('../services/manualParser');
 const { streamChat } = require('../services/chatStream');
@@ -15,6 +14,7 @@ const { meter, getConfig } = require('../middleware/usageMeter');
 
 const router = express.Router();
 router.use(requireAuth);
+router.use(requireAiEnabled);
 
 const UPLOAD_DIR = path.resolve(process.env.UPLOAD_DIR || './uploads');
 const MAX_CHARS_PER_MANUAL = 60000;
@@ -74,47 +74,35 @@ async function extractManualText(manual) {
 }
 
 async function executeTool(name, input, ctx) {
-  const { userId, itemId, scopeIds, household, clientTasks } = ctx;
+  const { userId, itemId, clientTasks, clientCategories } = ctx;
   switch (name) {
     case 'get_item_tasks': {
-      // Ephemeral-consent (§9.1 P4d): use the client's decrypted item tasks when
-      // supplied so the assistant sees real titles post-drop; else read the DB.
-      if (clientTasks) {
-        return {
-          tasks: clientTasks.map(t => ({
-            id:           t._id,
-            title:        t.title,
-            category:     t.categoryName || null,
-            recurrence:   t.recurrence,
-            nextDueDate:  t.nextDueDate ? new Date(t.nextDueDate).toISOString().slice(0, 10) : null,
-          })),
-        };
-      }
-      const tasks = await MaintenanceTask.find({ userId: { $in: scopeIds }, itemId, active: true })
-        .populate('categoryId', 'name')
-        .lean();
+      // Signal-parity C3b: content lives in the opaque store, so the assistant
+      // sees the household's tasks only via the client's decrypted context (sent
+      // with the request). No server DB read is possible.
       return {
-        tasks: tasks.map(t => ({
+        tasks: (clientTasks || []).map(t => ({
           id:           t._id,
           title:        t.title,
-          category:     t.categoryId?.name || null,
+          category:     t.categoryName || null,
           recurrence:   t.recurrence,
-          nextDueDate:  t.nextDueDate ? t.nextDueDate.toISOString().slice(0, 10) : null,
+          nextDueDate:  t.nextDueDate ? new Date(t.nextDueDate).toISOString().slice(0, 10) : null,
         })),
       };
     }
 
     case 'get_categories': {
-      const topLevel = await Category.find({ userId: { $in: scopeIds }, parentId: null }).sort('sortOrder name').lean();
+      // C3b: category names are sealed — the client supplies its decrypted
+      // top-level categories.
       return {
-        categories: topLevel.map(cat => ({
-          id:   cat._id,
-          name: cat.name,
-        })),
+        categories: (clientCategories || []).map(cat => ({ id: cat._id, name: cat.name })),
       };
     }
 
     case 'create_tasks': {
+      // C3b: the server can't create readable content — compute the task payloads
+      // and hand them back for the client to seal + create through /records. The
+      // model still sees success.
       const payloads = input.tasks.map(t => {
         const recurrence = t.recurrenceType === 'one-time'
           ? { type: 'one-time' }
@@ -144,28 +132,11 @@ async function executeTool(name, input, ctx) {
         return taskData;
       });
 
-      // Ephemeral-consent (§9.1 P4d): post-drop the server can't create readable
-      // content, so hand the computed payloads back for the client to create
-      // *encrypted*. Model still sees success. Dual-write path writes as before.
-      if (household?.e2eeActive) {
-        return {
-          success:           true,
-          tasksCreated:      payloads.length,
-          tasks:             payloads.map(p => ({ title: p.title })),
-          _clientCreateTasks: payloads,
-        };
-      }
-
-      const created = [];
-      for (const taskData of payloads) {
-        const task = await MaintenanceTask.create(taskData);
-        created.push({ id: task._id, title: task.title });
-      }
       return {
-        success:       true,
-        tasksCreated:  created.length,
-        tasks:         created,
-        _tasksCreated: created,
+        success:           true,
+        tasksCreated:      payloads.length,
+        tasks:             payloads.map(p => ({ title: p.title })),
+        _clientCreateTasks: payloads,
       };
     }
 
@@ -273,15 +244,17 @@ async function contextHandler(req, res) {
     const src = req.method === 'GET' ? req.query : (req.body || {});
     const { itemId } = src;
     if (!itemId) return res.status(400).json({ error: 'itemId is required' });
+    // C3b: item content is sealed — the client supplies its decrypted item; the
+    // server only verifies the id is in the caller's scope (opaque Record row).
     const clientItem = src.item && typeof src.item === 'object' ? src.item : null;
-
-    const [dbItem, manuals, existingTaskCount] = await Promise.all([
-      Item.findOne({ _id: itemId, userId: { $in: req.scopeIds } }).lean(),
-      Manual.find({ itemId, userId: { $in: req.scopeIds } }).lean(),
-      MaintenanceTask.countDocuments({ userId: { $in: req.scopeIds }, itemId, active: true }),
-    ]);
-    if (!dbItem) return res.status(404).json({ error: 'Item not found' });
-    const item = clientItem || dbItem;
+    if (!clientItem) return res.status(400).json({ error: 'item is required' });
+    if (!(await Record.exists({ _id: itemId, ...req.scopeFilter }))) {
+      return res.status(404).json({ error: 'Item not found' });
+    }
+    const manuals = await Manual.find({ itemId, ...req.scopeFilter }).lean();
+    // Existing-task count comes from the client's decrypted context (sealed).
+    const existingTaskCount = Number(src.taskCount) || 0;
+    const item = clientItem;
 
     res.json({
       context: buildContextSummary(item, manuals, existingTaskCount),
@@ -306,31 +279,26 @@ router.post('/', meter('chat', 'maintenance'), async (req, res) => {
 
     const userId = req.user._id;
 
-    // Ephemeral-consent (§9.1 P4a): when the client supplies the decrypted item,
-    // use it for the system prompt and skip the stored-plaintext read; verify
-    // itemId access via plaintext metadata. Otherwise read the DB (dual-write).
-    // (Manuals + the get_item_tasks/create_tasks tools still hit the DB — their
-    // client-execution move is deferred to the tool-execution slice.)
+    // Signal-parity C3b: item + task/category content is sealed in the opaque
+    // store, so the client supplies its decrypted item (and, via the tools, its
+    // tasks/categories). The server verifies the itemId is in the caller's scope
+    // by the opaque Record row, and never reads content. Manuals stay their own
+    // (plaintext-metadata) collection.
     const { item: clientItem } = req.body;
-    let item;
-    if (clientItem) {
-      if (!(await Item.exists({ _id: itemId, userId: { $in: req.scopeIds } }))) {
-        return res.status(404).json({ error: 'Item not found' });
-      }
-      item = clientItem;
-    } else {
-      item = await Item.findOne({ _id: itemId, userId: { $in: req.scopeIds } }).lean();
-      if (!item) return res.status(404).json({ error: 'Item not found' });
+    if (!clientItem) return res.status(400).json({ error: 'item is required' });
+    if (!(await Record.exists({ _id: itemId, ...req.scopeFilter }))) {
+      return res.status(404).json({ error: 'Item not found' });
     }
-    const manuals = await Manual.find({ itemId, userId: { $in: req.scopeIds } }).lean();
+    const item = clientItem;
+    const manuals = await Manual.find({ itemId, ...req.scopeFilter }).lean();
 
     const systemPrompt = await buildSystemPrompt(item, manuals);
     const client = new Anthropic({ apiKey });
 
     // Free tier gets the fast Haiku model; paid tiers get the smarter Sonnet.
     const config = await getConfig();
-    const plan = req.household?.plan || 'free';
-    const model = plan === 'free' ? config.models.freeChat : config.models.paidChat;
+    // Sonnet on all tiers: every plan uses the paid chat model.
+    const model = config.models.paidChat;
 
     await streamChat(res, {
       req,
@@ -340,8 +308,9 @@ router.post('/', meter('chat', 'maintenance'), async (req, res) => {
       tools: TOOLS,
       messages,
       executeTool: (name, input) => executeTool(name, input, {
-        userId, itemId, scopeIds: req.scopeIds, household: req.household,
+        userId, itemId,
         clientTasks: Array.isArray(req.body.tasks) ? req.body.tasks : null,
+        clientCategories: Array.isArray(req.body.categories) ? req.body.categories : null,
       }),
       collectSideEffects: (block, result, acc) => {
         if (result && result._tasksCreated) {

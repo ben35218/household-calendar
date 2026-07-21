@@ -2,7 +2,7 @@ import { buildPrintHtml, PrintOptions } from '../printCalendar';
 
 const ACTIVITIES = { id: 'activities', name: 'Activities', color: '#388E3C' };
 const APPOINTMENTS = { id: 'appointments', name: 'Appointments', color: '#7B1FA2' };
-const VACATIONS = { id: 'vacations', name: 'Vacations', color: '#5E35B1' };
+const TRIPS = { id: 'trips', name: 'Trips', color: '#5E35B1' };
 
 // Timed events use local-time ISO strings (parsed in the device zone, like the
 // app); all-day records are noon-UTC, matching EventFormScreen's storage.
@@ -56,7 +56,7 @@ describe('buildPrintHtml (agenda)', () => {
 
   it('surfaces an item spanning into the range on the first day', () => {
     const withTrip = buildPrintHtml(
-      agendaOpts({ from: '2026-07-01', to: '2026-07-07', calendars: [ACTIVITIES, VACATIONS] }),
+      agendaOpts({ from: '2026-07-01', to: '2026-07-07', calendars: [ACTIVITIES, TRIPS] }),
       data,
       []
     );

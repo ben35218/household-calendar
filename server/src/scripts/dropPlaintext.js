@@ -20,7 +20,8 @@ const Household = require('../models/Household');
 const User = require('../models/User');
 const HouseholdKeyEnvelope = require('../models/HouseholdKeyEnvelope');
 const AuditLog = require('../models/AuditLog');
-const { computeReadiness, dropUnsetFor } = require('../services/dropReadiness');
+const { computeReadiness, dropUnsetFor, DROP_FIELDS_VERSION } = require('../services/dropReadiness');
+const { AUTHOR_HIDDEN } = require('../services/e2eePolicy');
 const { sharedTripIds, excludeSharedFilter } = require('../services/tripSharing');
 const { outsideSharedCalendarKeys, excludeOutsideCalendarFilter } = require('../services/calendarSharing');
 const CustomCalendar = require('../models/CustomCalendar');
@@ -35,7 +36,10 @@ const MODELS = {
   Trip:           require('../models/Trip'),
   TripItem:       require('../models/TripItem'),
   Item:           require('../models/Item'),
-  FoodInventory:  require('../models/FoodInventory'),
+  // Signal-parity D5 (thin collections).
+  OdometerLog:    require('../models/OdometerLog'),
+  RecipeSchedule: require('../models/RecipeSchedule'),
+  Category:       require('../models/Category'),
 };
 
 // Run the drop (or its dry run) against the current mongoose connection.
@@ -53,7 +57,7 @@ async function dropPlaintext(householdId, { commit = false, log = () => {} } = {
   const memberIds = members.map((m) => m._id);
   const envelopes = await HouseholdKeyEnvelope.find({ householdId: hh._id });
 
-  log(`\nHousehold "${hh.name}" (${hh._id}) — HDK v${hh.currentKeyVersion}, ${members.length} member(s)\n`);
+  log(`\nHousehold "${hh.name || hh._id}" (${hh._id}) — HDK v${hh.currentKeyVersion}, ${members.length} member(s)\n`);
 
   // 1) Readiness gate.
   const readiness = computeReadiness({
@@ -90,9 +94,14 @@ async function dropPlaintext(householdId, { commit = false, log = () => {} } = {
     stragglers += missing;
     log(`  ${name.padEnd(16)} ${sealed} sealed, ${missing} missing enc`);
   }
-  const hhLocationUnsealed = !!(hh.homeAddress && !hh.enc);
-  log(`  ${'Household'.padEnd(16)} location ${hh.enc ? 'sealed' : (hh.homeAddress ? 'NOT sealed' : 'none set')}`);
-  if (hhLocationUnsealed) stragglers++;
+  // The household settings blob covers name + homeAddress (C2): any plaintext
+  // there without a sealed blob blocks the drop until the client seals it (the
+  // straggler pass PUTs the enc via /settings). NOTE: `hh.enc` is a mongoose
+  // nested path — truthy ({}) even when unset — so test the ciphertext itself.
+  const hhBlobSealed = !!hh.enc?.ct;
+  const hhContentUnsealed = !!((hh.homeAddress || hh.name) && !hhBlobSealed);
+  log(`  ${'Household'.padEnd(16)} name/location ${hhBlobSealed ? 'sealed' : (hhContentUnsealed ? 'NOT sealed' : 'none set')}`);
+  if (hhContentUnsealed) stragglers++;
 
   if (stragglers > 0) {
     log(`\n${stragglers} record(s) still lack ciphertext. The owner's device must open + re-save them (or run the client re-encrypt pass) before the drop. Aborting.`);
@@ -111,17 +120,40 @@ async function dropPlaintext(householdId, { commit = false, log = () => {} } = {
   for (const [name, Model] of Object.entries(MODELS)) {
     const unset = dropUnsetFor(name);
     if (!unset) continue;
-    // Never null a shared trip's (or its items') plaintext, nor an event's on
-    // an outside-shared calendar — collaborators outside the household read
-    // them and hold no HDK.
-    const exempt = { ...excludeSharedFilter(name, sharedIds), ...excludeOutsideCalendarFilter(name, sharedCalKeys) };
-    const res = await Model.updateMany({ ...scope, ...exempt, enc: { $exists: true } }, { $unset: unset });
+    // Signal-parity D1/D2: outside-shared calendar events AND shared trips/items
+    // are NO LONGER exempt from the NULL step — a resource-sealed record (a
+    // CalendarKey- or TripKey-sealed event/trip/item) carries `enc`, so `enc
+    // exists` nulls its plaintext (correct — collaborators read it via the
+    // resource key), while an un-migrated plaintext-lane record (no `enc`, exempt
+    // in the straggler check above) is skipped by `enc exists`. The full
+    // excludeSharedFilter retirement waits until zero plaintext-lane shared
+    // records remain; for now the `enc exists` gate is the correct shield.
+    const res = await Model.updateMany({ ...scope, enc: { $exists: true } }, { $unset: unset });
     nulled[name] = res.modifiedCount;
     log(`  ${name.padEnd(16)} nulled ${res.modifiedCount}`);
   }
-  // Household location: lat/lon derive from homeAddress, so they go with it.
-  if (hh.enc) await Household.updateOne({ _id: hh._id }, { $unset: { homeAddress: '', lat: '', lon: '' } });
-  await Household.updateOne({ _id: hh._id }, { $set: { e2eeActive: true } });
+  // Signal-parity C4 (hide record authorship): stamp the plaintext householdId on
+  // every record so scoping survives the author null, THEN null the member-
+  // granular plaintext `userId` on HDK-sealed records of the author-hidden
+  // collections. Order matters — never null `userId` before `householdId` is set,
+  // or the record becomes unscopable. A resource-sealed (`enc.ks` cal/trip) record
+  // KEEPS its `userId` (a cross-household routing artifact — the §C4 deviation).
+  for (const [name, Model] of Object.entries(MODELS)) {
+    await Model.updateMany({ ...scope, householdId: { $exists: false } }, { $set: { householdId: hh._id } });
+    if (AUTHOR_HIDDEN.has(name)) {
+      const res = await Model.updateMany(
+        { householdId: hh._id, enc: { $exists: true }, 'enc.ks': { $exists: false } },
+        { $unset: { userId: '' } },
+      );
+      log(`  ${name.padEnd(16)} author-nulled ${res.modifiedCount}`);
+    }
+  }
+  // Household name + location (C2): lat/lon derive from homeAddress, so they go
+  // with it; the sealed settings blob is now the only source of both.
+  if (hh.enc?.ct) await Household.updateOne({ _id: hh._id }, { $unset: { homeAddress: '', lat: '', lon: '', name: '' } });
+  // Stamp the DROP_FIELDS schema version so a household dropped now is never
+  // flagged for the re-seal + re-drop backfill (its plaintext is fully current).
+  await Household.updateOne({ _id: hh._id }, { $set: { e2eeActive: true, dropFieldsVersion: DROP_FIELDS_VERSION } });
   await AuditLog.create({ householdId: hh._id, event: 'plaintext_dropped', meta: { memberCount: members.length, keyVersion: hh.currentKeyVersion } });
 
   log('\nDONE. e2eeActive = true; plaintext content nulled. The E2EE boundary is now live for this household.');

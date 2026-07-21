@@ -1,4 +1,5 @@
 import { invitationsApi, EventInvitation, InvitationEventSnapshot } from '../api';
+import { sealInvitationSnapshot } from './e2ee';
 import { API_URL } from '../config';
 
 // Cross-household event invitees, addressed by email or by phone (SMS). Email
@@ -69,7 +70,20 @@ export async function sendInvitations(
       .filter((e) => e.email)
       .map(async (entry) => {
         try {
-          await invitationsApi.send({ eventId, email: entry.email, event: snapshot });
+          // D3: if the invitee is a known account with enrolled keys, seal the
+          // snapshot to their identity key on-device — the server never sees the
+          // plaintext. Otherwise (no account / no keys) fall back to the
+          // plaintext lane, which the emailed .ics still needs.
+          let pub: string | null = null;
+          try {
+            pub = (await invitationsApi.lookup(entry.email!)).data.identityPublicKey;
+          } catch { /* lookup failed → plaintext lane */ }
+          if (pub) {
+            const sealedEvent = await sealInvitationSnapshot(snapshot, pub);
+            await invitationsApi.send({ eventId, email: entry.email, sealedEvent });
+          } else {
+            await invitationsApi.send({ eventId, email: entry.email, event: snapshot });
+          }
         } catch (e: any) {
           failures.push({ entry, error: reason(e) });
         }

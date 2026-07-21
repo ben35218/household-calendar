@@ -1,41 +1,33 @@
 const express = require('express');
 const Anthropic = require('@anthropic-ai/sdk');
-const axios = require('axios');
-const { format } = require('date-fns');
-const CalendarEvent = require('../models/CalendarEvent');
-const MaintenanceTask = require('../models/MaintenanceTask');
-const Person = require('../models/Person');
+// Signal-parity C3b: calendar/task/person content lives in the opaque store, so
+// this assistant reads it only from the client's decrypted context. PhoneCall +
+// WeatherRecord stay their own (non-migrated) collections.
+const PhoneCall = require('../models/PhoneCall');
 const WeatherRecord = require('../models/WeatherRecord');
 const { requireAuth } = require('../middleware/auth');
+const { requireAiEnabled } = require('../middleware/aiConsent');
 const { streamChat } = require('../services/chatStream');
-const { meter, getConfig } = require('../middleware/usageMeter');
+const { meter, getConfig, callSecondsStatus } = require('../middleware/usageMeter');
 const { ASSISTANT_NAME } = require('../config/assistant');
-const { collectCalendarRecords } = require('../services/calendarData');
 const { assembleCalendarData } = require('@household/calendar');
+const { navTool, navPromptSection, collectNav, ensureActionableNav, SUGGEST_NAV_TOOL_NAME } = require('../services/navDestinations');
+const { fetchVapiCall, applyVapiToRow, placeCall } = require('../services/phoneCalls');
 
 const router = express.Router();
 router.use(requireAuth);
-
-// Normalize phone to E.164 (+1XXXXXXXXXX for US/CA numbers)
-function normalizePhone(phone) {
-  const digits = phone.replace(/\D/g, '');
-  if (digits.length === 10) return `+1${digits}`;
-  if (digits.length === 11 && digits.startsWith('1')) return `+${digits}`;
-  if (phone.startsWith('+')) return phone;
-  return `+${digits}`;
-}
+router.use(requireAiEnabled);
 
 const TOOLS = [
   {
     name: 'list_events',
-    description: `List ALL calendar records in a date range, across every calendar shown on the user's calendar page. Recurring tasks, chores, and events are already expanded into their individual occurrences within the range, so each dated entry returned is a real occurrence (with a "recurrence" summary describing the repeat pattern). Returns:
+    description: `List ALL calendar records in a date range, across every calendar shown on the user's calendar page. Recurring tasks, chores, and events are already expanded into their individual occurrences within the range, so each dated entry returned is a real occurrence (with a "recurrence" summary describing the repeat pattern). Entries are titles + dates only — use get_event_details for one event's description/location. Returns:
 - maintenance: home maintenance task occurrences
 - chores: household chore occurrences
 - activities / appointments: calendar events
 - meals: planned recipes (meal calendar)
 - groceryDays: grocery shopping days
-- birthdays: birthday occurrences
-- vacations: trips with their date range(s) and status (DATES ONLY — for the itinerary/details inside a trip, the user should use the Vacation Assistant on the Vacations page)`,
+- trips: trips with their date range(s) and status (DATES ONLY — for the itinerary/details inside a trip, the user should use the Trip Assistant on the Trips page)`,
     input_schema: {
       type: 'object',
       properties: {
@@ -44,6 +36,22 @@ const TOOLS = [
       },
       required: ['from', 'to'],
     },
+  },
+  {
+    name: 'get_event_details',
+    description: "Get one event's full details (description, location, whether a business phone is on file). Use after list_events when the conversation needs more than the title and date.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        eventId: { type: 'string', description: 'ID of the event, from list_events' },
+      },
+      required: ['eventId'],
+    },
+  },
+  {
+    name: 'get_household_members',
+    description: "List the household's members and friends (names only) plus the user's saved professionals (with the business details they were saved for — service, business name, address; phone/email appear as 'on file' flags only). Use when the conversation involves who is in the household (e.g. planning who joins an outing) or which professional handles something (e.g. the plumber, the vet).",
+    input_schema: { type: 'object', properties: {}, required: [] },
   },
   {
     name: 'open_create_event_form',
@@ -119,19 +127,23 @@ Requires a phone number on the event. If none is stored, ask the user to add one
           type: 'string',
           description: 'Any extra context for the AI caller (e.g. "mention it is a follow-up visit")',
         },
+        shareContactDetails: {
+          type: 'boolean',
+          description: "Set true ONLY if the user explicitly agreed the business may be given their phone/email for identity verification. Defaults to false — the caller then gives only the user's name.",
+        },
       },
       required: ['eventId', 'action'],
     },
   },
   {
     name: 'check_call_status',
-    description: 'Check the status and transcript of a call placed by call_business. Call IDs are returned by call_business.',
+    description: 'Check the status and outcome summary of a call placed by call_business. Call IDs are returned by call_business; omit callId to check the most recently placed call (e.g. when the user asks "any update on the call?" in a fresh conversation).',
     input_schema: {
       type: 'object',
       properties: {
-        callId: { type: 'string', description: 'The call_id returned by call_business' },
+        callId: { type: 'string', description: 'The call_id returned by call_business. Omit to check the most recent call.' },
       },
-      required: ['callId'],
+      required: [],
     },
   },
   {
@@ -146,6 +158,7 @@ Requires a phone number on the event. If none is stored, ask the user to add one
       required: ['from', 'to'],
     },
   },
+  navTool('calendar'),
 ];
 
 // Human-readable summary of a maintenance task / chore recurrence rule.
@@ -172,34 +185,38 @@ function describeEventRecurrence(rec) {
 
 async function executeTool(name, input, ctx) {
   const { userId, scopeIds, user, household } = ctx;
+  // Navigation suggestions record intent only (surfaced via collectSideEffects).
+  if (name === SUGGEST_NAV_TOOL_NAME) return { acknowledged: true };
   switch (name) {
     case 'list_events': {
       const fromDate = new Date(input.from);
       const toDate   = new Date(input.to);
 
-      // Ephemeral-consent (§9.1 P4c): when the client supplied its decrypted
-      // calendar sources, expand them with the shared engine (same code the
-      // server uses) instead of reading stored plaintext. Else read the DB.
-      const data = ctx.calendarSources
-        ? assembleCalendarData({
-            ...ctx.calendarSources,
-            fromDate, toDate,
-            selfId: String(userId),
-            groceryShoppingDay: (household || user)?.groceryShoppingDay ?? 6,
-            groceryFrequency: (household || user)?.groceryFrequency ?? 'weekly',
-            groceryAnchor: (household || user)?.groceryAnchor ?? null,
-          })
-        : await collectCalendarRecords({ scopeIds, fromDate, toDate, user, household });
+      // Signal-parity C3b: calendar content is sealed in the opaque store, so the
+      // assistant expands the CLIENT's decrypted sources with the shared engine
+      // (the same code the server uses) — there is no server-plaintext fallback.
+      const data = assembleCalendarData({
+        ...(ctx.calendarSources || { events: [], tasks: [], chores: [], people: [], trips: [], recipeSchedules: [] }),
+        fromDate, toDate,
+        selfId: String(userId),
+        groceryShoppingDay: (household || user)?.groceryShoppingDay ?? null,
+        groceryFrequency: (household || user)?.groceryFrequency ?? 'weekly',
+        groceryAnchor: (household || user)?.groceryAnchor ?? null,
+      });
 
+      // Data minimization (spec: friends/family name-only; references not
+      // values): titles + dates only — descriptions/locations go via
+      // get_event_details, phone numbers never (presence flag only), and no
+      // birthdays section (no birthdays reach this chat — family/friends are
+      // name-only and professionals share business details only — so there are
+      // no birthday occurrences to expand).
       const eventFields = (e) => ({
         id: e._id,
         title: e.title,
         startDate: e.startDate,
         endDate: e.endDate,
         allDay: e.allDay,
-        description: e.description,
-        location: e.location,
-        phone: e.phone,
+        phoneOnFile: !!e.phone,
         recurrence: describeEventRecurrence(e.recurrence),
       });
 
@@ -219,16 +236,61 @@ async function executeTool(name, input, ctx) {
           title: r.recipeId?.title, servings: r.servings,
         })),
         groceryDays: data.groceryShopping.map(g => g.date),
-        birthdays: data.birthdays.map(b => ({ name: b.name, relationship: b.relationship, date: b.date })),
-        vacations: data.trips.map(t => ({
+        trips: data.trips.map(t => ({
           name: t.name, destination: t.destination, status: t.status,
           ranges: t.ranges.map(r => ({
             start: new Date(r.start).toISOString().slice(0, 10),
             end: new Date(r.end).toISOString().slice(0, 10),
             label: r.label,
           })),
-          note: 'Dates only — use the Vacation Assistant for this trip\'s itinerary and details.',
+          note: 'Dates only — use the Trip Assistant for this trip\'s itinerary and details.',
         })),
+      };
+    }
+
+    case 'get_event_details': {
+      const ev =
+        (ctx.focusEvent && String(ctx.focusEvent._id) === String(input.eventId) ? ctx.focusEvent : null) ||
+        (ctx.calendarSources?.events || []).find(e => String(e._id) === String(input.eventId));
+      if (!ev) return { error: 'Event not found — use list_events to find the event ID.' };
+      return {
+        id: ev._id,
+        title: ev.title,
+        calendarType: ev.calendarType,
+        startDate: ev.startDate,
+        endDate: ev.endDate,
+        allDay: ev.allDay,
+        description: ev.description || null,
+        location: ev.location || null,
+        phoneOnFile: !!ev.phone,
+        recurrence: describeEventRecurrence(ev.recurrence),
+      };
+    }
+
+    case 'get_household_members': {
+      // Spec (ai-assistant.md): family/friends are name-only; saved professionals
+      // (service contacts) also share the business details the user saved them for
+      // (service + business name + address). Phone/email stay "on file" flags — the
+      // app dials/emails; the real values never reach you (references, not values).
+      const people = Array.isArray(ctx.people) ? ctx.people : [];
+      if (!people.length) {
+        return { message: 'No household members are shared with this chat (none added, or personal info is turned off in Privacy).' };
+      }
+      const nameOf = (p) => (p.isSelf ? `${p.name} (the user you are assisting)` : p.name);
+      const proOf = (p) => {
+        const parts = [p.name];
+        if (p.service) parts.push(`(${p.service})`);
+        if (p.businessName) parts.push(`— ${p.businessName}`);
+        if (p.address) parts.push(`— ${p.address}`);
+        const onFile = [p.phoneOnFile && 'phone', p.emailOnFile && 'email'].filter(Boolean);
+        if (onFile.length) parts.push(`[${onFile.join(' & ')} on file]`);
+        return parts.join(' ');
+      };
+      return {
+        household: people.filter(p => p.type === 'family').map(nameOf),
+        friends: people.filter(p => p.type === 'friend').map(nameOf),
+        professionals: people.filter(p => p.type === 'service').map(proOf),
+        note: 'Household & friends: names only. Professionals: business details as shown; any "on file" phone/email is used by the app for dialing/emailing and is never shown to you.',
       };
     }
 
@@ -263,70 +325,50 @@ async function executeTool(name, input, ctx) {
       if (!vapiKey)       return { error: 'VAPI_API_KEY is not configured on the server' };
       if (!phoneNumberId) return { error: 'VAPI_PHONE_NUMBER_ID is not configured on the server' };
 
-      const event = ctx.calendarSources
-        ? (ctx.calendarSources.events || []).find(e => String(e._id) === String(input.eventId))
-        : await CalendarEvent.findOne({ _id: input.eventId, userId: { $in: scopeIds } }).lean();
+      // Event lookup (C3b: sealed store — no server-plaintext fallback): the
+      // focused event (chat opened from an event's Ask Calen), then the client-
+      // supplied decrypted sources.
+      const event =
+        (ctx.focusEvent && String(ctx.focusEvent._id) === String(input.eventId) ? ctx.focusEvent : null) ||
+        (ctx.calendarSources?.events || []).find(e => String(e._id) === String(input.eventId));
       if (!event) return { error: 'Event not found' };
       if (!event.phone) {
         return { error: 'No phone number stored for this appointment. Please add the business phone number to the event first, then try again.' };
       }
 
-      const dateLabel = format(new Date(event.startDate), 'MMMM d, yyyy');
-      const nameClause = input.callerName ? ` for ${input.callerName}` : '';
-
-      let systemPrompt, firstMessage;
-
-      if (input.action === 'cancel') {
-        firstMessage = `Hi, this is ${ASSISTANT_NAME}, an AI assistant calling to cancel an appointment${nameClause} — the ${event.title} scheduled for ${dateLabel}.`;
-        systemPrompt =
-          `You are ${ASSISTANT_NAME}, an AI assistant making a phone call on behalf of a household client${nameClause} to cancel an appointment. If asked who's calling, say you're ${ASSISTANT_NAME}, an AI assistant calling on the client's behalf.\n` +
-          `Appointment: "${event.title}" on ${dateLabel}.\n` +
-          `Goal: cancel this appointment and confirm the cancellation before ending the call.\n` +
-          `If you reach voicemail, leave this message: "Hi, this is ${ASSISTANT_NAME}, an AI assistant calling to cancel the ${event.title} appointment scheduled for ${dateLabel}${nameClause}. Please confirm this cancellation. Thank you." Then hang up.\n` +
-          `Be polite, patient, and professional. Navigate any IVR menus calmly.` +
-          (input.additionalInstructions ? `\nAdditional context: ${input.additionalInstructions}` : '');
-      } else {
-        const newTime = input.newDateTime || 'the earliest available time';
-        firstMessage = `Hi, this is ${ASSISTANT_NAME}, an AI assistant calling to reschedule an appointment${nameClause} — the ${event.title} that's currently scheduled for ${dateLabel}.`;
-        systemPrompt =
-          `You are ${ASSISTANT_NAME}, an AI assistant making a phone call on behalf of a household client${nameClause} to reschedule an appointment. If asked who's calling, say you're ${ASSISTANT_NAME}, an AI assistant calling on the client's behalf.\n` +
-          `Current appointment: "${event.title}" on ${dateLabel}.\n` +
-          `Requested new time: ${newTime}.\n` +
-          `Goal: reschedule to the requested time (or nearest available) and confirm the new date and time before ending the call.\n` +
-          `If you reach voicemail, ask them to call back to reschedule the ${event.title} appointment from ${dateLabel}.\n` +
-          `Be polite, patient, and professional. Navigate any IVR menus calmly.` +
-          (input.additionalInstructions ? `\nAdditional context: ${input.additionalInstructions}` : '');
+      // Weekly call-time budget pre-check (mirrors meterCallSeconds on the direct
+      // routes): once the household/user is at/over its seconds cap, block the
+      // next call and tell the user to upgrade.
+      const callBudget = await callSecondsStatus({ household: ctx.household, user: ctx.user });
+      if (callBudget.exceeded) {
+        return { error: `You’ve used all your assistant call time for this week (${Math.round(callBudget.limit / 60)} min on the ${callBudget.plan} plan). Upgrade for more, or try again after the weekly reset.` };
       }
 
-      const phone = normalizePhone(event.phone);
-      const { data } = await axios.post(
-        'https://api.vapi.ai/call/phone',
-        {
-          phoneNumberId,
-          customer: { number: phone },
-          assistant: {
-            firstMessage,
-            model: {
-              provider: 'anthropic',
-              model: 'claude-haiku-4-5-20251001',
-              messages: [{ role: 'system', content: systemPrompt }],
-            },
-            voice: {
-              provider: '11labs',
-              voiceId: '9BWtsMINqrJLrRacOk9x', // Aria — natural, clear voice
-            },
-            endCallPhrases: ['goodbye', 'bye', 'have a great day', 'take care', 'thank you so much'],
-            recordingEnabled: true,
-          },
-        },
-        { headers: { Authorization: `Bearer ${vapiKey}` } },
-      );
+      // Shared with the event view's "Call to Cancel" card (services/phoneCalls).
+      // The user's phone/email ride along only when they explicitly agreed
+      // (spec: contact details are per-call opt-in); the name is always given.
+      const row = await placeCall({
+        userId: ctx.userId,
+        householdId: ctx.household?._id,
+        event,
+        action: input.action,
+        callerName: input.callerName,
+        newDateTime: input.newDateTime,
+        additionalInstructions: input.additionalInstructions,
+        contact: input.shareContactDetails === true
+          ? {
+              name: [ctx.user.firstName, ctx.user.lastName].filter(Boolean).join(' ') || undefined,
+              phone: ctx.user.phone || undefined,
+              email: ctx.user.email || undefined,
+            }
+          : undefined,
+      });
 
       return {
         success: true,
-        callId: data.id,
-        phone,
-        message: `Call queued to ${phone}. The AI voice agent will handle the conversation. Use check_call_status with callId "${data.id}" to get the outcome (usually ready in 2–5 minutes).`,
+        callId: row.callId,
+        phone: row.phone,
+        message: `Call queued to ${row.phone}. The AI voice agent will handle the conversation. Use check_call_status with callId "${row.callId}" to get the outcome (usually ready in 2–5 minutes).`,
       };
     }
 
@@ -334,17 +376,39 @@ async function executeTool(name, input, ctx) {
       const vapiKey = process.env.VAPI_API_KEY;
       if (!vapiKey) return { error: 'VAPI_API_KEY is not configured on the server' };
 
-      const { data } = await axios.get(
-        `https://api.vapi.ai/call/${input.callId}`,
-        { headers: { Authorization: `Bearer ${vapiKey}` } },
-      );
+      // The chat history the client resends is text-only, so a follow-up turn
+      // often has no callId — fall back to the household's most recent call.
+      let callId = input.callId;
+      if (!callId) {
+        const latest = await PhoneCall.findOne({ userId: { $in: scopeIds } }).sort({ createdAt: -1 }).lean();
+        if (!latest) return { error: 'No calls have been placed yet.' };
+        callId = latest.callId;
+      }
 
+      const data = await fetchVapiCall(callId);
+
+      // Keep the stored call record in step, and count an in-chat status check
+      // as having seen the outcome (no badge for a result the user just read).
+      try {
+        const row = await PhoneCall.findOne({ callId });
+        if (row) {
+          await applyVapiToRow(row, data);
+          if (PhoneCall.isTerminal(row.status) && !row.seenAt) {
+            row.seenAt = new Date();
+            await row.save();
+          }
+        }
+      } catch (e) {
+        console.error('PhoneCall record update failed:', e.message);
+      }
+
+      // Summary only — the full transcript never enters model context (spec).
+      // The user can read the transcript on the call detail view in the app.
       return {
         status: data.status,
         endedReason: data.endedReason ?? null,
         durationSeconds: data.callLength ?? null,
-        summary: data.summary ?? null,
-        transcript: data.transcript ?? null,
+        summary: data.summary ?? data.analysis?.summary ?? null,
       };
     }
 
@@ -387,118 +451,81 @@ async function executeTool(name, input, ctx) {
   }
 }
 
-function computeAge(birthday) {
-  const today = new Date();
-  const bday = new Date(birthday);
-  let age = today.getFullYear() - bday.getFullYear();
-  const m = today.getMonth() - bday.getMonth();
-  if (m < 0 || (m === 0 && today.getDate() < bday.getDate())) age--;
-  return age;
-}
-
-// Load the household's people (family + friends, incl. the self "You" record).
-async function loadPeople(req) {
-  await Person.ensureSelf(req.user);
-  return Person.find({ userId: { $in: req.scopeIds } }).sort({ type: 1, name: 1 }).lean();
-}
-
-function buildSystemPrompt(req, people) {
+function buildSystemPrompt(req, focusEvent = null) {
   const today = new Date().toISOString();
   const userName = req.user.name || 'the user';
-  const selfId = String(req.user._id);
 
-  function buildPeopleSection(list) {
-    if (!list.length) return 'None added yet.';
-    return list.map(p => {
-      const isYou = String(p.accountId) === selfId;
-      const parts = [isYou ? `${p.name} (you)` : p.name];
-      if (p.relationship) parts.push(`(${p.relationship})`);
-      if (p.birthday) {
-        const age = computeAge(p.birthday);
-        parts.push(`Age: ${age} (Birthday: ${format(new Date(p.birthday), 'MMMM d')})`);
-      }
-      if (p.address)      parts.push(`Address: ${p.address}`);
-      if (p.interests?.length) parts.push(`Interests: ${p.interests.join(', ')}`);
-      if (p.notes) parts.push(`Notes: ${p.notes}`);
-      return parts.join(' — ');
-    }).join('\n');
-  }
-
-  const familySection = buildPeopleSection(people.filter(p => p.type === 'family'));
-  const friendsSection = buildPeopleSection(people.filter(p => p.type === 'friend'));
+  // "Ask Calen" from an event: pin the event so "this appointment" resolves
+  // without a list_events round-trip (and despite E2EE-sealed DB rows).
+  // Phone number by presence only — the server dials, the model never needs it.
+  const focusSection = focusEvent
+    ? `\n## Focused event
+The user opened this chat from a specific event — when they say "this appointment/event", they mean:
+- Title: ${focusEvent.title}
+- Event id: ${focusEvent._id}
+- When: ${focusEvent.startDate || 'unknown'}${focusEvent.allDay ? ' (all-day)' : ''}
+- Calendar: ${focusEvent.calendarType || 'unknown'}${focusEvent.location ? `\n- Location: ${focusEvent.location}` : ''}
+- Business phone on file: ${focusEvent.phone ? 'yes' : 'none'}
+You may pass this event id directly to call_business / open_edit_event_form / open_delete_event_form without calling list_events first.${focusEvent.phone ? '' : '\nThere is no phone number stored, so before placing any call ask the user to add the business number to the event.'}\n`
+    : '';
 
   return `You are ${ASSISTANT_NAME}, the friendly assistant in the Calen app, managing a family's home calendar. Today is ${today}. You are assisting ${userName}.
-If asked who you are, say you're ${ASSISTANT_NAME} and that in this chat you can see the household calendar and household members (each area of the app has its own ${ASSISTANT_NAME} chat with its own context — this one doesn't see trips, maintenance items, or recipes).
-
-## Household Members
-${familySection}
-
-## Friends
-${friendsSection}
-
-Use the above information when:
-- Suggesting family activities or outings (consider everyone's interests and any notes)
-- Recommending who to get together with this week or upcoming weeks based on the calendar
-- Deciding whose name to give when calling a business (default to ${userName})
+If asked who you are, say you're ${ASSISTANT_NAME} and that in this chat you can see the household calendar, the names of household members, and the user's saved professionals (each area of the app has its own ${ASSISTANT_NAME} chat with its own context — this one doesn't see trips, maintenance items, or recipes).
+${focusSection}
+## Household members & professionals
+Call get_household_members when the conversation involves who is in the household (e.g. suggesting a family outing, deciding who to invite) or which saved professional handles something (e.g. the plumber, the vet, the dentist). Household members and friends come back as NAMES ONLY — no other personal details (no birthdays, addresses, interests, or notes). Saved professionals also include the business details the user saved them for (service, business name, address); their phone/email are shown only as "on file" flags — the app dials or emails on the user's behalf, so you never see the real values. Don't guess or invent details about people; if you need something only the user knows, ask them.
 
 You have access to stored weather forecast data via get_weather_forecast. Use it when the user asks about the weather, wants to plan outdoor activities, or when suggesting good days for outdoor events.
 
-Use list_events to see what's scheduled. It returns EVERY calendar shown on the user's calendar page, and recurring items are already expanded into their individual occurrences in the requested range (each carries a "recurrence" summary of its repeat pattern, so you understand the cadence). The calendars are:
+Use list_events to see what's scheduled. It returns EVERY calendar shown on the user's calendar page as titles + dates, and recurring items are already expanded into their individual occurrences in the requested range (each carries a "recurrence" summary of its repeat pattern, so you understand the cadence). Call get_event_details when you need one event's description or location. The calendars are:
 - Maintenance: Home maintenance task occurrences (read-only — managed separately)
 - Chores: Household chore occurrences (read-only — managed separately)
 - Activities: Family activities, events, outings, social plans (editable events)
 - Appointments: Doctor visits, meetings, service appointments (editable events)
 - Meals: Planned recipes from the meal calendar (read-only here)
 - Grocery days: Scheduled grocery shopping days (read-only)
-- Birthdays: Household & friends' birthday occurrences (read-only)
-- Vacations: Trips with their date range(s) and status — DATES ONLY. You can see WHEN trips are, but not the bookings/itinerary inside them. If the user asks about what's planned within a trip (flights, hotels, activities, costs), tell them to open the Vacation Assistant from the Vacations page, which has the full itinerary.
+- Trips: Trips with their date range(s) and status — DATES ONLY. You can see WHEN trips are, but not the bookings/itinerary inside them. If the user asks about what's planned within a trip (flights, hotels, activities, costs), tell them to open the Trip Assistant from the Trips page, which has the full itinerary.
+(Birthdays are not shared with this chat.)
 
-You can only create, edit, or delete Activities and Appointments (calendar events). Maintenance, chores, meals, grocery days, birthdays, and vacations are managed elsewhere — surface them for planning, but don't try to modify them.
+You can only create, edit, or delete Activities and Appointments (calendar events). Maintenance, chores, meals, grocery days, and trips are managed elsewhere — surface them for planning, but don't try to modify them.
 
 You do NOT directly create, edit, or delete events. Instead, you open the appropriate form pre-filled with details and let the user review and confirm the action.
 - To add an event: call open_create_event_form with the details the user provided. Then briefly recap the event's details and tell the user they can tap "Save this to my calendar" to add it, or "Edit in form" to review and adjust it first. Do NOT say you've already opened a form or already saved the event — nothing is saved until the user taps one of those.
 - To edit/update an event: call list_events to find the event ID, then call open_edit_event_form. In your reply, tell the user what to change in the form.
 - To delete an event: call list_events to find the event ID, then call open_delete_event_form. Tell the user to click the Delete button in the form.
 
-You can also place AI phone calls (via Vapi) to businesses to cancel or reschedule appointments using call_business. Before calling:
-1. Confirm the appointment has a phone number stored (list_events to check). If not, ask the user to add one.
+You can also place AI phone calls (via Vapi) to businesses to cancel or reschedule appointments using call_business. You never see phone numbers — "phoneOnFile" tells you whether one is stored, and the app dials it. Before calling:
+1. Confirm the appointment has a phone number on file (phoneOnFile from list_events / get_event_details). If not, ask the user to add one.
 2. Use ${userName} as the caller name unless the user specifies otherwise.
 3. For reschedules, confirm the desired new date/time before calling.
+4. Only set shareContactDetails if the user explicitly agreed the business may verify their phone/email.
 After placing a call, tell the user it's in progress and offer to check the status with check_call_status.
 
-Always confirm what you've done. Ask for clarification when dates, names, or intentions are ambiguous.`;
-}
-
-// Birthdays (people + the user's own) falling within the next `days` days.
-function upcomingBirthdays(people, days = 30) {
-  const now = new Date();
-  const horizon = new Date();
-  horizon.setDate(horizon.getDate() + days);
-  const out = [];
-  for (const p of people) {
-    if (!p.birthday) continue;
-    const b = new Date(p.birthday);
-    const occ = new Date(now.getFullYear(), b.getMonth(), b.getDate());
-    if (occ < now) occ.setFullYear(now.getFullYear() + 1);
-    if (occ <= horizon) out.push({ name: p.name, date: occ });
-  }
-  return out.sort((a, b) => a.date - b.date);
+Always confirm what you've done. Ask for clarification when dates, names, or intentions are ambiguous.
+${navPromptSection('calendar')}`;
 }
 
 function buildContextSummary(people, includePersonalInfo = true) {
-  const count = people.length;
   const sees = [
-    'Every calendar — activities, appointments, maintenance, chores, meals & grocery days',
-    'Recurring items expanded into each occurrence',
-    'Vacation dates (the itinerary lives in the Vacation Assistant)',
+    'Every calendar — activities, appointments, maintenance, chores, meals, grocery days & trip dates',
   ];
-  // Only advertise access to household details when the privacy toggle allows it —
-  // otherwise the panel would claim to "see" people the prompt never receives.
+  // Only advertise access to household/professional details when the privacy
+  // toggle allows it — otherwise the panel would claim to "see" people the chat
+  // never receives. Household & friends are names only (spec: no birthdays,
+  // interests, addresses, or notes); saved professionals additionally share the
+  // business details they were saved for, but phone/email stay "on file".
   if (includePersonalInfo) {
+    const named = people.filter((p) => p.type === 'family' || p.type === 'friend').length;
+    const pros = people.filter((p) => p.type === 'service').length;
     sees.push(
-      count
-        ? `Your household & friends (${count} ${count === 1 ? 'person' : 'people'}, with birthdays & interests)`
-        : 'Your household members & friends',
+      named
+        ? `Your household & friends — names only (${named} ${named === 1 ? 'person' : 'people'})`
+        : 'Your household members & friends — names only',
+    );
+    sees.push(
+      pros
+        ? `Your saved professionals — business name, service & address (${pros} ${pros === 1 ? 'contact' : 'contacts'}); phone & email stay "on file"`
+        : 'Your saved professionals — business name, service & address; phone & email stay "on file"',
     );
   }
   sees.push('The weather forecast');
@@ -516,33 +543,26 @@ function buildContextSummary(people, includePersonalInfo = true) {
   };
 }
 
-function buildSuggestedPrompts(people) {
-  const prompts = ["What's on my calendar this week?"];
-  const bdays = upcomingBirthdays(people);
-  if (bdays.length) {
-    prompts.push(`${bdays[0].name}'s birthday is coming up — plan something?`);
-  }
-  prompts.push('Suggest a family activity this weekend');
-  prompts.push('Find a good-weather day for an outdoor outing');
-  return prompts.slice(0, 4);
+function buildSuggestedPrompts() {
+  return [
+    "What's on my calendar this week?",
+    'Suggest a family activity this weekend',
+    'Find a good-weather day for an outdoor outing',
+  ];
 }
 
-// Context + starter prompts shown when the assistant first opens.
-// GET = dual-write DB read; POST additionally accepts the client's decrypted
-// `people` (§9.1 P4 polish) so the "what I can see" panel and starter prompts
-// stay accurate after the plaintext drop, when loadPeople returns sealed rows.
+// Context + starter prompts shown when the assistant first opens. C3b: the roster
+// is sealed, so the client sends its decrypted `people` (POST) for the "what I can
+// see" panel + starter prompts; there is no server read.
 async function contextHandler(req, res) {
   try {
     const src = req.method === 'GET' ? req.query : (req.body || {});
-    // Privacy toggle: when off, don't load household contacts, so the panel and
-    // starter prompts don't surface people the assistant can't use.
+    // Privacy toggle: when off, don't surface household contacts.
     const includePersonalInfo = String(src.includePersonalInfo) !== 'false' && src.includePersonalInfo !== false;
-    const people = includePersonalInfo
-      ? (Array.isArray(src.people) ? src.people : await loadPeople(req))
-      : [];
+    const people = includePersonalInfo && Array.isArray(src.people) ? src.people : [];
     res.json({
       context: buildContextSummary(people, includePersonalInfo),
-      suggestedPrompts: buildSuggestedPrompts(people),
+      suggestedPrompts: buildSuggestedPrompts(),
     });
   } catch (err) {
     console.error('Calendar chat context error:', err);
@@ -555,6 +575,22 @@ router.post('/context', contextHandler);
 router.post('/', meter('chat', 'calendar'), async (req, res) => {
   try {
     const { messages, people: clientPeople, calendarSources, weather, includePersonalInfo = true } = req.body;
+    // "Ask Calen" opened from an event's detail screen: the client sends the
+    // (decrypted) event so "cancel this appointment" needs no lookup — and works
+    // on E2EE households where the server can't read the stored event. Keep only
+    // the fields the prompt and call_business need.
+    const fe = req.body.focusEvent;
+    const focusEvent = fe && typeof fe === 'object' && fe._id
+      ? {
+          _id: String(fe._id),
+          title: typeof fe.title === 'string' ? fe.title : '',
+          startDate: typeof fe.startDate === 'string' ? fe.startDate : undefined,
+          allDay: fe.allDay !== false,
+          calendarType: typeof fe.calendarType === 'string' ? fe.calendarType : undefined,
+          location: typeof fe.location === 'string' ? fe.location : undefined,
+          phone: typeof fe.phone === 'string' ? fe.phone : undefined,
+        }
+      : null;
     if (!Array.isArray(messages) || messages.length === 0) {
       return res.status(400).json({ error: 'messages array is required' });
     }
@@ -572,16 +608,19 @@ router.post('/', meter('chat', 'calendar'), async (req, res) => {
     // sends includePersonalInfo:false, withhold the household contact list from the
     // prompt entirely — including the DB fallback — so no names/addresses/birthdays
     // reach the model. The assistant still works on the calendar itself.
-    const people = includePersonalInfo
-      ? (Array.isArray(clientPeople) ? clientPeople : await loadPeople(req))
-      : [];
-    const systemPrompt = buildSystemPrompt(req, people);
+    // Signal-parity C3b: the roster is sealed in the opaque store, so the client
+    // supplies its decrypted people; there is no server-plaintext fallback.
+    // Spec (name-only): the client sends {name, type, isSelf} projections; they
+    // reach the model only when it calls get_household_members — never the
+    // system prompt.
+    const people = includePersonalInfo && Array.isArray(clientPeople) ? clientPeople : [];
+    const systemPrompt = buildSystemPrompt(req, focusEvent);
     const client = new Anthropic({ apiKey });
 
     // Free tier gets the fast Haiku model; paid tiers get the smarter Sonnet.
     const config = await getConfig();
-    const plan = req.household?.plan || 'free';
-    const model = plan === 'free' ? config.models.freeChat : config.models.paidChat;
+    // Sonnet on all tiers: every plan uses the paid chat model.
+    const model = config.models.paidChat;
 
     await streamChat(res, {
       req,
@@ -592,8 +631,10 @@ router.post('/', meter('chat', 'calendar'), async (req, res) => {
       messages,
       executeTool: (name, input) => executeTool(name, input, {
         userId, scopeIds: req.scopeIds, user: req.user, household: req.household,
+        people,
         calendarSources: (calendarSources && typeof calendarSources === 'object') ? calendarSources : null,
         weather: (weather && typeof weather === 'object') ? weather : null,
+        focusEvent,
       }),
       collectSideEffects: (block, result, acc) => {
         if (result && result.navigateTo) acc.navigateTo = result.navigateTo;
@@ -601,11 +642,20 @@ router.post('/', meter('chat', 'calendar'), async (req, res) => {
         // the client can offer "Save this to my calendar" (create it directly) or
         // "Edit in form" (open the create form pre-filled). Keep the last one.
         if (block.name === 'open_create_event_form') acc.pendingEvent = block.input;
+        if (block.name === 'call_business' && result && result.success) acc.callPlaced = true;
+        collectNav(block, acc, 'calendar');
       },
       // After drafting an event, the only two sensible next actions are to save it
       // or tweak it in the form — pin those instead of generated free-text chips.
-      followupsOverride: (acc) =>
-        acc.pendingEvent ? ['Save this to my calendar', 'Edit in form'] : null,
+      // After placing a call, pin a status-check chip (the result takes a few
+      // minutes; free-text chips would just guess at phrasing).
+      // Otherwise guarantee an actionable navigate chip is present.
+      followupsOverride: (acc) => {
+        ensureActionableNav(acc, 'calendar', !!acc.pendingEvent);
+        if (acc.pendingEvent) return ['Save this to my calendar', 'Edit in form'];
+        if (acc.callPlaced) return ['Any update on the call?'];
+        return null;
+      },
     });
   } catch (err) {
     console.error('Calendar chat error:', err);

@@ -84,7 +84,7 @@ function dayHeading(dateStr: string): string {
 // ── Item assembly ───────────────────────────────────────────────────────────
 
 // Flatten CalendarData + holidays into PrintItems, keeping only the selected
-// calendars. Trips map to `vacations`, tasks to `maintenance`, meal schedules
+// calendars. Trips map to `trips`, tasks to `maintenance`, meal schedules
 // to `recipes` — the same ids the Calendars checklist toggles.
 export function collectPrintItems(
   data: CalendarData,
@@ -125,11 +125,11 @@ export function collectPrintItems(
       items.push({ calendarId: 'recipes', title, date: storedDate(r.scheduledDate), allDay: true });
     }
   }
-  if (selectedIds.has('vacations')) {
+  if (selectedIds.has('trips')) {
     for (const t of data.trips ?? []) {
       for (const r of t.ranges ?? []) {
         items.push({
-          calendarId: 'vacations', title: t.name,
+          calendarId: 'trips', title: t.name,
           date: storedDate(r.start), endDate: storedDate(r.end), allDay: true,
         });
       }

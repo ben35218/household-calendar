@@ -66,11 +66,11 @@ test('toSeries takes the most recent N periods oldest→newest', () => {
 test('chatSurfaceTotals aggregates nested breakdown, sorted desc', () => {
   const maps = [
     { p1: { breakdown: { chat: { calendar: 3, maintenance: 1 } } } },
-    { p2: { breakdown: { chat: { calendar: 2, vacation: 5 } } } },
+    { p2: { breakdown: { chat: { calendar: 2, trips: 5 } } } },
   ];
   const out = chatSurfaceTotals(maps);
   assert.deepEqual(out[0], { surface: 'calendar', count: 5 });
-  assert.deepEqual(out.find((x) => x.surface === 'vacation'), { surface: 'vacation', count: 5 });
+  assert.deepEqual(out.find((x) => x.surface === 'trips'), { surface: 'trips', count: 5 });
   assert.equal(out.find((x) => x.surface === 'maintenance').count, 1);
 });
 

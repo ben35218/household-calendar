@@ -1,18 +1,30 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { View, Text, StyleSheet, ActivityIndicator, Alert, TouchableOpacity } from 'react-native';
+import { View, Text, StyleSheet, ActivityIndicator, Alert, TouchableOpacity, Linking, Share, ActionSheetIOS, Platform } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { cacheDirectory, downloadAsync } from 'expo-file-system/legacy';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import { calendarApi, invitationsApi, placesApi, settingsApi, FormAssistField } from '../../api';
+import { calendarApi, invitationsApi, placesApi, settingsApi, eventAttachmentsApi, EventAttachment, FormAssistField } from '../../api';
+import { API_URL } from '../../config';
+import { getCachedToken } from '../../lib/secureToken';
+import { pickDocument, takePhoto, pickImage, PickedFile } from '../../lib/media';
+import { uploadFile } from '../../lib/upload';
+import { encryptFileForUpload, decryptDownloadedFile } from '../../lib/attachments';
+import {
+  getQueuedAttachments, addQueuedAttachment, removeQueuedAttachment,
+  clearQueuedAttachments, useQueuedAttachments,
+} from '../../lib/attachmentDraft';
 import { Button, Input, Select, Screen, SwitchRow, SectionTitle, DateField, TimeField, useHeaderCheckButton, FormError, CenteredLoader, Hint, ScreenTitle, BottomSheet, Card, ListRow, InfoCard } from '../../components/ui';
 import FormAssist from '../../components/FormAssist';
 import { form as formStyles } from '../../components/formStyles';
 import { useFormAssist } from '../../hooks/useFormAssist';
-import PlacesAutocomplete from '../../components/PlacesAutocomplete';
 import { EVENT_CALENDAR_TYPES, ymd } from '../../lib/calendar';
 import { useCalendarColors, useCustomCalendars, useDeletedDefaultCalendars } from '../../lib/calendarPrefs';
-import { sealNew, sealUpdate, openRecord } from '../../lib/e2ee';
+import {
+  sealNew, sealUpdate, openRecord, getHDK, newObjectId,
+  loadCalendarKeys, currentCalendarKeyVersion, sealForCalendar,
+} from '../../lib/e2ee';
 import { getFeedEventById, FEED_EVENT_ID_PREFIX } from '../../lib/calendarFeeds';
 import { formatDuration } from '../../lib/format';
 import WheelPicker, { WHEEL_ITEM_H, WHEEL_VISIBLE } from '../../components/WheelPicker';
@@ -24,6 +36,7 @@ import { inviteeKey, sendInvitations } from '../../lib/invitees';
 import { useTravelDraft, clearTravelDraft } from '../../lib/travelDraft';
 import { RepeatRule, WeekdayKind, isCustomRule, repeatSummary } from '../../lib/eventRepeat';
 import { useRepeatDraft, clearRepeatDraft } from '../../lib/repeatDraft';
+import { useLocationDraft, clearLocationDraft } from '../../lib/locationDraft';
 import { CalendarStackParamList } from '../../navigation/CalendarNavigator';
 import { colors, spacing, radius } from '../../theme';
 
@@ -41,6 +54,23 @@ const ALERT_OPTIONS = [
 
 // Sentinel picker value: opens the custom dual-wheel sheet instead of setting a time.
 const CUSTOM_ALERT = -2;
+
+// Leading glyph for an attachment row, by broad file kind.
+function attachmentIcon(fileType?: string): keyof typeof Ionicons.glyphMap {
+  if (fileType?.includes('pdf')) return 'document-text-outline';
+  if (fileType?.startsWith('image')) return 'image-outline';
+  return 'document-outline';
+}
+
+// File extension for a decrypted attachment's temp filename, from its mime type.
+function extForType(fileType?: string): string {
+  if (fileType?.includes('png')) return 'png';
+  if (fileType?.includes('pdf')) return 'pdf';
+  if (fileType?.includes('heic')) return 'heic';
+  if (fileType?.includes('webp')) return 'webp';
+  if (fileType?.includes('gif')) return 'gif';
+  return 'jpg';
+}
 
 function addMinutesToTime(time: string, minutes: number): string {
   const [h, m] = time.split(':').map(Number);
@@ -160,6 +190,7 @@ const ASSIST_FIELDS: FormAssistField[] = [
   { name: 'startTime', type: 'time', label: 'Start time' },
   { name: 'endTime', type: 'time', label: 'End time' },
   { name: 'location', type: 'text', label: 'Location / address' },
+  { name: 'url', type: 'text', label: 'URL / link' },
   { name: 'phone', type: 'text', label: 'Phone number' },
   { name: 'description', type: 'text', label: 'Notes' },
   { name: 'reminderMinutes', type: 'select', label: 'Alert before event', options: ALERT_OPTIONS },
@@ -211,6 +242,8 @@ export default function EventFormScreen() {
     endTime: '10:00',
     description: '',
     location: '',
+    placeId: '',
+    url: '',
     phone: '',
     fromAddress: '',
     // Travel time is off until enabled on the Travel Time screen. travelManual
@@ -264,6 +297,28 @@ export default function EventFormScreen() {
   const set = (patch: Partial<typeof form>) => {
     setForm((f) => ({ ...f, ...patch }));
     assist.clear(Object.keys(patch));
+  };
+
+  // Upload one picked file as an attachment on `evId`. The E2EE path (encrypt
+  // the bytes on-device when the session is unlocked, upload ciphertext + a
+  // wrapped file key) mirrors the receipts/manuals upload; else plaintext.
+  const uploadAttachment = async (evId: string, file: PickedFile) => {
+    const endpoint = `/calendar/events/${evId}/attachments/upload`;
+    if (getHDK()) {
+      const attId = await newObjectId();
+      const sealed = await encryptFileForUpload('EventAttachment', attId, file.uri);
+      if (sealed) {
+        return uploadFile(endpoint, { uri: sealed.uri, name: `${attId}.bin`, type: 'application/octet-stream' }, 'file', {
+          encrypted: true,
+          _id: attId,
+          wrappedFileKey: sealed.wrappedFileKey,
+          keyVersion: sealed.keyVersion,
+          fileType: file.type || 'application/octet-stream',
+          title: file.name,
+        });
+      }
+    }
+    return uploadFile(endpoint, file, 'file');
   };
 
   // A new event defaults to Activities; if the user deleted that calendar,
@@ -377,6 +432,20 @@ export default function EventFormScreen() {
     }));
   }, [travelDraft]);
   useEffect(() => () => clearTravelDraft(), []);
+
+  // Apply the location picked on the pushed Location view (address + business
+  // phone + placeId; the phone comes back even when cleared there on purpose).
+  const locationDraft = useLocationDraft();
+  useEffect(() => {
+    if (!locationDraft) return;
+    setForm((f) => ({
+      ...f,
+      location: locationDraft.location,
+      phone: locationDraft.phone,
+      placeId: locationDraft.placeId ?? '',
+    }));
+  }, [locationDraft]);
+  useEffect(() => () => clearLocationDraft(), []);
 
   // Apply edits made on the pushed Repeat screen as they happen.
   const repeatDraft = useRepeatDraft();
@@ -518,6 +587,8 @@ export default function EventFormScreen() {
         endTime: e.endDate && !e.allDay ? `${pad(new Date(e.endDate).getHours())}:${pad(new Date(e.endDate).getMinutes())}` : '10:00',
         description: e.description ?? '',
         location: e.location ?? '',
+        placeId: (e as { placeId?: string }).placeId ?? '',
+        url: e.url ?? '',
         phone: e.phone ?? '',
         travelEnabled: e.travelMinutes != null,
         // Auto-computed times always store a distance; a bare minutes value
@@ -588,6 +659,8 @@ export default function EventFormScreen() {
         endDate,
         description: form.description || undefined,
         location: form.location || undefined,
+        placeId: form.placeId || undefined,
+        url: form.url || undefined,
         phone: form.phone || undefined,
         // null (not undefined) so turning travel time off clears the stored
         // values on update — the route skips undefined fields.
@@ -621,15 +694,33 @@ export default function EventFormScreen() {
             }
           : undefined,
       };
+      // Signal-parity D1: an event on an outside-shared calendar we hold a
+      // CalendarKey for seals under that key (enc.ks='cal') so collaborators can
+      // read it — no plaintext feed. Otherwise it dual-writes under the HDK.
+      const calType = String(payload.calendarType);
+      let useCalKey = false;
+      if (calType.startsWith('custom-')) {
+        await loadCalendarKeys(calType).catch(() => {});
+        useCalKey = currentCalendarKeyVersion(calType) > 0;
+      }
       // E2EE dual-write: send ciphertext alongside plaintext (no-op without an HDK).
       if (isEdit) {
-        return calendarApi.updateEvent(eventId!, await sealUpdate('CalendarEvent', eventId!, payload));
+        const sealed = useCalKey
+          ? await sealForCalendar('CalendarEvent', eventId!, calType, payload)
+          : null;
+        const body = sealed ? { ...payload, ...sealed } : await sealUpdate('CalendarEvent', eventId!, payload);
+        return calendarApi.updateEvent(eventId!, body);
       }
       // guestListVisible is a plaintext scope field the server enforces. It is
       // set on the Invitees screen: sent here on create only (edits PUT it from
       // that screen directly) and kept OUT of the sealed content subset, so a
       // later plaintext-only toggle can't be undone by a stale enc merge.
       const create = { ...payload, guestListVisible: getDraftGuestListVisible() };
+      if (useCalKey) {
+        const _id = await newObjectId();
+        const sealed = await sealForCalendar('CalendarEvent', _id, calType, payload);
+        if (sealed) return calendarApi.createEvent({ _id, ...create, ...sealed });
+      }
       return calendarApi.createEvent(await sealNew('CalendarEvent', create, payload));
     },
     onSuccess: async (res) => {
@@ -643,11 +734,21 @@ export default function EventFormScreen() {
           await sendInvitations(res.data._id, queued, buildSnapshot());
           clearQueuedInvitees();
         }
+        // Attachments picked on the draft form upload now that the event exists.
+        // A failed upload is dropped (the form is already closing) rather than
+        // blocking the save the user just confirmed.
+        const queuedFiles = getQueuedAttachments();
+        for (const f of queuedFiles) {
+          try { await uploadAttachment(res.data._id, f); } catch { /* keep going */ }
+        }
+        clearQueuedAttachments();
       }
       qc.invalidateQueries({ queryKey: ['calendar'] });
       navigation.goBack();
     },
-    onError: (e: any) => setError(e.response?.data?.error || 'Save failed'),
+    // Surface save failures (e.g. the E2EE write-guard rejecting a locked save)
+    // as a prominent alert rather than easily-missed inline text at the bottom.
+    onError: (e: any) => Alert.alert("Couldn't save event", e.response?.data?.error || 'Save failed'),
   });
 
   const del = useMutation({
@@ -671,6 +772,80 @@ export default function EventFormScreen() {
   useEffect(() => {
     if (readOnlyView) navigation.setOptions({ title: 'Event' });
   }, [navigation, readOnlyView]);
+
+  // ── Attachments ──────────────────────────────────────────────────────────
+  // A saved event loads its attachments from the server; a NEW event stages
+  // picked files in the draft store and uploads them after the save creates the
+  // event (see the save mutation's onSuccess).
+  const attachmentsQ = useQuery({
+    queryKey: ['calendar', 'attachments', eventId],
+    queryFn: async () => (await eventAttachmentsApi.list(eventId!)).data,
+    enabled: isEdit && !!eventQ.data && !readOnlyView,
+  });
+  const queuedAttachments = useQueuedAttachments();
+  // Start each new form with an empty queue (an abandoned draft leaves picks behind).
+  useEffect(() => {
+    if (!isEdit) clearQueuedAttachments();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Upload a pick to a saved event (new events queue it instead).
+  const addAttachment = useMutation({
+    mutationFn: (file: PickedFile) => uploadAttachment(eventId!, file),
+    onSuccess: () => attachmentsQ.refetch(),
+    onError: (e: any) => Alert.alert('Upload failed', e.response?.data?.error || 'Could not upload that file.'),
+  });
+
+  const onPickFile = (file: PickedFile | null) => {
+    if (!file) return;
+    if (isEdit) addAttachment.mutate(file);
+    else addQueuedAttachment(file);
+  };
+
+  // Add-attachment source picker: camera / photo library / file (PDF etc.).
+  const openAttachmentPicker = () => {
+    const cam = async () => onPickFile(await takePhoto());
+    const lib = async () => onPickFile(await pickImage());
+    const doc = async () => onPickFile(await pickDocument());
+    if (Platform.OS === 'ios') {
+      ActionSheetIOS.showActionSheetWithOptions(
+        { options: ['Take Photo', 'Choose Photo', 'Choose File', 'Cancel'], cancelButtonIndex: 3 },
+        (i) => { if (i === 0) cam(); else if (i === 1) lib(); else if (i === 2) doc(); }
+      );
+    } else {
+      Alert.alert('Add attachment', undefined, [
+        { text: 'Take Photo', onPress: cam },
+        { text: 'Choose Photo', onPress: lib },
+        { text: 'Choose File', onPress: doc },
+        { text: 'Cancel', style: 'cancel' },
+      ]);
+    }
+  };
+
+  // Open a saved attachment: encrypted ones download as ciphertext, decrypt
+  // on-device to a temp file, then share/open; plaintext ones open directly.
+  const openAttachment = useMutation({
+    mutationFn: async (a: EventAttachment) => {
+      const dlUrl = `${API_URL}/calendar/attachments/${a._id}/download`;
+      if (!a.encrypted) { await Linking.openURL(`${dlUrl}?token=${getCachedToken()}`); return; }
+      if (!getHDK() || !a.wrappedFileKey) throw new Error('Unlock your account to open this encrypted attachment.');
+      const cipherUri = `${cacheDirectory}dl-att-${a._id}.bin`;
+      const dl = await downloadAsync(dlUrl, cipherUri, { headers: { Authorization: `Bearer ${getCachedToken()}` } });
+      const plainUri = await decryptDownloadedFile(
+        'EventAttachment', a._id, a.keyVersion, a.wrappedFileKey, dl.uri,
+        `${a.title || 'attachment'}.${extForType(a.fileType)}`,
+      );
+      if (!plainUri) throw new Error('Could not decrypt this attachment.');
+      await Share.share({ url: plainUri });
+    },
+    onError: (e: any) => Alert.alert('Could not open attachment', e?.message || 'Please try again.'),
+  });
+
+  const delAttachment = useMutation({
+    mutationFn: (id: string) => eventAttachmentsApi.delete(id),
+    onSuccess: () => attachmentsQ.refetch(),
+    onError: (e: any) => Alert.alert('Could not remove', e.response?.data?.error || 'Please try again.'),
+  });
 
   // The guest's own invitation, to show who invited them.
   const myInvitesQ = useQuery({
@@ -727,10 +902,14 @@ export default function EventFormScreen() {
     save.mutate();
   };
 
+  // The active calendar's colour, tinting this area's accents (save check, the
+  // Add-attachment row, spinners) per the app's section-accent convention.
+  const accent = cal[form.calendarType] || customCalendars.find((c) => c.id === form.calendarType)?.color || colors.primary;
+
   useHeaderCheckButton(navigation, {
     onPress: onSave,
     loading: save.isPending,
-    color: cal[form.calendarType] || customCalendars.find((c) => c.id === form.calendarType)?.color || colors.primary,
+    color: accent,
     // Guests and calendar collaborators have nothing to save — read-only view below.
     enabled: !readOnlyView,
   });
@@ -844,13 +1023,30 @@ export default function EventFormScreen() {
           style={[formStyles.headInput, assist.changed.has('title') && formStyles.headInputHighlight]}
         />
         <View style={formStyles.cardDivider} />
-        <PlacesAutocomplete
-          value={form.location}
-          onChangeText={(v) => set({ location: v })}
-          placeholder="Location or Video Call"
-          containerStyle={formStyles.headField}
-          inputStyle={[formStyles.headInput, assist.changed.has('location') && formStyles.headInputHighlight]}
-        />
+        {/* Opens the Location view (search + editable details incl. the
+            business phone); the picked values flow back via locationDraft. */}
+        <TouchableOpacity
+          activeOpacity={0.7}
+          onPress={() =>
+            navigation.navigate('EventLocation', {
+              initial: {
+                location: form.location || undefined,
+                phone: form.phone || undefined,
+                placeId: form.placeId || undefined,
+              },
+            })
+          }
+        >
+          <View pointerEvents="none">
+            <Input
+              value={form.location}
+              editable={false}
+              placeholder="Location or Video Call"
+              containerStyle={formStyles.headField}
+              style={[formStyles.headInput, assist.changed.has('location') && formStyles.headInputHighlight]}
+            />
+          </View>
+        </TouchableOpacity>
       </View>
 
       {/* All day / Starts / Ends / Travel Time grouped card */}
@@ -1071,6 +1267,77 @@ export default function EventFormScreen() {
         onClose={() => setCustomFor(null)}
       />
 
+      {/* Attachments — files (photos / PDFs) attached to the event row, so on a
+          recurring event they apply to every occurrence. Encrypted on-device
+          (E2EE) when the session is unlocked. */}
+      <SectionTitle>Attachments</SectionTitle>
+      <View style={formStyles.groupCard}>
+        <TouchableOpacity style={styles.attAddRow} activeOpacity={0.7} onPress={openAttachmentPicker}>
+          <View style={[styles.attAddIcon, { backgroundColor: accent }]}>
+            <Ionicons name="add" size={18} color="#fff" />
+          </View>
+          <Text style={[styles.attAddLabel, { color: accent }]}>Add attachment…</Text>
+          {addAttachment.isPending ? <ActivityIndicator size="small" color={accent} /> : null}
+        </TouchableOpacity>
+        {isEdit
+          ? (attachmentsQ.data ?? []).map((a) => (
+              <View key={a._id}>
+                <View style={formStyles.cardDivider} />
+                <View style={styles.attRow}>
+                  <TouchableOpacity style={styles.attMain} activeOpacity={0.7} onPress={() => openAttachment.mutate(a)}>
+                    <Ionicons name={attachmentIcon(a.fileType)} size={20} color={colors.textMuted} />
+                    <Text style={styles.attName} numberOfLines={1}>{a.title}</Text>
+                    {openAttachment.isPending && openAttachment.variables?._id === a._id ? (
+                      <ActivityIndicator size="small" color={colors.textMuted} />
+                    ) : null}
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.attRemove}
+                    accessibilityLabel="Remove attachment"
+                    onPress={() =>
+                      Alert.alert('Remove attachment?', a.title, [
+                        { text: 'Cancel', style: 'cancel' },
+                        { text: 'Remove', style: 'destructive', onPress: () => delAttachment.mutate(a._id) },
+                      ])
+                    }
+                  >
+                    <Ionicons name="close-circle" size={20} color={colors.textMuted} />
+                  </TouchableOpacity>
+                </View>
+              </View>
+            ))
+          : queuedAttachments.map((f, i) => (
+              <View key={`${f.uri}-${i}`}>
+                <View style={formStyles.cardDivider} />
+                <View style={styles.attRow}>
+                  <View style={styles.attMain}>
+                    <Ionicons name={attachmentIcon(f.type)} size={20} color={colors.textMuted} />
+                    <Text style={styles.attName} numberOfLines={1}>{f.name}</Text>
+                  </View>
+                  <TouchableOpacity style={styles.attRemove} accessibilityLabel="Remove attachment" onPress={() => removeQueuedAttachment(i)}>
+                    <Ionicons name="close-circle" size={20} color={colors.textMuted} />
+                  </TouchableOpacity>
+                </View>
+              </View>
+            ))}
+      </View>
+      <Hint>Attachments will be applied to all occurrences.</Hint>
+
+      {/* URL — a single link for the event (e.g. a meeting or info page). */}
+      <SectionTitle>URL</SectionTitle>
+      <View style={formStyles.groupCard}>
+        <Input
+          value={form.url}
+          onChangeText={(v) => set({ url: v })}
+          placeholder="Add a link…"
+          autoCapitalize="none"
+          autoCorrect={false}
+          keyboardType="url"
+          containerStyle={formStyles.headField}
+          style={[formStyles.headInput, assist.changed.has('url') && formStyles.headInputHighlight]}
+        />
+      </View>
+
       <SectionTitle>Notes</SectionTitle>
       <Input
         value={form.description}
@@ -1112,6 +1379,14 @@ const styles = StyleSheet.create({
   guestStatus: { fontSize: 13, color: colors.textMuted },
   guestNotes: { fontSize: 14, color: colors.text, lineHeight: 20 },
   guestHint: { marginTop: spacing.lg, marginBottom: 0 },
+  // Attachments card
+  attAddRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, padding: spacing.md },
+  attAddIcon: { width: 26, height: 26, borderRadius: 13, alignItems: 'center', justifyContent: 'center' },
+  attAddLabel: { flex: 1, fontSize: 16 },
+  attRow: { flexDirection: 'row', alignItems: 'center', paddingLeft: spacing.md, paddingRight: spacing.xs },
+  attMain: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: spacing.sm, paddingVertical: spacing.md },
+  attName: { flex: 1, fontSize: 16, color: colors.text },
+  attRemove: { padding: spacing.sm },
   // Custom alert dual wheel content inside the shared BottomSheet.
   alertSheet: { gap: spacing.sm },
   wheelRow: {

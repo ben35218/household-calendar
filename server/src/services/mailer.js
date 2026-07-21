@@ -49,7 +49,11 @@ function isConfigured() {
 // write failure never surfaces to the caller.
 function logSend({ to, subject, kind, status, error }) {
   if (mongoose.connection.readyState !== 1) return;
-  EmailLog.create({ to, subject, kind: kind || 'other', status, error }).catch((err) => {
+  // C5 (log minimization): never persist a secret through the subject line —
+  // the reset-code email embeds the 6-digit code there, which would land the
+  // code in EmailLog in plaintext, bypassing its bcrypt hash. Mask digit runs.
+  const safeSubject = String(subject || '').replace(/\d{4,}/g, '••••');
+  EmailLog.create({ to, subject: safeSubject, kind: kind || 'other', status, error }).catch((err) => {
     console.error('[mailer] EmailLog write failed:', err.message);
   });
 }
@@ -131,63 +135,6 @@ function downloadLinks() {
   };
 }
 
-// ── Storage-mode / purge lifecycle templates (§6) ───────────────────────────
-
-function sendDeletionScheduled(user, scheduledAt) {
-  const when = fmtDate(scheduledAt);
-  const hi = esc(user.firstName || 'there');
-  return sendMail({
-    to: user.email,
-    subject: 'Your cloud copy is scheduled for deletion',
-    kind: 'deletion_scheduled',
-    text:
-      `Hi ${user.firstName || 'there'},\n\n` +
-      `You switched to storing your data on your device only. Your encrypted cloud ` +
-      `copy will be permanently deleted on ${when}.\n\n` +
-      `If you change your mind, switch back to "Back up in the Cloud" in the app ` +
-      `before then and nothing will be deleted.\n\n` +
-      `After deletion there is no automatic recovery — your device becomes the only ` +
-      `copy of your data.\n`,
-    html: htmlLayout(
-      `<p style="margin:0 0 16px;">Hi ${hi},</p>
-<p style="margin:0 0 16px;">You switched to storing your data on your device only. Your encrypted cloud copy will be permanently deleted on <strong>${when}</strong>.</p>
-<p style="margin:0 0 16px;">If you change your mind, switch back to <strong>Back up in the Cloud</strong> in the app before then and nothing will be deleted.</p>
-<p style="margin:0;color:#6b7280;">After deletion there is no automatic recovery — your device becomes the only copy of your data.</p>`
-    ),
-  });
-}
-
-function sendDeletionCanceled(user) {
-  return sendMail({
-    to: user.email,
-    subject: 'Cloud deletion canceled',
-    kind: 'deletion_canceled',
-    text:
-      `Hi ${user.firstName || 'there'},\n\n` +
-      `You switched back to cloud backup, so the scheduled deletion of your cloud ` +
-      `copy has been canceled. Your data is syncing again.\n`,
-    html: htmlLayout(
-      `<p style="margin:0 0 16px;">Hi ${esc(user.firstName || 'there')},</p>
-<p style="margin:0;">You switched back to cloud backup, so the scheduled deletion of your cloud copy has been <strong>canceled</strong>. Your data is syncing again.</p>`
-    ),
-  });
-}
-
-function sendDeletionPurged(user) {
-  return sendMail({
-    to: user.email,
-    subject: 'Your cloud copy has been deleted',
-    kind: 'deletion_purged',
-    text:
-      `Hi ${user.firstName || 'there'},\n\n` +
-      `As scheduled, your encrypted cloud copy has been permanently deleted. Your ` +
-      `data now lives only on your device.\n`,
-    html: htmlLayout(
-      `<p style="margin:0 0 16px;">Hi ${esc(user.firstName || 'there')},</p>
-<p style="margin:0;">As scheduled, your encrypted cloud copy has been permanently deleted. Your data now lives only on your device.</p>`
-    ),
-  });
-}
 
 // ── Forgot password ──────────────────────────────────────────────────────────
 
@@ -211,6 +158,32 @@ function sendPasswordResetCode(user, code) {
 <div style="background:#f3f4f6;border-radius:8px;padding:16px;text-align:center;font-size:28px;letter-spacing:6px;font-weight:700;font-family:ui-monospace,Menlo,Consolas,monospace;color:#1f2937;">${esc(code)}</div>
 <p style="margin:16px 0;">Enter it in the app within <strong>15 minutes</strong> to choose a new password. If you didn't request this, you can ignore this email — your password is unchanged.</p>
 <p style="margin:0;color:#6b7280;">Note: if you use encrypted sync, resetting your password does not unlock your encrypted data — you'll be asked for Face&nbsp;ID / Touch&nbsp;ID or your recovery code afterwards.</p>`
+    ),
+  });
+}
+
+// "New device signed in" (Signal-parity F3) — the out-of-band takeover signal.
+// Also carries the F1 hold notice when a password reset is pending from an
+// unknown device.
+function sendNewDeviceAlert(user, device, { holdUntil } = {}) {
+  const where = `${device.deviceName}${device.platform ? ` (${device.platform})` : ''}`;
+  const holdText = holdUntil
+    ? `\n\nA password reset was also requested from that device. For your security it will not take effect until ${fmtDate(holdUntil)}. If this wasn't you, open the app on your usual device and cancel it from Sign-in & Security.\n`
+    : '';
+  return sendMail({
+    to: user.email,
+    subject: holdUntil ? 'Password reset requested from a new device' : 'New sign-in to your Calen account',
+    kind: 'security_alert',
+    text:
+      `Hi ${user.firstName || 'there'},\n\n` +
+      `Your Calen account was just signed in to from a new device: ${where}.\n` +
+      `If this was you, no action is needed.` + holdText +
+      `\nIf this wasn't you, open Calen on your usual device → Profile → Sign-in & Security and sign that device out, then review your security settings.\n`,
+    html: htmlLayout(
+      `<p style="margin:0 0 16px;">Hi ${esc(user.firstName || 'there')},</p>
+<p style="margin:0 0 16px;">Your Calen account was just signed in to from a new device: <strong>${esc(where)}</strong>.</p>
+${holdUntil ? `<p style="margin:0 0 16px;">A password reset was also requested from that device. For your security it will not take effect until <strong>${esc(fmtDate(holdUntil))}</strong>. If this wasn't you, open the app on your usual device and cancel it from Sign-in &amp; Security.</p>` : ''}
+<p style="margin:0;color:#6b7280;">If this was you, no action is needed. If it wasn't, open Calen → Profile → Sign-in &amp; Security and sign that device out.</p>`
     ),
   });
 }
@@ -264,11 +237,18 @@ function sendTripShareInvitation({ toEmail, fromName, tripName, destination, has
 // join their household. Accepting opens a join request; a member then confirms
 // on their device (the household's data is end-to-end encrypted, so the key is
 // granted device-to-device). Ongoing membership, so no code to type.
+// Sender-name framing when the household name is sealed (Signal-parity C2):
+// an E2EE-active household's name never reaches the server, so the email says
+// "Ben invited you to their household" — the sender's display name is account
+// metadata and stays available either way.
 function sendHouseholdInvitation({ toEmail, fromName, householdName, hasAccount }) {
   const inviter = fromName || 'Someone';
   const get = downloadLinks();
+  const invitedLine = householdName
+    ? `${inviter} invited you to join their household “${householdName}” on Calen.`
+    : `${inviter} invited you to join their household on Calen.`;
   const lines = [
-    `${inviter} invited you to join their household “${householdName}” on Calen.`,
+    invitedLine,
     '',
     hasAccount
       ? 'Accept from the Invitations screen in the app. A household member will then confirm you on their device, and you\'ll share the family calendar, tasks, trips, and more.'
@@ -278,14 +258,16 @@ function sendHouseholdInvitation({ toEmail, fromName, householdName, hasAccount 
   ];
   return sendMail({
     to: toEmail,
-    subject: `${inviter} invited you to join “${householdName}”`,
+    subject: householdName
+      ? `${inviter} invited you to join “${householdName}”`
+      : `${inviter} invited you to join their household`,
     kind: 'household_invitation',
     text: lines.join('\n') + '\n',
     html: htmlLayout(
-      `<p style="margin:0 0 16px;"><strong>${esc(inviter)}</strong> invited you to join their household:</p>
-<div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:10px;padding:18px 20px;margin:0 0 20px;">
+      `<p style="margin:0 0 16px;"><strong>${esc(inviter)}</strong> invited you to join their household${householdName ? ':' : ' on Calen.'}</p>
+${householdName ? `<div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:10px;padding:18px 20px;margin:0 0 20px;">
   <div style="font-size:18px;font-weight:700;color:#111827;">${esc(householdName)}</div>
-</div>
+</div>` : ''}
 <p style="margin:0 0 20px;">${
         hasAccount
           ? 'Accept from the <strong>Invitations</strong> screen in the app. A household member will then confirm you on their device, and you\'ll share the family calendar, tasks, trips, and more.'
@@ -368,6 +350,31 @@ function fmtEventWhen(event) {
 // `hasAccount` switches the call-to-action: open the app vs. join the app.
 function sendEventInvitation({ toEmail, fromName, event, hasAccount, ics }) {
   const inviter = fromName || 'Someone';
+  // D3 sealed invite: no plaintext event (it's sealed to the recipient's keys),
+  // so the email is a notice only — no title/when, no .ics. The recipient opens
+  // the decrypted card in the app. This lane is only used for known accounts.
+  if (!event) {
+    const get = downloadLinks();
+    const lines = [
+      `${inviter} invited you to an event.`,
+      '',
+      'Open the Calen app to see the details and accept or decline — the invitation is end-to-end encrypted, so only you can read it.',
+      '',
+      get.text,
+    ];
+    const html = htmlLayout(
+      `<p style="margin:0 0 16px;"><strong>${esc(inviter)}</strong> invited you to an event.</p>
+<p style="margin:0 0 20px;">Open the <strong>Calen</strong> app to see the details and accept or decline — the invitation is end-to-end encrypted, so only you can read it.</p>
+<div style="text-align:center;margin:0 0 4px;">${get.html}</div>`
+    );
+    return sendMail({
+      to: toEmail,
+      subject: `${inviter} invited you to an event`,
+      kind: 'event_invitation',
+      text: lines.join('\n') + '\n',
+      html,
+    });
+  }
   const when = fmtEventWhen(event);
   const get = downloadLinks();
   const lines = [
@@ -459,9 +466,7 @@ module.exports = {
   isConfigured,
   sendMail,
   sendPasswordResetCode,
-  sendDeletionScheduled,
-  sendDeletionCanceled,
-  sendDeletionPurged,
+  sendNewDeviceAlert,
   sendEventInvitation,
   sendCalendarInvitation,
   sendTripShareInvitation,

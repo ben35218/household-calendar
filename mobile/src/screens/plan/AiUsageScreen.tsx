@@ -1,13 +1,19 @@
 import React from 'react';
 import { View, Text, ScrollView, StyleSheet, ActivityIndicator } from 'react-native';
+import { useNavigation } from '@react-navigation/native';
+import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useBilling } from '../../hooks/useBilling';
-import { Card } from '../../components/ui';
+import { Card, SectionTitle, SwitchRow, Button } from '../../components/ui';
+import { usePrivacyPrefs } from '../../lib/privacyPrefs';
+import type { RootStackParamList } from '../../navigation/types';
 import { colors, spacing, radius } from '../../theme';
-import { describeReset, humanTokens } from './shared';
+import { describeReset, humanTokens, humanCallSeconds } from './shared';
 
 // Friendly labels for the per-action analytics counters the server tracks.
+// Calls are their own feature (assistant phone calls), kept separate from chat.
 const ACTION_LABEL: Record<string, string> = {
   chat: 'Chat & assistants',
+  call: 'Assistant calls',
   scan: 'Receipt & photo scans',
   generation: 'Recipe & plan generation',
   manualParse: 'Imports & parsing',
@@ -17,7 +23,9 @@ const ACTION_LABEL: Record<string, string> = {
 // Usage drill-in from the Plan hub: the full gauge plus the two breakdowns the
 // hub summary doesn't show — per member (shared pool) and per feature.
 export default function AiUsageScreen() {
+  const nav = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const { data } = useBilling();
+  const { prefs, set: setPref } = usePrivacyPrefs();
 
   if (!data) {
     return (
@@ -28,7 +36,10 @@ export default function AiUsageScreen() {
   }
 
   const unlimited = data.weeklyTokenLimit == null;
+  const isPaid = data.plan !== 'free';
   const over = !unlimited && data.tokensUsed >= (data.weeklyTokenLimit ?? 0);
+  const callUnlimited = data.weeklyCallSecondsLimit == null;
+  const callOver = !callUnlimited && data.callSecondsUsed >= (data.weeklyCallSecondsLimit ?? 0);
   const reset = describeReset(data.resetsAt);
   const members = data.members ?? [];
   const maxMemberTokens = Math.max(...members.map((m) => m.tokens), 1);
@@ -64,6 +75,43 @@ export default function AiUsageScreen() {
           {data.usageScope === 'household'
             ? 'Shared across everyone in your household.'
             : 'On the free plan each person has their own weekly allowance.'}
+        </Text>
+        {!isPaid ? (
+          <View style={styles.plansButton}>
+            <Button title="See plans" onPress={() => nav.navigate('ComparePlans')} />
+          </View>
+        ) : null}
+      </Card>
+
+      {/* Assistant call time — a separate weekly budget (in minutes) for the phone
+          calls Calen places on the household's behalf. */}
+      <Card style={styles.card}>
+        <Text style={styles.heading}>
+          {data.usageScope === 'household' ? "Household's call time this week" : 'Your call time this week'}
+        </Text>
+        <View style={styles.gaugeHeader}>
+          <Text style={styles.gaugePct}>{callUnlimited ? 'Unlimited' : `${data.callSecondsPct}%`}</Text>
+          <Text style={styles.gaugeCaption}>
+            {callUnlimited
+              ? `${humanCallSeconds(data.callSecondsUsed) ?? '0 sec'} used`
+              : `${humanCallSeconds(data.callSecondsUsed) ?? '0 sec'} of ${humanCallSeconds(data.weeklyCallSecondsLimit)}`}
+          </Text>
+        </View>
+        {!callUnlimited ? (
+          <View style={styles.track}>
+            <View
+              style={[
+                styles.fill,
+                { width: `${data.callSecondsPct}%`, backgroundColor: callOver ? colors.error : colors.primary },
+              ]}
+            />
+          </View>
+        ) : null}
+        {callOver ? (
+          <Text style={styles.overNote}>You've used all your assistant call time this week. Upgrade for more.</Text>
+        ) : null}
+        <Text style={styles.scopeNoteBelow}>
+          Phone calls Calen places for you — cancelling or rescheduling appointments.
         </Text>
       </Card>
 
@@ -104,6 +152,31 @@ export default function AiUsageScreen() {
           ))}
         </Card>
       ) : null}
+
+      {/* AI preferences — the on/off and personal-info switches for everything
+          measured above. Lives at the bottom of the usage view. */}
+      <Card style={styles.card}>
+        <SectionTitle>Artificial intelligence</SectionTitle>
+        <Text style={styles.cardNote}>
+          AI powers the assistants, recipe and receipt scanning, and smart suggestions across the app.
+        </Text>
+        <SwitchRow
+          label="Use AI features"
+          value={prefs.aiEnabled}
+          onValueChange={(v) => setPref('aiEnabled', v)}
+        />
+        <View style={prefs.aiEnabled ? undefined : styles.disabled} pointerEvents={prefs.aiEnabled ? 'auto' : 'none'}>
+          <SwitchRow
+            label="Use personal & contact info in prompts"
+            value={prefs.aiEnabled && prefs.aiUsePersonalInfo}
+            onValueChange={(v) => setPref('aiUsePersonalInfo', v)}
+          />
+        </View>
+        <Text style={styles.hint}>
+          When off, names, addresses, and other contact details are kept out of AI prompts. Responses may be less
+          tailored.
+        </Text>
+      </Card>
     </ScrollView>
   );
 }
@@ -114,9 +187,14 @@ const styles = StyleSheet.create({
   loading: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.background },
   card: { marginBottom: spacing.md },
 
+  cardNote: { fontSize: 13, color: colors.textMuted, marginBottom: spacing.sm, lineHeight: 18 },
+  hint: { fontSize: 12, color: colors.textMuted, marginTop: spacing.sm, lineHeight: 16 },
+  disabled: { opacity: 0.4 },
+
   heading: { fontSize: 13, fontWeight: '600', color: colors.textMuted, marginBottom: 2 },
   scopeNote: { fontSize: 12, color: colors.textMuted, marginBottom: spacing.sm },
   scopeNoteBelow: { fontSize: 12, color: colors.textMuted, marginTop: spacing.sm },
+  plansButton: { marginTop: spacing.md },
   reset: { fontSize: 12, color: colors.textMuted, marginBottom: spacing.sm },
   gaugeHeader: { flexDirection: 'row', alignItems: 'baseline', gap: spacing.sm, marginBottom: 6 },
   gaugePct: { fontSize: 28, fontWeight: '700', color: colors.text },

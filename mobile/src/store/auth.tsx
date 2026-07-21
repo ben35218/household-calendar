@@ -7,24 +7,25 @@ import { loadToken, saveToken, clearToken } from '../lib/secureToken';
 import {
   ensureEnrolledOnLogin, ensureHouseholdKey, unlockWithPasskey,
   unlockWithPasskeyPrfOutput, rewrapForNewPassword, lock as lockE2EE,
-  activateBornEncryptedHousehold,
+  unlockFromDeviceCache, forgetDeviceKey, generateAccountSecret, addPasskeyFactor,
+  holdRecoveryCode, releaseRecoveryCode, clearRecoveryCode, setSealAuthor,
 } from '../lib/e2ee';
 import { passkeysSupported, assertPasskeyForLogin } from '../lib/passkeys';
+import { maintainKeyHygiene } from '../lib/dropMigration';
 import { queryClient } from '../lib/queryClient';
 import { clearAll as clearReplica } from '../lib/replica';
 
 // Enroll (or unlock) the E2EE keypair after auth, then make sure this session
 // holds the household key (owner mints it lazily on first unlock). Additive and
 // best-effort: a crypto/enrollment failure must not block sign-in.
+//
+// ensureHouseholdKey also finalizes born-encrypted activation (drops the
+// plaintext for a fresh mandated household) once the key is ready — so any unlock
+// path that reaches it activates, not just this password/register one.
 async function initE2EE(password: string) {
   try {
     const status = await ensureEnrolledOnLogin(password);
-    if (status !== 'locked') {
-      const key = await ensureHouseholdKey();
-      // Fresh mandated household → go E2EE-live on this first unlock. No-op for
-      // exempt/grandfathered or already-active households.
-      if (key === 'ready') await activateBornEncryptedHousehold();
-    }
+    if (status !== 'locked') await ensureHouseholdKey();
   } catch (err) {
     console.warn('[e2ee] enrollment/unlock skipped:', (err as Error)?.message ?? err);
   }
@@ -42,8 +43,19 @@ type AuthState = {
   loginWithPasskey: (email: string) => Promise<boolean>;
   // Emailed-code reset; signs the user in and reports the E2EE outcome so the
   // screen can explain a still-locked state ('none' = account not enrolled).
-  resetPassword: (data: { email: string; code: string; newPassword: string }) => Promise<'unlocked' | 'locked' | 'none'>;
-  register: (data: { email: string; password: string; firstName: string; lastName?: string }) => Promise<void>;
+  resetPassword: (data: { email: string; code: string; newPassword: string }) =>
+    Promise<'unlocked' | 'locked' | 'none' | { held: string }>;
+  // Registration establishes the account's primary unlock factor. Passing a
+  // `password` creates a real-password account (E2EE wraps under it, manual unlock
+  // always available); omitting it creates a passwordless account whose durable
+  // factor is a passkey (enroll one via registerWithPasskey).
+  register: (data: { email: string; firstName: string; lastName?: string; password?: string }) => Promise<void>;
+  // Passwordless signup that enrolls a passkey inline as the durable unlock +
+  // sign-in factor before entering the app. If the passkey doesn't enroll (cancel,
+  // no PRF, a dev build without associated domains) the just-created account is
+  // rolled back and this THROWS — so the caller keeps the user on the register
+  // screen to retry or choose a password, never stranding a factorless account.
+  registerWithPasskey: (data: { email: string; firstName: string; lastName?: string }) => Promise<void>;
   logout: () => Promise<void>;
   setUser: (user: User | null) => void;
 };
@@ -56,6 +68,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const logout = useCallback(async () => {
     lockE2EE(); // drop the in-memory private key
+    await forgetDeviceKey().catch(() => {}); // and the biometric device cache
     await clearToken();
     setUser(null);
     // The next sign-in may be a different account: query keys aren't scoped by
@@ -73,15 +86,24 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         if (token) {
           const { data } = await authApi.me();
           setUser(data);
-          // A restored session has no password, so E2EE is locked. If the
-          // account has a passkey factor, offer the Face ID / Touch ID sheet
-          // now (cancel just leaves it locked — password unlock still works).
-          if (passkeysSupported()) {
-            try {
-              if (await unlockWithPasskey()) await ensureHouseholdKey();
-            } catch {
-              // canceled / PRF unavailable — stay locked
+          // A restored session has no password, so E2EE is locked. Try the
+          // no-password unlock paths, best-effort (cancel/failure just leaves it
+          // locked — password unlock still works):
+          //  1. the biometric device-key cache — one Face ID prompt, no network;
+          //  2. a passkey assertion, if this account enrolled one.
+          try {
+            const unlocked =
+              (await unlockFromDeviceCache()) ||
+              (passkeysSupported() && (await unlockWithPasskey()));
+            if (unlocked) {
+              await ensureHouseholdKey();
+              // B1/B3 key hygiene: re-seal any old-version records + retire
+              // drained envelopes in the background (rotation may have just
+              // self-healed inside ensureHouseholdKey). Best-effort.
+              void maintainKeyHygiene();
             }
+          } catch {
+            // canceled / unavailable — stay locked
           }
         }
       } catch {
@@ -97,6 +119,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setUnauthorizedHandler(() => { void logout(); });
     return () => setUnauthorizedHandler(null);
   }, [logout]);
+
+  // Signal-parity C4: keep the seal-author id (folded into every HDK record's
+  // ciphertext as `author`) in sync with the signed-in user.
+  useEffect(() => { setSealAuthor(user?._id ?? null); }, [user?._id]);
 
   // Report this app version for the §9 readiness gate (every member must be on a
   // compatible build before the whole-household drop). Best-effort.
@@ -135,7 +161,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const resetPassword = useCallback(
     async (payload: { email: string; code: string; newPassword: string }) => {
-      const { data } = await authApi.resetPassword(payload);
+      const res = await authApi.resetPassword(payload);
+      // 202 = the reset is HELD (Signal-parity F1): this device isn't a known
+      // session, so the change only applies after the hold window — with loud
+      // notifications to the account's other devices + email in the meantime.
+      if (res.status === 202) return { held: (res.data as any).holdUntil as string };
+      const { data } = res;
       await saveToken(data.token);
       setUser(data.user);
       if (!data.e2eeEnrolled) return 'none' as const;
@@ -158,18 +189,81 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   );
 
   const register = useCallback(
-    async (payload: { email: string; password: string; firstName: string; lastName?: string }) => {
-      const { data } = await authApi.register(payload);
+    async (payload: { email: string; firstName: string; lastName?: string; password?: string }) => {
+      if (payload.password) {
+        // Real-password account: the E2EE envelope wraps under the chosen password,
+        // so the account always has a manual unlock factor (and can add a passkey
+        // later). hasPassword = true server-side.
+        const { data } = await authApi.register({ ...payload, password: payload.password, passwordless: false });
+        await saveToken(data.token);
+        setUser(data.user);
+        await initE2EE(payload.password);
+        return;
+      }
+      // Passwordless signup: mint a high-entropy secret on-device to bootstrap the
+      // E2EE envelope (the KEK stays password-derived under the hood). The user
+      // never sees it; durability is the recovery code + a passkey (see
+      // registerWithPasskey). See docs/PASSWORDLESS-E2EE-PLAN.md §5c.
+      const secret = await generateAccountSecret();
+      const { data } = await authApi.register({
+        email: payload.email, firstName: payload.firstName, lastName: payload.lastName,
+        password: secret, passwordless: true,
+      });
       await saveToken(data.token);
       setUser(data.user);
-      await initE2EE(payload.password);
+      await initE2EE(secret);
+    },
+    []
+  );
+
+  const registerWithPasskey = useCallback(
+    async (payload: { email: string; firstName: string; lastName?: string }) => {
+      // Create the passwordless account and unlock E2EE, THEN enroll the passkey
+      // while the key is in memory — all before setUser swaps to the app, so the
+      // durable factor exists by the time the recovery modal (and born-encrypted
+      // drop) run. If enrollment fails we still complete sign-in; the recovery
+      // code the modal enforces is the backstop.
+      const secret = await generateAccountSecret();
+      const { data } = await authApi.register({
+        email: payload.email, firstName: payload.firstName, lastName: payload.lastName,
+        password: secret, passwordless: true,
+      });
+      await saveToken(data.token);
+      // Hold the recovery-code modal across enrollment + the passkey step, so a
+      // passkey failure isn't confusingly preceded by (or buried under) the
+      // recovery code. It's released only once the passkey succeeds.
+      holdRecoveryCode();
+      await initE2EE(secret);
+      let enrolled = false;
+      try {
+        enrolled = await addPasskeyFactor();
+      } catch (err) {
+        console.warn('[e2ee] passkey enroll at register failed:', (err as Error)?.message ?? err);
+      }
+      if (!enrolled) {
+        // The passkey didn't take (cancel, no PRF, or a dev/TestFlight build
+        // without associated domains). Roll the just-created account back so we
+        // don't strand a passwordless account whose only backstop is the recovery
+        // code — the user returns to a clean register screen to retry or pick a
+        // password. deleteAccount uses the session token (no password needed).
+        clearRecoveryCode(); // drop the held code — this account is going away
+        await authApi.deleteAccount({}).catch(() => {});
+        lockE2EE();
+        await forgetDeviceKey().catch(() => {});
+        await clearToken();
+        throw new Error(
+          "Face ID / passkey setup didn’t complete on this device. Try again, or choose a password instead.",
+        );
+      }
+      setUser(data.user); // durable factor in place — enter the app
+      releaseRecoveryCode(); // now surface the recovery code (passkey succeeded)
     },
     []
   );
 
   return (
     <AuthContext.Provider
-      value={{ user, bootstrapping, isLoggedIn: !!user, login, loginWithPasskey, resetPassword, register, logout, setUser }}
+      value={{ user, bootstrapping, isLoggedIn: !!user, login, loginWithPasskey, resetPassword, register, registerWithPasskey, logout, setUser }}
     >
       {children}
     </AuthContext.Provider>

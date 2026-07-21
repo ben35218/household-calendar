@@ -1,13 +1,13 @@
 const mongoose = require('mongoose');
-const { encFields } = require('./encFields');
+const { encFields, requiredUntilSealed } = require('./encFields');
 
 const personSchema = new mongoose.Schema({
-  userId:       { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
+  userId:       { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: requiredUntilSealed, index: true },
   // When set, this Person is the self-record for that household member's User
   // account. Self records are always type 'family' and cannot be deleted.
   accountId:    { type: mongoose.Schema.Types.ObjectId, ref: 'User', index: true, sparse: true },
   type:         { type: String, enum: ['family', 'friend', 'service'], required: true },
-  name:         { type: String, required: true, trim: true },
+  name:         { type: String, required: requiredUntilSealed, trim: true },
   relationship: { type: String, trim: true },  // e.g. "spouse", "daughter", "neighbor"
   birthday:     { type: Date },
   interests:    [{ type: String, trim: true }],

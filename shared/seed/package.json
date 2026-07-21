@@ -1,0 +1,6 @@
+{
+  "name": "@household/seed",
+  "version": "0.1.0",
+  "description": "Shared seed data (task/chore templates, default categories) consumed by the server routes and the mobile client-side seeders.",
+  "license": "ISC"
+}

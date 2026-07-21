@@ -7,9 +7,11 @@ const Person = require('../models/Person');
 const Category = require('../models/Category');
 const { requireAuth, signToken } = require('../middleware/auth');
 const { rateLimit } = require('../middleware/rateLimit');
-const { sendPasswordResetCode } = require('../services/mailer');
+const { sendPasswordResetCode, sendNewDeviceAlert } = require('../services/mailer');
 const { deleteUserAndData } = require('../services/accountDeletion');
 const { seedDefaultCategories, seedDefaultSubcategories } = require('../seed');
+const { createSession, revokeSession, deviceFromReq } = require('../services/sessions');
+const { pushToUser } = require('../services/notify');
 
 const router = express.Router();
 
@@ -27,37 +29,50 @@ const credChangeLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 10, message
 // Passkey sign-in ceremonies (WebAuthn challenge + assertion verify).
 router.use('/passkey', require('./authPasskey'));
 
-// The login/register/reset response body, one shape everywhere.
-function sessionResponse(user) {
+// The login/register/reset response body, one shape everywhere. Creates the
+// F2 session row backing the token; `quiet` skips the new-device alert
+// (registration — the account is seconds old).
+async function sessionResponse(user, req, { quiet = false } = {}) {
+  const sid = await createSession(user._id, req, { quiet });
   return {
-    token: signToken(String(user._id)),
-    user: { _id: user._id, email: user.email, firstName: user.firstName, lastName: user.lastName, role: user.role },
+    token: signToken(String(user._id), sid),
+    user: {
+      _id: user._id, email: user.email, firstName: user.firstName, lastName: user.lastName,
+      role: user.role, hasPassword: user.hasPassword !== false,
+      e2eePasswordStale: !!user.e2eePasswordStale,
+    },
   };
 }
 
 router.post('/register', registerLimiter, async (req, res) => {
   try {
-    const { email, password, firstName, lastName } = req.body;
+    const { email, password, firstName, lastName, passwordless } = req.body;
     if (!email || !password || !firstName) return res.status(400).json({ error: 'email, password and first name required' });
 
     const existing = await User.findOne({ email: email.toLowerCase() });
     if (existing) return res.status(409).json({ error: 'Email already registered' });
 
+    // Passwordless signups send an on-device random secret as `password` (it wraps
+    // the E2EE envelope) and flag `passwordless` so we record that no real password
+    // exists — the unlock UI then offers recovery/passkey instead of a password.
     const passwordHash = await bcrypt.hash(password, 12);
-    const user = await User.create({ email, passwordHash, firstName, lastName: lastName || '' });
+    const user = await User.create({
+      email, passwordHash, firstName, lastName: lastName || '', hasPassword: !passwordless,
+    });
 
     // Every new user starts in their own household (others can join via its code later).
     const household = await Household.createForOwner(user._id, `${firstName}'s Household`);
     user.householdId = household._id;
     await user.save();
 
-    await seedDefaultCategories(user._id);
-    await seedDefaultSubcategories(user._id);
+    // Signal-parity C3b: the server no longer seeds PLAINTEXT content (default
+    // categories + subcategories + the self-Person) into per-collection tables —
+    // those tables are gone, and content lives in the opaque store. The client
+    // seeds them ENCRYPTED after first unlock (lib/categories.ensureDefaultCategories
+    // + the self-Person createSelf via /records), so a fresh mandated household is
+    // born with no plaintext content and no stragglers to seal.
 
-    // Add the new member to the People roster as their own "You" card.
-    await Person.ensureSelf(user);
-
-    res.status(201).json(sessionResponse(user));
+    res.status(201).json(await sessionResponse(user, req, { quiet: true }));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -72,7 +87,7 @@ router.post('/login', loginLimiter, async (req, res) => {
     const valid = await bcrypt.compare(password, user.passwordHash);
     if (!valid) return res.status(401).json({ error: 'Invalid credentials' });
 
-    res.json(sessionResponse(user));
+    res.json(await sessionResponse(user, req));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -127,12 +142,113 @@ router.post('/reset', resetLimiter, async (req, res) => {
       return res.status(400).json({ error: 'That code is invalid or has expired. Request a new one.' });
     }
 
+    // ── Registration-lock analog (Signal-parity F1) ──────────────────────────
+    // Email possession alone must not take over a protected account (one with
+    // enrolled keys + confirmed recovery). A reset is immediate only from a
+    // KNOWN device — proven by a valid session token for this same account in
+    // the Authorization header (the "reset while signed in on my own phone"
+    // case). Anything else opens a hold window with loud notifications; the
+    // reset only completes after it elapses (request a fresh code then), and
+    // any signed-in device can cancel it. Takeover becomes slow and noisy.
+    const protectedAccount = Boolean(user.identityPublicKey && user.recoverySetupAt);
+    if (protectedAccount && !(await isKnownDevice(req, user))) {
+      const holdHours = Number(process.env.RESET_COOLDOWN_HOURS || 24);
+      if (!user.resetHoldUntil) {
+        user.resetHoldUntil = new Date(Date.now() + holdHours * 60 * 60 * 1000);
+        // Keep the code single-use: this verify consumed it. The completing
+        // request after the hold brings a fresh one.
+        user.resetCodeHash = undefined;
+        user.resetCodeExpiresAt = undefined;
+        user.resetCodeAttempts = 0;
+        await user.save();
+        const device = deviceFromReq(req);
+        pushToUser(user, {
+          title: 'Password reset requested',
+          body: `A password reset was requested from ${device.deviceName}. It completes ${user.resetHoldUntil.toLocaleString()} unless you cancel it in Sign-in & Security.`,
+          tag: `reset-${user._id}`,
+        }).catch(() => {});
+        sendNewDeviceAlert(user, device, { holdUntil: user.resetHoldUntil }).catch(() => {});
+        return res.status(202).json({ holdUntil: user.resetHoldUntil });
+      }
+      if (user.resetHoldUntil > new Date()) {
+        // Window still open — report it (idempotent; no new notifications).
+        user.resetCodeHash = undefined;
+        user.resetCodeExpiresAt = undefined;
+        await user.save();
+        return res.status(202).json({ holdUntil: user.resetHoldUntil });
+      }
+      // Hold elapsed without a cancel — fall through and apply the reset.
+    }
+    user.resetHoldUntil = undefined;
+
     user.passwordHash = await bcrypt.hash(newPassword, 12);
+    user.hasPassword = true; // the user now knows a real password (even if formerly passwordless)
+    // The E2EE password factor is still wrapped under the OLD password, so the new
+    // one can't unwrap it — flag it stale so the unlock UI steers to the recovery
+    // code/passkey instead of a dead password field. Only when the account is
+    // actually E2EE-enrolled (has a password factor to go stale); a never-enrolled
+    // account has nothing to re-wrap. Cleared when the client re-wraps the factor.
+    if (user.identityPublicKey) user.e2eePasswordStale = true;
     user.resetCodeHash = undefined;
     user.resetCodeExpiresAt = undefined;
     user.resetCodeAttempts = 0;
     await user.save();
-    res.json({ ...sessionResponse(user), e2eeEnrolled: Boolean(user.identityPublicKey) });
+    res.json({ ...(await sessionResponse(user, req)), e2eeEnrolled: Boolean(user.identityPublicKey) });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// A valid session token for THIS user in the Authorization header = a known
+// device (F1). The reset flow can run while signed in — "I forgot my password
+// but I'm on my own phone" — and skips the hold window.
+async function isKnownDevice(req, user) {
+  const header = req.headers.authorization;
+  const token = header?.startsWith('Bearer ') ? header.slice(7) : null;
+  if (!token) return false;
+  try {
+    const jwt = require('jsonwebtoken');
+    const payload = jwt.verify(token, process.env.JWT_SECRET);
+    if (String(payload.userId) !== String(user._id)) return false;
+    // Sid-carrying tokens must still be live sessions; legacy sid-less tokens
+    // count as known (they'll be upgraded by the sliding refresh).
+    if (payload.sid) return (user.sessions || []).some((s) => String(s._id) === String(payload.sid));
+    return true;
+  } catch { return false; }
+}
+
+// Cancel a pending held reset (F1) from any signed-in device — the "that
+// wasn't me" button. Also clears any outstanding code.
+router.post('/reset/cancel', requireAuth, async (req, res) => {
+  try {
+    await User.updateOne(
+      { _id: req.user._id },
+      { $unset: { resetHoldUntil: 1, resetCodeHash: 1, resetCodeExpiresAt: 1 }, $set: { resetCodeAttempts: 0 } },
+    );
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Device sessions (Signal-parity F2) ───────────────────────────────────────
+
+router.get('/sessions', requireAuth, (req, res) => {
+  const rows = (req.user.sessions || [])
+    .map((s) => ({
+      _id: s._id, deviceName: s.deviceName, platform: s.platform,
+      createdAt: s.createdAt, lastSeenAt: s.lastSeenAt,
+      current: String(s._id) === String(req.sessionId),
+    }))
+    .sort((a, b) => new Date(b.lastSeenAt) - new Date(a.lastSeenAt));
+  res.json({ sessions: rows, pendingResetHoldUntil: req.user.resetHoldUntil || null });
+});
+
+router.delete('/sessions/:sid', requireAuth, async (req, res) => {
+  try {
+    const removed = await revokeSession(req.user._id, req.params.sid);
+    if (!removed) return res.status(404).json({ error: 'No such device session' });
+    res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -178,6 +294,7 @@ router.put('/password', requireAuth, credChangeLimiter, async (req, res) => {
     if (!valid) return res.status(401).json({ error: 'Current password is incorrect' });
 
     user.passwordHash = await bcrypt.hash(newPassword, 12);
+    user.hasPassword = true;
     await user.save();
     res.json({ ok: true });
   } catch (err) {
@@ -192,12 +309,18 @@ router.put('/password', requireAuth, credChangeLimiter, async (req, res) => {
 router.delete('/account', requireAuth, credChangeLimiter, async (req, res) => {
   try {
     const { password } = req.body;
-    if (!password) return res.status(400).json({ error: 'Password is required to delete your account' });
 
     const user = await User.findById(req.user._id);
     if (!user) return res.status(401).json({ error: 'Unauthorized' });
-    const valid = await bcrypt.compare(password, user.passwordHash);
-    if (!valid) return res.status(401).json({ error: 'Password is incorrect' });
+
+    // Passwordless accounts (passkey / OAuth) never know their `passwordHash`
+    // — it's a random on-device secret — so we can't re-auth with a password.
+    // The valid session token (requireAuth) is the identity proof here.
+    if (user.hasPassword !== false) {
+      if (!password) return res.status(400).json({ error: 'Password is required to delete your account' });
+      const valid = await bcrypt.compare(password, user.passwordHash);
+      if (!valid) return res.status(401).json({ error: 'Password is incorrect' });
+    }
 
     await deleteUserAndData(user);
     res.json({ ok: true });

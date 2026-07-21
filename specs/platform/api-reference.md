@@ -1,7 +1,7 @@
 ---
 title: API reference
 status: current
-last-verified: dad7c5a (2026-07-20)
+last-verified: 4d68a39 (2026-07-20)
 code:
   - server/src/app.js        # the mount table — source of truth for what exists
   - server/src/routes/
@@ -85,7 +85,10 @@ See `app.js` for exact paths. Grouped for orientation:
 - **AI:** `/api/calendar/chat`, `/api/maintenance/chat`,
   `/api/maintenance/plan-chat`, `/api/chores/chat`, `/api/trips/chat`,
   `/api/form-assist`, `/api/calls` (Vapi phone calls), `/api/places` (biasing).
-  See [features/ai-assistant.md](../features/ai-assistant.md).
+  See [features/ai-assistant.md](../features/ai-assistant.md). All AI routes
+  sit behind `middleware/aiConsent.js` (`requireAiEnabled` → 403 when
+  `User.aiEnabled` is false; the flag syncs from the device via `PUT /settings`
+  and is returned by `GET /settings`).
 - **Billing:** `/api/billing` (`webhook` — public, HMAC-verified; `status`;
   `select` — admin). See [features/billing-plans.md](../features/billing-plans.md).
 - **Misc:** `/api/weather`, `/api/notifications`, `/api/settings`,

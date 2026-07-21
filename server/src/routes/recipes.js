@@ -7,10 +7,11 @@ const fs = require('fs');
 const Recipe = require('../models/Recipe');
 const { sendRecipeShare } = require('../services/mailer');
 const { requireAuth } = require('../middleware/auth');
+const { requireAiEnabled } = require('../middleware/aiConsent');
 const { meter } = require('../middleware/usageMeter');
 const { activity } = require('../middleware/activity');
 const { isObjectId, pickRecordEnc } = require('../services/householdKey');
-const { plaintextCreateBlocked, E2EE_REQUIRED_MESSAGE } = require('../services/e2eePolicy');
+const { plaintextCreateBlocked, E2EE_REQUIRED_MESSAGE, stripSealedContent } = require('../services/e2eePolicy');
 
 const uploadDir = path.resolve(process.env.UPLOAD_DIR || './uploads', 'recipes');
 fs.mkdirSync(uploadDir, { recursive: true });
@@ -85,16 +86,10 @@ async function parseRecipeWithAI(prompt) {
   return JSON.parse(text);
 }
 
-router.get('/', async (req, res) => {
-  try {
-    const recipes = await Recipe.find({ userId: { $in: req.scopeIds } }).sort('-createdAt').lean();
-    res.json(recipes);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+// GET / (recipe list) retired (Signal-parity C3b): the client reads recipes from
+// its replica (populated by /records/sync).
 
-router.post('/from-url', async (req, res) => {
+router.post('/from-url', requireAiEnabled, async (req, res) => {
   try {
     const { url } = req.body;
     if (!url) return res.status(400).json({ error: 'url is required' });
@@ -121,7 +116,7 @@ router.post('/from-url', async (req, res) => {
   }
 });
 
-router.post('/from-photo', meter('scan'), upload.single('photo'), async (req, res) => {
+router.post('/from-photo', meter('scan'), requireAiEnabled, upload.single('photo'), async (req, res) => {
   const file = req.file;
   if (!file) return res.status(400).json({ error: 'photo is required' });
   try {
@@ -162,26 +157,50 @@ router.post('/from-photo', meter('scan'), upload.single('photo'), async (req, re
   }
 });
 
-router.post('/from-ai', meter('generation'), async (req, res) => {
+router.post('/from-ai', meter('generation'), requireAiEnabled, async (req, res) => {
   try {
     const { description } = req.body;
     if (!description) return res.status(400).json({ error: 'description is required' });
 
+    // Signal-parity C3b (+ closes the pass-3 write-guard bypass): return the AI
+    // draft for the client to seal + create through /records — never mint a
+    // plaintext Recipe server-side (the server can't write to the opaque store).
     const parsed = await generateRecipeWithAI(description);
-
-    const recipe = await Recipe.create({
-      userId: req.user._id,
-      source: 'ai',
-      ...parsed,
-    });
-    res.status(201).json(recipe);
+    res.json({ source: 'ai', ...parsed });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
+// Lightweight "what should I cook?" suggestions for the Find Recipes screen.
+// Free-text request in, 5 suggestion stubs out; the user previews one via
+// /generate. (Moved here from the retired food-inventory routes.)
+router.post('/suggest-recipes', meter('generation'), requireAiEnabled, async (req, res) => {
+  try {
+    const q = typeof req.body?.query === 'string' ? req.body.query.trim() : '';
+    if (!q) return res.status(400).json({ error: 'query is required' });
+
+    const OUTPUT_SPEC = `Suggest exactly 5 recipes. For each recipe:\n- "title": recipe name\n- "description": one sentence describing the dish\n- "time": estimated total time (e.g. "30 min")\n- "usedIngredients": array of the main ingredients this recipe uses\n- "needsOther": array of any additional ingredients needed\n\nReturn ONLY valid JSON with no markdown:\n{ "recipes": [{ "title": "...", "description": "...", "time": "...", "usedIngredients": ["..."], "needsOther": ["..."] }] }`;
+
+    const message = await client.messages.create({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 2048,
+      messages: [{ role: 'user', content: `Suggest recipes for this request: "${q}".\n\n${OUTPUT_SPEC}` }],
+    });
+    const text = message.content[0].text.trim()
+      .replace(/^```json?\s*/i, '')
+      .replace(/\s*```$/i, '');
+    res.json(JSON.parse(text));
+  } catch (err) {
+    if (err instanceof SyntaxError) {
+      return res.status(422).json({ error: 'Could not generate recipe suggestions.' });
+    }
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Generate recipe from description without saving (for preview/edit flow)
-router.post('/generate', meter('generation'), async (req, res) => {
+router.post('/generate', meter('generation'), requireAiEnabled, async (req, res) => {
   try {
     const { description } = req.body;
     if (!description) return res.status(400).json({ error: 'description is required' });
@@ -196,7 +215,7 @@ router.post('/generate', meter('generation'), async (req, res) => {
 });
 
 // Edit an existing recipe using a natural language instruction (no save)
-router.post('/edit-with-ai', meter('aiHelper'), async (req, res) => {
+router.post('/edit-with-ai', meter('aiHelper'), requireAiEnabled, async (req, res) => {
   try {
     const { recipe, instruction } = req.body;
     if (!recipe || !instruction) return res.status(400).json({ error: 'recipe and instruction are required' });
@@ -354,55 +373,21 @@ async function generateRecipeWithAI(description) {
   return parsed;
 }
 
-router.post('/', activity('recipeAdded'), async (req, res) => {
-  try {
-    let enc;
-    try { enc = pickRecordEnc(req.body); }
-    catch (msg) { return res.status(400).json({ error: String(msg) }); }
-    if (plaintextCreateBlocked(req.household, enc.enc)) {
-      return res.status(400).json({ error: E2EE_REQUIRED_MESSAGE });
-    }
-    const recipe = await Recipe.create({
-      ...req.body,
-      ...(isObjectId(req.body._id) ? { _id: req.body._id } : {}),
-      userId: req.user._id,
-      ...enc,
-    });
-    res.status(201).json(recipe);
-  } catch (err) {
-    res.status(400).json({ error: err.message });
-  }
-});
-
-router.get('/:id', async (req, res) => {
-  try {
-    const recipe = await Recipe.findOne({ _id: req.params.id, userId: { $in: req.scopeIds } });
-    if (!recipe) return res.status(404).json({ error: 'Not found' });
-    res.json(recipe);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-router.put('/:id', async (req, res) => {
-  try {
-    const recipe = await Recipe.findOneAndUpdate(
-      { _id: req.params.id, userId: { $in: req.scopeIds } },
-      req.body,
-      { new: true, runValidators: true }
-    );
-    if (!recipe) return res.status(404).json({ error: 'Not found' });
-    res.json(recipe);
-  } catch (err) {
-    res.status(400).json({ error: err.message });
-  }
-});
+// Recipe content CRUD (GET / POST / GET:id / PUT:id / DELETE:id) RETIRED
+// (Signal-parity C3b): recipes live in the unified opaque store — the client reads
+// them from its replica and writes through /records. The AI helpers above (from-
+// url/from-photo/from-ai/suggest/generate/edit-with-ai/compute-ingredient-tags)
+// stay; they return a draft the client seals + creates. Per-recipe on-demand
+// tag-ingredients was retired too (the server can't read a sealed recipe) — the
+// client re-tags via compute-ingredient-tags with the decrypted body + re-seals.
 
 // Email a styled copy of the recipe (the share sheet can only send plain text).
+// The recipe content is client-supplied (decrypted on-device) — the server can't
+// read the sealed row.
 router.post('/:id/share-email', async (req, res) => {
   try {
-    const recipe = await Recipe.findOne({ _id: req.params.id, userId: { $in: req.scopeIds } });
-    if (!recipe) return res.status(404).json({ error: 'Not found' });
+    const recipe = req.body?.recipe;
+    if (!recipe || typeof recipe !== 'object') return res.status(400).json({ error: 'recipe is required' });
     const email = String(req.body?.email || '').trim().toLowerCase();
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
       return res.status(400).json({ error: 'Enter a valid email address' });
@@ -417,36 +402,12 @@ router.post('/:id/share-email', async (req, res) => {
 });
 
 // Compute ingredient-to-step tags from provided data (no DB write — for the edit UI)
-router.post('/compute-ingredient-tags', meter('aiHelper'), async (req, res) => {
+router.post('/compute-ingredient-tags', meter('aiHelper'), requireAiEnabled, async (req, res) => {
   try {
     const { ingredients, instructions } = req.body;
     const tags = await tagInstructionIngredients({ ingredients, instructions });
     if (!tags) return res.status(422).json({ error: 'Recipe has no ingredients or instructions to tag' });
     res.json({ instructionIngredients: tags });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// On-demand re-tag for existing recipes (no ingredients/instructions change needed)
-router.post('/:id/tag-ingredients', meter('aiHelper'), async (req, res) => {
-  try {
-    const recipe = await Recipe.findOne({ _id: req.params.id, userId: { $in: req.scopeIds } });
-    if (!recipe) return res.status(404).json({ error: 'Not found' });
-    const tags = await tagInstructionIngredients(recipe);
-    if (!tags) return res.status(422).json({ error: 'Recipe has no ingredients or instructions to tag' });
-    await Recipe.findByIdAndUpdate(recipe._id, { instructionIngredients: tags });
-    res.json({ instructionIngredients: tags });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-router.delete('/:id', async (req, res) => {
-  try {
-    const recipe = await Recipe.findOneAndDelete({ _id: req.params.id, userId: { $in: req.scopeIds } });
-    if (!recipe) return res.status(404).json({ error: 'Not found' });
-    res.json({ message: 'Deleted' });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

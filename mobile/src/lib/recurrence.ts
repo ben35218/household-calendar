@@ -1,7 +1,7 @@
 // Shared recurrence logic ported from the web client. The web app duplicated
 // this `recurrenceLabel`/save-rebuild logic across TaskFormView, ChoreFormView,
 // TaskDetailView, ChoreDetailView, and the dashboards; here it lives once.
-import { Recurrence, IntervalUnit, RecurrenceType } from '../api';
+import { Recurrence, IntervalUnit, RecurrenceType, FormAssistField } from '../api';
 import type { RepeatRule, WeekdayKind } from './eventRepeat';
 
 export const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -334,6 +334,123 @@ export function recurrenceToRule(r?: Recurrence | null): RepeatRule {
       break;
   }
   return rule;
+}
+
+// ----- Form-assist ("Ask Calen") over the RepeatRule -------------------------
+// The generic form-assist endpoint only understands flat fields, so the repeat
+// rule is exposed to the assistant as a handful of primitives and reassembled
+// here. This covers the common chore/task cadences — daily, every-N, weekly on a
+// day, monthly on a date, yearly in months. The niche "on the 2nd Tuesday"
+// ordinal form (weekOfMonth + weekdayKind) has no primitive here and stays
+// editable only on the Repeat screen.
+export const REPEAT_FREQ_ASSIST_OPTIONS: { label: string; value: string }[] = [
+  { label: 'Does not repeat', value: 'none' },
+  { label: 'Daily', value: 'daily' },
+  { label: 'Weekly', value: 'weekly' },
+  { label: 'Monthly', value: 'monthly' },
+  { label: 'Yearly', value: 'yearly' },
+];
+
+// The assist field names that map onto the RepeatRule (kept in one place so the
+// form's applyPatch can detect and strip them before its own field loop).
+export const RECURRENCE_ASSIST_KEYS = [
+  'repeatFrequency',
+  'repeatInterval',
+  'repeatWeekday',
+  'repeatDayOfMonth',
+  'repeatMonths',
+] as const;
+
+export function recurrenceAssistFields(): FormAssistField[] {
+  return [
+    {
+      name: 'repeatFrequency',
+      type: 'select',
+      label: 'Repeat frequency',
+      description: 'How often the chore/task repeats',
+      options: REPEAT_FREQ_ASSIST_OPTIONS,
+    },
+    {
+      name: 'repeatInterval',
+      type: 'number',
+      label: 'Repeat interval',
+      description: 'Repeat every N periods (2 = every other week/month/…). Leave at 1 unless the user asks for a longer gap.',
+    },
+    {
+      name: 'repeatWeekday',
+      type: 'select',
+      label: 'Weekly day',
+      description: 'For a weekly repeat, which day of the week it falls on',
+      options: WEEKDAY_NAMES.map((n, i) => ({ label: n, value: i })),
+    },
+    {
+      name: 'repeatDayOfMonth',
+      type: 'number',
+      label: 'Monthly day',
+      description: 'For a monthly repeat, which day of the month (1–31)',
+    },
+    {
+      name: 'repeatMonths',
+      type: 'multiselect',
+      label: 'Yearly months',
+      description: 'For a yearly repeat, which month(s) it runs in',
+      options: MONTH_OPTIONS,
+    },
+  ];
+}
+
+// The current RepeatRule projected onto the assist field names, so the assistant
+// can reason over (and selectively change) the existing cadence.
+export function recurrenceAssistCurrent(rule: RepeatRule): Record<string, unknown> {
+  return {
+    repeatFrequency: rule.freq || 'none',
+    repeatInterval: rule.interval || 1,
+    repeatWeekday: rule.daysOfWeek[0] ?? null,
+    repeatDayOfMonth: rule.daysOfMonth[0] ?? null,
+    repeatMonths: rule.months,
+  };
+}
+
+export function patchTouchesRecurrence(patch: Record<string, unknown>): boolean {
+  return RECURRENCE_ASSIST_KEYS.some((k) => k in patch);
+}
+
+// Merge an assist patch's repeat* keys into the existing RepeatRule. Only the
+// keys present in the patch move; a bare weekday/day/months implies its owning
+// frequency when none is set yet, so "make it Saturdays" alone still works.
+export function applyRecurrenceAssistPatch(prev: RepeatRule, patch: Record<string, unknown>): RepeatRule {
+  const next: RepeatRule = {
+    ...prev,
+    daysOfWeek: [...prev.daysOfWeek],
+    daysOfMonth: [...prev.daysOfMonth],
+    months: [...prev.months],
+  };
+  if ('repeatFrequency' in patch) {
+    const f = patch.repeatFrequency;
+    next.freq = f === 'none' || f == null ? '' : (f as RepeatRule['freq']);
+  }
+  if (typeof patch.repeatInterval === 'number' && patch.repeatInterval >= 1) {
+    next.interval = Math.round(patch.repeatInterval);
+  }
+  if (patch.repeatWeekday != null) {
+    const d = Number(patch.repeatWeekday);
+    if (d >= 0 && d <= 6) {
+      next.daysOfWeek = [d];
+      if (!next.freq) next.freq = 'weekly';
+    }
+  }
+  if (patch.repeatDayOfMonth != null) {
+    const d = Number(patch.repeatDayOfMonth);
+    if (d >= 1 && d <= 31) {
+      next.daysOfMonth = [d];
+      if (!next.freq) next.freq = 'monthly';
+    }
+  }
+  if (Array.isArray(patch.repeatMonths) && patch.repeatMonths.length) {
+    next.months = patch.repeatMonths.map(Number).filter((m) => m >= 1 && m <= 12);
+    if (!next.freq) next.freq = 'yearly';
+  }
+  return next;
 }
 
 export function ruleToRecurrence(rule: RepeatRule): Recurrence {
