@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 💬 Not a bug? General beta feedback
+    url: https://github.com/ben35218/calen/discussions
+    about: For ideas, questions, or "this felt confusing" feedback that isn't a specific bug.

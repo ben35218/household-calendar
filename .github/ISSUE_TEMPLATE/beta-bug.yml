@@ -1,0 +1,86 @@
+name: "🐞 Beta bug report"
+description: Report a bug you hit while testing Calen in TestFlight.
+title: "[Beta] <short summary of the bug>"
+labels: ["bug", "beta"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for testing Calen! A few structured details make bugs much faster to fix.
+        Tip: in TestFlight you can also shake the phone or screenshot to send feedback — but filing it here keeps everything in one place.
+
+  - type: input
+    id: build
+    attributes:
+      label: Build / version
+      description: "Open TestFlight → Calen; the version and build number are shown near the top (e.g. 1.2.3 (45))."
+      placeholder: "1.2.3 (45)"
+    validations:
+      required: true
+
+  - type: input
+    id: device
+    attributes:
+      label: Device & iOS version
+      description: "Settings → General → About shows the model and iOS version."
+      placeholder: "iPhone 14 Pro, iOS 18.2"
+    validations:
+      required: true
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: Describe the bug in a sentence or two.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: What did you tap/do right before it happened?
+      placeholder: |
+        1. Open the Kitchen tab
+        2. Tap "Add item"
+        3. Type a name and hit save
+        4. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect to happen?
+    validations:
+      required: false
+
+  - type: textarea
+    id: screenshot
+    attributes:
+      label: Screenshot or screen recording
+      description: Drag an image or video here — hugely helpful for visual bugs.
+    validations:
+      required: false
+
+  - type: dropdown
+    id: severity
+    attributes:
+      label: How bad is it?
+      options:
+        - "Blocker — I can't use the app / lost data"
+        - "Major — a feature is broken but I can work around it"
+        - "Minor — cosmetic or small annoyance"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: frequency
+    attributes:
+      label: How often does it happen?
+      options:
+        - "Every time"
+        - "Sometimes"
+        - "Happened once"
+    validations:
+      required: false
