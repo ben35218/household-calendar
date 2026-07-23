@@ -55,7 +55,9 @@ router.put('/session', async (req, res) => {
   try {
     await ShoppingSession.findOneAndUpdate(
       { ...req.scopeFilter, weekStart },
-      { $set: { state }, $setOnInsert: { userId: req.user._id } },  // $in can't seed userId on insert
+      // The scope clause is all operators ($or/$in), so the upsert can't derive
+      // any doc fields from the filter — seed the routing explicitly.
+      { $set: { state }, $setOnInsert: { userId: req.user._id, householdId: req.household?._id } },
       { upsert: true, new: true }
     );
     res.json({ ok: true });

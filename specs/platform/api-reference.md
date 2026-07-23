@@ -1,11 +1,13 @@
 ---
 title: API reference
 status: current
-last-verified: 4d68a39 (2026-07-20)
+last-verified: d7c71e0 (2026-07-22)
 code:
   - server/src/app.js        # the mount table — source of truth for what exists
   - server/src/routes/
   - server/src/routes/records.js
+tests:
+  - server/src/test/         # every integration suite boots the real app over in-memory MongoDB
 ---
 
 # API reference
@@ -105,6 +107,15 @@ See `app.js` for exact paths. Grouped for orientation:
 - `POST /api/billing/webhook` (verified via `REVENUECAT_WEBHOOK_SECRET`)
 - `GET /api/keys/link/:linkId`, `GET /api/keys/public/:userId`
 - `GET /api/health`
+
+## Verification
+
+- The API surface is exercised end-to-end by the integration suites in
+  `server/src/test/` — each boots the real Express app (real routes, middleware,
+  models) over in-memory MongoDB via `server/src/test/harness.js`. Per-area
+  coverage is mapped in each feature spec's own Verification section; this spec
+  claims only the cross-cutting conventions (auth requirement, public endpoint
+  list, rate limiting), which every suite hits implicitly.
 
 ## Open questions
 

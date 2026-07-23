@@ -1,7 +1,7 @@
 ---
 title: People & contacts
 status: current
-last-verified: d3d50a0 (2026-07-21)
+last-verified: d7c71e0 (2026-07-22)
 code:
   - mobile/src/screens/profile/PeopleScreen.tsx
   - mobile/src/screens/profile/PersonDetailScreen.tsx
@@ -9,6 +9,8 @@ code:
   - mobile/src/screens/profile/ContactImportScreen.tsx
   - server/src/routes/people.js
   - server/src/models/Person.js
+tests:
+  - server/src/test/people.integration.test.js
 ---
 
 # People & contacts
@@ -57,8 +59,10 @@ be imported directly from the device or with AI assistance.
   each contact's **name and company only**; phone/email/birthday merge back
   server-side from the request, unseen by the model. **Web-search enrichment of
   businesses/pros is opt-in per import** (`enrich: true` + the "Look up
-  professionals on the web" toggle, default off). `POST /people/import` handles
-  the bulk create. AI paths are consent-gated — see
+  professionals on the web" toggle, default off). `POST /people/import` parses
+  an uploaded vCard file into contact candidates; the client seals and creates
+  each person through `/records` (the plaintext `POST /people/bulk` create was
+  retired with C3b). AI paths are consent-gated — see
   [ai-assistant.md](ai-assistant.md). Because classification necessarily ships
   contact names/companies to the model, `ContactImportScreen` offers the
   **AI-assisted** method only when **both** `aiEnabled` **and**
@@ -83,6 +87,22 @@ Person details (including birthdays and addresses) are sealed content records.
 > **Known gap:** the automatic bulk import path has historically been
 > plaintext-only — confirm whether it now seals like the interactive path, and
 > pin the answer here + in [platform/data-model.md](../platform/data-model.md).
+
+## Verification
+
+- vCard import parsing (FN / N-fallback names, folded lines, TEL/EMAIL, BDAY
+  normalization incl. dropping no-year dates, structured ADR, NOTE) and its
+  missing-file / no-contacts rejections — `people.integration.test.js`.
+- Classify minimization: the model receives names + companies only (captured at
+  the network edge); phone/email/birthday merge back server-side; unknown keys
+  are dropped and unknown types coerce to `friend`; web-search enrichment runs
+  only with `enrich: true` and only for `service` contacts —
+  `people.integration.test.js`.
+- The consent gates on `/classify` (403 with AI off) are verified in
+  [ai-assistant.md](ai-assistant.md)'s `aiPrivacy.integration.test.js`.
+- Person CRUD/visibility rides the opaque record store — verified under
+  [platform/data-model.md](../platform/data-model.md); self-Person seeding is a
+  client behavior (no server write path to test).
 
 ## Open questions
 

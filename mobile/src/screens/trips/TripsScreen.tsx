@@ -94,7 +94,7 @@ export default function TripsScreen() {
             variant="inline"
             icon="briefcase-outline"
             title="No trips yet"
-            message="Plan your next getaway."
+            message="Add a trip to plan bookings and split expenses with everyone coming along."
             actionLabel="Add Trip"
             onAction={() => navigation.navigate('TripForm', {})}
             accent={accent}

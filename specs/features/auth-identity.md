@@ -1,7 +1,7 @@
 ---
 title: Auth & identity
 status: current
-last-verified: b242e6c (2026-07-20)
+last-verified: d7c71e0 (2026-07-22)
 code:
   - mobile/src/screens/auth/
   - mobile/src/store/auth.tsx
@@ -11,6 +11,13 @@ code:
   - server/src/models/User.js
   - server/src/models/DeviceLink.js
   - mobile/src/lib/{passkeys,secureToken,deviceLink,deviceKey}.ts
+tests:
+  - server/src/test/authFlows.integration.test.js
+  - server/src/test/passwordlessRegister.integration.test.js
+  - server/src/test/sessions.integration.test.js
+  - server/src/test/deviceLink.integration.test.js
+  - server/src/test/recoveryMandate.integration.test.js
+  - mobile/src/lib/__tests__/e2ee.test.ts
 ---
 
 # Auth & identity
@@ -125,6 +132,25 @@ a 4-digit PIN) — is specified and built in
 Email/name and public key are server-visible; the private key is stored only as
 per-factor ciphertext and every factor KEK is derived client-side. Config:
 `PASSKEY_RP_ID`, `PASSKEY_ORIGINS`, `JWT_SECRET`, `RESET_COOLDOWN_HOURS`.
+
+## Verification
+
+- Forgot/reset lifecycle (no enumeration, hashed short-lived codes, burn-on-guess,
+  expiry), passkey challenge/login/register guards, delete-account confirmation,
+  and token half-life refresh — `authFlows.integration.test.js`.
+- Passwordless registration and the `hasPassword` flag lifecycle —
+  `passwordlessRegister.integration.test.js`.
+- Session create/revoke and new-device reset protection (hold, cancel, window
+  elapse) — `sessions.integration.test.js`.
+- Device linking (one-shot sealed payload, cross-account isolation, expiry,
+  validation, slot replacement) — `deviceLink.integration.test.js`.
+- The recovery mandate (`recoverySetupAt` unset → set, idempotent, gated on
+  enrollment) — `recoveryMandate.integration.test.js`.
+- Client unlock factors (password + recovery-code unlock restoring the same
+  keypair, wrong-password lockout, the biometric device cache seam) —
+  `mobile/src/lib/__tests__/e2ee.test.ts`.
+- Screen security / app lock are exercised on-device only (no automated
+  coverage yet — see Open questions).
 
 ## Open questions
 

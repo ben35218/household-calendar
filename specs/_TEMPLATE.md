@@ -4,6 +4,8 @@ status: stub            # stub | draft | current
 last-verified: <commit-sha> (<YYYY-MM-DD>)   # last time this was checked vs code
 code:                   # primary implementation entry points
   - <path/to/file-or-dir>
+tests:                  # suites that prove the Behavior section; MUST be
+  - <path/to/*.test.js> # non-empty for a `current` spec (empty = defect)
 ---
 
 # <Title>
@@ -30,6 +32,13 @@ edges (empty, error, permission, offline, shared vs. private).
 
 What is end-to-end encrypted vs. what is deliberately server-visible (scope,
 scheduling, sharing), and why. Cross-link `platform/crypto-e2ee.md`.
+
+## Verification
+
+Map the important MUST/SHOULD rules above to the suite(s) in `tests:` that
+exercise them. Point at tests, don't transcribe them — one line per claim or
+cluster of claims, naming the suite file. An untested normative claim is a
+defect: either write the test or demote the claim.
 
 ## Out of scope
 

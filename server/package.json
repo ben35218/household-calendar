@@ -8,7 +8,8 @@
     "start:once": "node src/index.js",
     "dev": "nodemon src/index.js",
     "seed": "node src/seed.js",
-    "test": "node --test 'src/**/*.test.js'"
+    "test": "node --test 'src/**/*.test.js'",
+    "test:coverage": "node --test --experimental-test-coverage --test-coverage-exclude='src/test/**' --test-coverage-exclude='**/*.test.js' --test-coverage-exclude='src/scripts/**' --test-coverage-lines=63 --test-coverage-branches=67 --test-coverage-functions=58 'src/**/*.test.js'"
   },
   "keywords": [],
   "author": "",

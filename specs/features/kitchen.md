@@ -1,13 +1,17 @@
 ---
 title: Kitchen (recipes, meal planning, grocery)
 status: current
-last-verified: 4d68a39 (2026-07-20)
+last-verified: d7c71e0 (2026-07-22)
 code:
   - mobile/src/screens/kitchen/
   - server/src/routes/recipes.js
   - server/src/routes/recipeSchedule.js
   - server/src/models/{Recipe,RecipeSchedule,ShoppingSession}.js
   - mobile/src/lib/{groceryList,groceryAggregate}.ts
+tests:
+  - server/src/test/kitchen.integration.test.js
+  - mobile/src/lib/__tests__/{groceryList,groceryAggregate,recipeIconTarget}.test.ts
+  - mobile/src/screens/kitchen/__tests__/KitchenScreen.weekParam.test.tsx
 ---
 
 # Kitchen (recipes, meal planning, grocery)
@@ -42,7 +46,11 @@ hands-free cooking mode. Recipe capture and suggestions are AI-assisted.
   week (`lib/groceryAggregate.ts`, `groceryList.ts`), with an AI tidy pass
   (`POST /recipe-schedule/organize-grocery-list`).
 - Shopping progress persists per week in `ShoppingSession`
-  (`weekStart` + a `state` blob): `GET/PUT /recipe-schedule/session`.
+  (`weekStart` + a `state` blob): `GET/PUT /recipe-schedule/session`. The
+  session is **household-shared** (one row per household × week, carrying
+  `householdId` routing so the household scope clause can match and upsert it);
+  moving a meal across shopping weeks invalidates the affected weeks'
+  `organizedList` while leaving the rest of the state (checked items) intact.
 - **Cooking mode** (`CookingModeScreen`) steps through instructions with timers.
 
 ## Data & API surface
@@ -60,6 +68,24 @@ hands-free cooking mode. Recipe capture and suggestions are AI-assisted.
 Recipes, schedules, and shopping state are sealed content records. The
 `share-email` path is a deliberate outside-share (a readable recipe snapshot to
 the recipient). Grocery aggregation happens on-device over decrypted recipes.
+
+## Verification
+
+- Planner CRUD (create with ciphertext envelope, date-range list, for-recipe,
+  delete), envelope-shape validation, the week-move `weekChanged` +
+  organized-list invalidation, session upsert/round-trip (incl. the
+  household-routing regression this suite caught: the strict upsert through the
+  scope clause 500'd until `ShoppingSession` carried `householdId`), and
+  cross-household isolation — `kitchen.integration.test.js`.
+- organize-grocery-list: item names + household section order reach the model
+  (captured at the network edge), the organized JSON returns, a non-JSON model
+  reply degrades to 422, and AI-off returns 403 — `kitchen.integration.test.js`.
+- Client-side grocery aggregation/list building —
+  `mobile/src/lib/__tests__/{groceryList,groceryAggregate}.test.ts`; the week
+  deep-link param — `KitchenScreen.weekParam.test.tsx`.
+- Recipe content storage rides the opaque record store — verified under
+  [platform/data-model.md](../platform/data-model.md); the born-encrypted
+  write-guard in `e2eeMandate.integration.test.js`.
 
 ## Open questions
 

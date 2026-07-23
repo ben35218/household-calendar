@@ -1,13 +1,17 @@
 ---
 title: Maintenance (items, tasks, chores)
 status: current
-last-verified: 4d68a39 (2026-07-20)
+last-verified: d7c71e0 (2026-07-22)
 code:
   - mobile/src/screens/maintenance/
   - server/src/routes/{items,tasks,chores,taskTemplates,choreTemplates,odometer,manuals}.js
   - server/src/models/{Item,MaintenanceTask,Chore,TaskCompletion,OdometerLog,Manual}.js
   - server/src/services/recurrence.js
   - shared/seed/taskTemplates.json
+tests:
+  - server/src/test/maintenance.integration.test.js
+  - server/src/services/recurrence.test.js
+  - mobile/src/lib/__tests__/recurrence.test.ts
 ---
 
 # Maintenance (items, tasks, chores)
@@ -60,10 +64,15 @@ odometer tracking for mileage-based service.
   Tuesday" ordinal form stays editable only on the Repeat screen. So a request
   like "make laundry day Saturdays" now updates the repeat rule, not just the
   next due date.
-- **Completion** recomputes the next due date via `services/recurrence.js`:
-  `POST /tasks/:id/complete` logs a `TaskCompletion` and advances `nextDueDate`
-  (or `nextDueKm`). `GET /tasks/completions` is the history log. Chore/task CRUD
-  otherwise flows through the opaque `/records` store.
+- **Completion is content-blind** (D4 + C3b): the CLIENT computes the next due
+  date / mileage rollover and sends the facts plus the task's **re-sealed
+  ciphertext**; `POST /tasks/:id/complete` verifies the task is in scope,
+  validates the envelope **before** recording anything (a malformed envelope
+  MUST NOT leave an orphaned ledger row behind the 400), logs a
+  `TaskCompletion`, and applies the re-sealed `enc` to the task's Record row.
+  `GET /tasks/completions` is the history log (date-range filterable,
+  household-scoped). Chore/task CRUD otherwise flows through the opaque
+  `/records` store.
 - **Templates:** browse read-only catalogs — `GET /task-templates` (+ `/:id`,
   from `shared/seed/taskTemplates.json`) and `GET /chore-templates` — and add
   them via the review screens. Templates are **reusable**: a household may add
@@ -95,6 +104,25 @@ bytes are encrypted per-file. **Scheduling is sealed too** — `nextDueDate`,
 client-side via the `shared/calendar` engine. Reminder timing is on-device — see
 [notifications.md](notifications.md) and
 [platform/data-model.md](../platform/data-model.md).
+
+## Verification
+
+- Content-blind completion: facts recorded + re-sealed ciphertext applied to the
+  Record row; envelope validated before the ledger write (the orphaned-row bug
+  this suite caught); scope 404s; history date-range filter + household scoping
+  — `maintenance.integration.test.js`.
+- Odometer: readings log against an in-scope vehicle only, raw rows +
+  km-interval mileage tasks return, deletes are scope-checked —
+  `maintenance.integration.test.js`.
+- Template catalogs: non-empty seed with id/title/recurrence, category filter,
+  by-id + 404, chore catalog — `maintenance.integration.test.js`.
+- Recurrence math — `services/recurrence.test.js` (server) and
+  `mobile/src/lib/__tests__/recurrence.test.ts` (client assist-patch
+  reassembly).
+- Task/chore/item content storage rides the opaque record store — verified
+  under [platform/data-model.md](../platform/data-model.md); the AI surfaces
+  (form-assist, from-photo, manual parse) are consent-gate-verified in
+  [ai-assistant.md](ai-assistant.md).
 
 ## Open questions
 

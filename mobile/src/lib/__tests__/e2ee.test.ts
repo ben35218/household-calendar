@@ -1,0 +1,194 @@
+// Round-trip tests for the mobile E2EE session (lib/e2ee.ts) — the crypto
+// boundary every content record crosses on device. The REAL @household/crypto
+// core runs (Jest routes the native adapter to the web/libsodium build); only
+// the API relay and the device keychain are in-memory fakes, so enrollment,
+// HDK envelopes, rotation, and resource keys exercise the same bytes-in/
+// bytes-out paths as production. Spec: platform/crypto-e2ee.md +
+// features/auth-identity.md.
+jest.mock('@household/crypto/adapters/native', () => require('@household/crypto/adapters/web'));
+
+// In-memory device keychain (the Face-ID biometric cache).
+let mockDeviceKey: string | null = null;
+jest.mock('../deviceKey', () => ({
+  saveDeviceKey: async (v: string) => { mockDeviceKey = v; },
+  loadDeviceKey: async () => mockDeviceKey,
+  clearDeviceKey: async () => { mockDeviceKey = null; },
+  isDeviceKeyEnabled: async () => false,
+}));
+
+// In-memory "server": stores whatever the client uploads, hands it back —
+// exactly the blind-relay contract the real API provides.
+const mockServer = {
+  enrollment: null as null | { identityPublicKey: string; factors: unknown[] },
+  householdId: 'hh-test-1',
+  currentKeyVersion: 0,
+  hdkEnvelopes: [] as { keyVersion: number; wrappedHDK: string }[],
+  keyRotationPending: false,
+  calendarKeys: new Map<string, { currentKeyVersion: number; household: unknown[]; member: unknown[] }>(),
+};
+
+jest.mock('../../api', () => ({
+  keysApi: {
+    me: async () => ({
+      data: mockServer.enrollment
+        ? {
+            enrolled: true,
+            identityPublicKey: mockServer.enrollment.identityPublicKey,
+            wrappedPrivateKey: mockServer.enrollment.factors,
+            recoverySetupAt: null, // keeps born-encrypted activation parked (recovery not set up)
+          }
+        : { enrolled: false },
+    }),
+    enroll: async (payload: { identityPublicKey: string; factors: unknown[] }) => {
+      mockServer.enrollment = payload;
+      return { data: { ok: true } };
+    },
+    recoveryComplete: async () => ({ data: { ok: true } }),
+    putFactor: async () => ({ data: { ok: true } }),
+  },
+  householdApi: {
+    getKey: async () => ({
+      data: {
+        householdId: mockServer.householdId,
+        currentKeyVersion: mockServer.currentKeyVersion,
+        envelopes: mockServer.hdkEnvelopes,
+        isOwner: true,
+        keyRotationPending: mockServer.keyRotationPending,
+      },
+    }),
+    mintKey: async ({ wrappedHDK, keyVersion }: { wrappedHDK: string; keyVersion: number }) => {
+      mockServer.hdkEnvelopes.push({ keyVersion, wrappedHDK });
+      mockServer.currentKeyVersion = keyVersion;
+      return { data: { keyVersion } };
+    },
+    memberKeys: async () => ({
+      data: mockServer.enrollment
+        ? [{ userId: 'me', identityPublicKey: mockServer.enrollment.identityPublicKey }]
+        : [],
+    }),
+    rotateKey: async ({ keyVersion, envelopes }: { keyVersion: number; envelopes: { userId: string; wrappedHDK: string }[] }) => {
+      mockServer.hdkEnvelopes.push({ keyVersion, wrappedHDK: envelopes[0].wrappedHDK });
+      mockServer.currentKeyVersion = keyVersion;
+      mockServer.keyRotationPending = false;
+      return { data: { keyVersion } };
+    },
+    activate: async () => ({ data: { status: 'not-required', e2eeActive: false } }),
+  },
+  customCalendarsApi: {
+    keys: async (resource: string) => ({
+      data: mockServer.calendarKeys.get(resource) ?? { currentKeyVersion: 0, household: [], member: [] },
+    }),
+  },
+  tripsApi: {
+    keys: async () => ({ data: { currentKeyVersion: 0, household: [], member: [] } }),
+  },
+}));
+
+import { loadHouseholdCrypto } from '@household/crypto/adapters/web';
+import {
+  ensureEnrolledOnLogin, ensureHouseholdKey, isUnlocked, lock,
+  unlockWithPassword, unlockWithRecoveryCode, getPendingRecoveryCode,
+  sealNew, openRecord, openOpaqueRecord, decryptRecord,
+  mintResourceKey, wrapResourceKeyForCollaborator, sealForResource, decryptResourceRecord,
+  publicKeyFingerprint,
+} from '../e2ee';
+
+const PASSWORD = 'correct horse battery staple';
+let recoveryCode: string;
+let sealedEvent: Record<string, unknown>; // the v1-sealed record, reused across tests
+
+// The tests are one sequential story over the module's session state, mirroring
+// a device's life: enroll → seal → lock → unlock → rotate → share.
+
+test('enrollment mints an identity, surfaces the one-time recovery code, and the owner mints HDK v1', async () => {
+  const status = await ensureEnrolledOnLogin(PASSWORD);
+  expect(status).toBe('enrolled');
+  expect(isUnlocked()).toBe(true);
+  recoveryCode = getPendingRecoveryCode()!;
+  expect(recoveryCode).toMatch(/^[0-9A-Z]{5}(-[0-9A-Z]{1,5})+$/);
+
+  expect(await ensureHouseholdKey()).toBe('ready');
+  expect(mockServer.currentKeyVersion).toBe(1);
+  expect(mockServer.hdkEnvelopes).toHaveLength(1);
+});
+
+test('a sealed record round-trips through the HDK, tagged and untagged', async () => {
+  sealedEvent = await sealNew('CalendarEvent', { title: 'Dentist', startDate: '2026-08-01' });
+  expect(sealedEvent.enc).toBeTruthy();
+  expect(sealedEvent.keyVersion).toBe(1);
+
+  // Typed read (openRecord merges the decrypted fields over the row).
+  const open = await openRecord('CalendarEvent', sealedEvent as never);
+  expect(open).toMatchObject({ title: 'Dentist', startDate: '2026-08-01' });
+
+  // Opaque read (the v2 envelope carries the collection inside the ciphertext).
+  const opaque = await openOpaqueRecord(sealedEvent as never);
+  expect(opaque?.collection).toBe('CalendarEvent');
+  expect(opaque?.record).toMatchObject({ title: 'Dentist' });
+});
+
+test('lock clears the session; the wrong password stays locked; the right one restores decryption', async () => {
+  lock();
+  expect(isUnlocked()).toBe(false);
+  expect(await decryptRecord('CalendarEvent', String(sealedEvent._id), 1, sealedEvent.enc as never)).toBeNull();
+
+  expect(await unlockWithPassword('nope')).toBe(false);
+  expect(isUnlocked()).toBe(false);
+
+  expect(await unlockWithPassword(PASSWORD)).toBe(true);
+  expect(await ensureHouseholdKey()).toBe('ready'); // re-unwraps the stored HDK envelope
+  const dec = await decryptRecord<{ title: string }>('CalendarEvent', String(sealedEvent._id), 1, sealedEvent.enc as never);
+  expect(dec?.title).toBe('Dentist');
+});
+
+test('the recovery code (reformatted, as a user would type it) also unlocks', async () => {
+  lock();
+  const reentered = recoveryCode.replace(/-/g, ' ').toLowerCase();
+  expect(await unlockWithRecoveryCode(reentered)).toBe(true);
+  expect(await unlockWithRecoveryCode.call(null, recoveryCode)).toBe(true); // canonical form too
+  expect(await ensureHouseholdKey()).toBe('ready');
+});
+
+test('lazy rotation: a pending flag mints v2, new seals use it, v1 records stay readable', async () => {
+  mockServer.keyRotationPending = true;
+  expect(await ensureHouseholdKey()).toBe('ready');
+  expect(mockServer.currentKeyVersion).toBe(2);
+
+  const v2 = await sealNew('Chore', { title: 'Dishes' });
+  expect(v2.keyVersion).toBe(2);
+  expect((await openRecord('Chore', v2 as never)) as never).toMatchObject({ title: 'Dishes' });
+
+  // The pre-rotation record still opens (old HDK versions are kept for reads).
+  const oldRead = await decryptRecord<{ title: string }>('CalendarEvent', String(sealedEvent._id), 1, sealedEvent.enc as never);
+  expect(oldRead?.title).toBe('Dentist');
+});
+
+test('resource keys: mint, seal, decrypt — and a collaborator can unwrap their member wrap', async () => {
+  const resource = 'custom-family';
+  const minted = await mintResourceKey(resource, 1);
+  expect(minted).toBeTruthy();
+  expect(minted!.household.hdkVersion).toBe(2);
+
+  const sealed = await sealForResource('calendar', 'CalendarEvent', 'ev-1', resource, { title: 'Recital' });
+  expect(sealed?.enc.ks).toBe('cal');
+  const dec = await decryptResourceRecord<{ title: string }>('calendar', 'CalendarEvent', 'ev-1', resource, 1, sealed!.enc);
+  expect(dec?.title).toBe('Recital');
+
+  // Wrap to an outside collaborator; their device (their keypair) unwraps the
+  // same key bytes via the shared core — no HDK involved.
+  const crypto = await loadHouseholdCrypto();
+  const collaborator = crypto.generateIdentityKeyPair();
+  const wrapped = await wrapResourceKeyForCollaborator(resource, 1, crypto.b64(collaborator.publicKey));
+  expect(wrapped).toBeTruthy();
+  const unwrapped = crypto.unwrapResourceKeyForMember(wrapped!, collaborator);
+  expect([...unwrapped]).toEqual([...minted!.key]);
+});
+
+test('fingerprints are stable per key and differ across keys', async () => {
+  const crypto = await loadHouseholdCrypto();
+  const pub = mockServer.enrollment!.identityPublicKey;
+  const fp1 = await publicKeyFingerprint(pub);
+  expect(fp1).toBe(await publicKeyFingerprint(pub));
+  const other = crypto.b64(crypto.generateIdentityKeyPair().publicKey);
+  expect(await publicKeyFingerprint(other)).not.toBe(fp1);
+});

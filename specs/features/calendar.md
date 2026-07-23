@@ -1,7 +1,7 @@
 ---
 title: Calendar & events
 status: current
-last-verified: 797df57 (2026-07-21)
+last-verified: d7c71e0 (2026-07-22)
 code:
   - mobile/src/screens/calendar/
   - mobile/src/lib/calendar.ts
@@ -13,6 +13,12 @@ code:
   - server/src/routes/records.js          # the store events are actually persisted in
   - server/src/routes/calendarChat.js     # the calendar assistant
   - shared/calendar/                       # recurrence expansion (shared engine)
+tests:
+  - server/src/test/customCalendars.integration.test.js
+  - server/src/test/calendarKeys.integration.test.js
+  - server/src/test/invitations.integration.test.js
+  - shared/calendar/index.test.js
+  - mobile/src/lib/__tests__/{calendarFeeds,calendarPrefs,holidays,recurrence,tz,printCalendar}.test.ts
 ---
 
 # Calendar & events
@@ -172,6 +178,27 @@ whichever layer is active.
   snapshot. A calendar shared outside the household uses a per-resource
   CalendarKey (D1) so the collaborator decrypts it without the HDK. See
   [platform/crypto-e2ee.md](../platform/crypto-e2ee.md) and `docs/TRANSPARENCY.md`.
+
+## Verification
+
+- Custom calendars: create/list visibility tiers (private, household-wide,
+  member-specific, outsiders excluded), creator-only writes, validation,
+  outside-share invitation lifecycle, access levels, feed subscription
+  normalization — `customCalendars.integration.test.js`.
+- Per-calendar resource keys: owner-only mint/rotate, wrap-on-approve,
+  collaborator-only member wraps, sealed events reaching collaborators as
+  ciphertext, revoke → rotation, envelope cleanup on delete —
+  `calendarKeys.integration.test.js`.
+- Event invitations: invite/accept/decline/leave/revoke lifecycle, copy-event
+  semantics, email-only claim at registration, `.ics` snapshot + public link,
+  guest-list scope, guard rails — `invitations.integration.test.js`.
+- Recurrence expansion (the shared engine) — `shared/calendar/index.test.js`.
+- Client-side calendar plumbing (feeds, prefs/density, holidays, recurrence
+  helpers, timezone math, printing) — the `mobile/src/lib/__tests__/` units
+  listed in `tests:`.
+- The sealed record store the events persist in is verified under
+  [platform/data-model.md](../platform/data-model.md) (records suite) and
+  [platform/crypto-e2ee.md](../platform/crypto-e2ee.md) (author hiding, drop).
 
 ## Out of scope
 

@@ -1,7 +1,7 @@
 ---
 title: Households & sharing
 status: current
-last-verified: d3d50a0 (2026-07-21)
+last-verified: d7c71e0 (2026-07-22)
 code:
   - mobile/src/screens/profile/HouseholdScreen.tsx
   - server/src/routes/household.js
@@ -9,6 +9,14 @@ code:
   - server/src/services/{householdKey,keyEnvelope,securityAlerts,e2eePolicy}.js
   - server/src/models/{Household,HouseholdInvitation,JoinRequest,HouseholdKeyEnvelope,ResourceKeyEnvelope}.js
   - mobile/src/lib/safetyNumbers.ts
+tests:
+  - server/src/test/householdInvitations.integration.test.js
+  - server/src/test/householdKey.integration.test.js
+  - server/src/test/keyHygiene.integration.test.js
+  - server/src/test/securityAlerts.integration.test.js
+  - server/src/services/householdKey.test.js
+  - server/src/services/keyEnvelope.test.js
+  - mobile/src/lib/__tests__/safetyNumbers.test.ts
 ---
 
 # Households & sharing
@@ -108,6 +116,24 @@ The **membership graph** (who is in which household, join/leave timing) is
 server-visible by necessity. The household **name and home address are sealed**
 (C2). See [platform/crypto-e2ee.md](../platform/crypto-e2ee.md) and
 [operations/transparency.md](../operations/transparency.md).
+
+## Verification
+
+- Invite → accept → approve grants membership (and accept alone does NOT);
+  duplicate-invite guard, decline/revoke paths, email-only claim at registration
+  — `householdInvitations.integration.test.js`.
+- HDK lifecycle: owner-only idempotent v1 mint, wrap-on-approve, member-keys
+  listing, removal → solo household + rotation flag, full-coverage rotation,
+  partial-coverage refusal, compare-and-set race — `householdKey.integration.test.js`
+  (envelope mechanics unit-tested in `services/{householdKey,keyEnvelope}.test.js`).
+- Old-version retirement refuses until drained; periodic rotation flags only
+  stale households — `keyHygiene.integration.test.js`.
+- Security-alert audit events for enrollment and factor add/remove —
+  `securityAlerts.integration.test.js`.
+- Safety numbers (client-side): real-fingerprint lifecycle — unverified →
+  verified sticks to a fingerprint, a key change flips to `changed` until
+  re-verified at the new number, clear resets, self excluded —
+  `mobile/src/lib/__tests__/safetyNumbers.test.ts`.
 
 ## Open questions
 

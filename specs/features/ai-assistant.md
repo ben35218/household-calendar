@@ -1,7 +1,7 @@
 ---
 title: AI assistant (Calen)
 status: current
-last-verified: 797df57 (2026-07-21)
+last-verified: d7c71e0 (2026-07-22)
 code:
   - mobile/src/screens/chat/
   - server/src/routes/{calendarChat,choresChat,maintenanceChat,maintenancePlanChat,tripsChat}.js
@@ -10,6 +10,11 @@ code:
   - server/src/middleware/aiConsent.js
   - server/src/models/PhoneCall.js
   - mobile/src/lib/aiPayload.ts
+tests:
+  - server/src/test/aiPrivacy.integration.test.js
+  - server/src/services/phoneCalls.test.js
+  - server/src/middleware/usageMeter.tokens.test.js
+  - mobile/src/lib/__tests__/{aiPayload,aiWindow}.test.ts
 ---
 
 # AI assistant (Calen)
@@ -170,6 +175,34 @@ reference).
 - **Config:** `ANTHROPIC_API_KEY`, `VAPI_API_KEY`, `VAPI_PHONE_NUMBER_ID`.
 - **Client:** `screens/chat/*` (ChatScreen, AssistantScreen, per-area assistant
   screens), `lib/aiPayload.ts`.
+
+## Verification
+
+The privacy invariants are tested **where they are enforced** —
+`aiPrivacy.integration.test.js` runs the real app with fakes only at the network
+edge (the Anthropic SDK's `messages.stream` and the Vapi HTTP call are captured,
+so every assertion is against the exact outbound payload):
+
+- Server-side `aiEnabled` gate: with the pref off, every chat/scan/call endpoint
+  returns 403 and nothing reaches Anthropic or Vapi; read-only call bookkeeping
+  stays available; flipping it back restores chat.
+- Friends/family name-only: a full-fielded roster reaches the model only via
+  `get_household_members`, names (+ professional business details, "on file"
+  flags) only — no birthday/address/phone/email/notes value appears in any model
+  payload, and no roster name appears in the system prompt.
+- `includePersonalInfo: false` withholds the roster from the model entirely.
+- References not values: the focused event and `list_events` expose
+  `phoneOnFile` presence flags; the numbers never enter model context.
+- Per-call contact opt-in: without `shareContact`, the Vapi prompt says
+  name-only and carries no user phone/email; with it, details ride as
+  share-if-asked. The legacy cancel route never sends them. Every placed call
+  disables recording + transcript retention and carries the PII-constrained
+  summary prompt. Call placement refuses an event outside the caller's scope.
+
+Client-side payload minimization (alias stripping, query-scoped date windows) is
+unit-tested in `mobile/src/lib/__tests__/{aiPayload,aiWindow}.test.ts`; call
+metering in `services/phoneCalls.test.js` and token metering in
+`middleware/usageMeter.tokens.test.js`.
 
 ## Open questions
 

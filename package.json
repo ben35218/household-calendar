@@ -6,7 +6,11 @@
   "scripts": {
     "dev:server": "npm --prefix server run dev",
     "dev": "npm run dev:server",
-    "start": "npm --prefix server start"
+    "start": "npm --prefix server start",
+    "test": "npm run test:server && npm run test:shared && npm run test:mobile",
+    "test:server": "npm --prefix server test",
+    "test:shared": "npm --prefix shared/crypto test && npm --prefix shared/calendar test && npm --prefix shared/weather test",
+    "test:mobile": "npm --prefix mobile test"
   },
   "devDependencies": {
     "@types/react": "~19.2.14",

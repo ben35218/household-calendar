@@ -1,13 +1,23 @@
 ---
 title: Cryptography & E2EE
 status: current
-last-verified: d3d50a0 (2026-07-21)
+last-verified: d7c71e0 (2026-07-22)
 code:
   - shared/crypto/src/core.ts
   - shared/crypto/src/enrollment.ts
   - server/src/services/{householdKey,keyEnvelope,e2eePolicy,securityAlerts}.js
   - mobile/src/lib/e2ee.ts
   - server/src/models/{Record,HouseholdKeyEnvelope,ResourceKeyEnvelope}.js
+tests:
+  - shared/crypto/src/core.test.ts
+  - shared/crypto/src/deviceLink.test.ts
+  - shared/crypto/src/enrollment.test.js
+  - server/src/test/e2eeMandate.integration.test.js
+  - server/src/test/authorHiding.integration.test.js
+  - server/src/test/drop.integration.test.js
+  - server/src/test/reDrop.integration.test.js
+  - server/src/services/e2eePolicy.test.js
+  - mobile/src/lib/__tests__/e2ee.test.ts
 ---
 
 # Cryptography & E2EE
@@ -98,6 +108,28 @@ HDK), **event invitations** to non-account people (a readable event snapshot for
 the email + `.ics`), and **AI phone calls** (the event essentials needed to place
 the call). Each is documented in the relevant feature spec and in
 [operations/transparency.md](../operations/transparency.md).
+
+## Verification
+
+- Primitives and envelopes (identity wrap per factor, HDK seal/unseal, resource
+  keys, guardian envelope, device-link handoff) —
+  `shared/crypto/src/{core,deviceLink}.test.ts`, `enrollment.test.js`.
+- The born-encrypted mandate: write-guard rejects plaintext content, activation
+  flips and stays enforced, ciphertext + routing only in steady state —
+  `e2eeMandate.integration.test.js` (+ `services/e2eePolicy.test.js` units).
+- Author hiding on e2eeActive creates; cross-household isolation; spoofed
+  `householdId` rejected — `authorHiding.integration.test.js`.
+- The drop journey (seal → readiness → dry-run → commit → post-drop API) and the
+  re-drop of newer plaintext columns — `drop.integration.test.js`,
+  `reDrop.integration.test.js`.
+- The mobile crypto boundary (`lib/e2ee.ts`) — enrollment/recovery-code unlock,
+  HDK envelope unwrap after lock, lazy rotation keeping old versions readable,
+  opaque/tagged record round-trips, resource-key mint/wrap/collaborator-unwrap
+  — `mobile/src/lib/__tests__/e2ee.test.ts` (real `@household/crypto` core over
+  the web/libsodium adapter; only the API relay is faked).
+- The opaque record store's field-level boundary is verified under
+  [data-model.md](data-model.md); HDK lifecycle under
+  [features/households-sharing.md](../features/households-sharing.md).
 
 ## Open questions
 

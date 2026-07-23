@@ -54,6 +54,12 @@ specs/
    counts (tests, routes, models) in prose — they drift silently. Say "see
    `server/src/routes/`," not "45 routes."
 3. **Behavior is normative** (MUST/SHOULD); everything else is context.
+4. **`tests:` is a contract too.** A `status: current` feature/platform spec
+   MUST name the suite(s) proving its Behavior section (`tests:` frontmatter +
+   a `## Verification` section mapping claims to suites — see `_TEMPLATE.md`).
+   An empty `tests:` is a defect, like a spec with no `code:`; an untested
+   normative claim is a defect — write the test or demote the claim. The gate
+   lints this and fails any `tests:` path that no longer exists (rot).
 
 ## The change loop (required)
 
@@ -64,22 +70,34 @@ change that alters behavior MUST follow this loop:
    `features/<area>.md` for a feature change, `platform/*` for API/data-model/
    crypto changes. Write the intended behavior, not a changelog.
 2. **Implement** to match the spec.
-3. **Verify** (tests + read-back) that the code does what the spec says.
+3. **Verify with a test.** A behavior change ships with the test that proves
+   the spec — added or updated in the same change, and registered in the
+   owning spec's `tests:` frontmatter + `## Verification` section. Run the
+   suite: `npm test` at the repo root fans out to server + shared + mobile
+   (`npm run test:server` / `test:shared` / `test:mobile` individually; the
+   server also has a `test:coverage` floor that only ratchets up).
 4. **Bump `last-verified`** on every spec you touched to the new commit + date.
-5. **Ship them together.** A behavior change and its spec update land in the
-   **same commit / PR**. Code that changes an area without touching that area's
-   spec is treated as drift — a defect, like a failing test.
+5. **Ship them together.** A behavior change, its spec update, and its test
+   land in the **same commit / PR**. Code that changes an area without touching
+   that area's spec — or without a matching test change — is treated as drift:
+   a defect, like a failing test.
 
 **The gate.** [`scripts/check-spec-sync.mjs`](../scripts/check-spec-sync.mjs)
-maps changed code paths to their owning spec and flags any area changed without a
-spec update. It runs:
+checks four things: (1) changed code whose owning spec wasn't touched (**spec
+drift**); (2) changed feature code with no matching test change (**test
+drift**); (3) a `status: current` feature/platform spec with an empty `tests:`
+list (**lint**); (4) a `tests:` entry that matches no existing file (**rot**).
+It runs:
 
 - automatically at the end of each Claude Code session (a `Stop` hook, if
   configured in `.claude/settings*.json`);
 - manually: `node scripts/check-spec-sync.mjs` (working tree) or
   `node scripts/check-spec-sync.mjs --base main` (branch vs `main`);
+- in CI ([`.github/workflows/ci.yml`](../.github/workflows/ci.yml)) on every
+  PR, alongside the full test suite — warn-only today, to be ratcheted to
+  blocking (`--strict`) now that the backfill is green;
 - as the checklist in [`.github/pull_request_template.md`](../.github/pull_request_template.md).
 
-A warning is a prompt to either update the spec or, if the change genuinely
-doesn't alter documented behavior, note that in the PR. It is a nudge, not a
-hard block — the discipline is the point.
+A warning is a prompt to either update the spec / add the test or, if the
+change genuinely doesn't alter documented behavior, note that in the PR.
+Locally it is a nudge, not a hard block — the discipline is the point.

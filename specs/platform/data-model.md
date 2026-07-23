@@ -1,12 +1,16 @@
 ---
 title: Data model
 status: current
-last-verified: 4d68a39 (2026-07-20)
+last-verified: d7c71e0 (2026-07-22)
 code:
   - server/src/models/Record.js        # the live opaque content store
   - server/src/models/encFields.js
   - server/src/services/contentModels.js
   - server/src/models/
+tests:
+  - server/src/test/records.integration.test.js
+  - server/src/test/authorHiding.integration.test.js
+  - server/src/services/dropReadiness.test.js
 ---
 
 # Data model
@@ -102,6 +106,18 @@ list (sealed, C2). See [platform/crypto-e2ee.md](crypto-e2ee.md).
 > `docs/CRYPTO-SPEC.md` §7 and `docs/TRANSPARENCY.md` still list household name
 > (and `nextDueDate`) as server-visible — stale since C2/D4. Reconcile once the
 > prod re-seal/re-drop backfill is confirmed complete.
+
+## Verification
+
+- The routing-only plaintext contract: an opaque write stores routing +
+  ciphertext (no plaintext type), `householdId` is stamped authoritatively and
+  unspoofable, ciphertext is required, LWW sync + tombstones propagate,
+  cross-household isolation, household-lane and resource-lane reads, dual-accept
+  of the v1 envelope, orphaned-attachment reaping —
+  `records.integration.test.js`.
+- Author-hiding (`userId` omitted on active households, kept pre-active) —
+  `authorHiding.integration.test.js`.
+- The `DROP_FIELDS` sealed-field enumeration — `services/dropReadiness.test.js`.
 
 ## Open questions
 

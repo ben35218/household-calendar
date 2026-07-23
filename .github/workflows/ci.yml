@@ -1,0 +1,49 @@
+# First CI for the repo (docs → specs/README.md "The change loop").
+#
+# Warn-only for now: test failures and spec/test drift are reported in the log
+# but do not fail the PR. Ratchet plan (owner decision): once the backfilled
+# suites are green on main, drop the `|| true` from the test step and add
+# `--strict` to the gate step so both block.
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # the gate diffs against merge-base with main
+
+      - uses: actions/setup-node@v4
+        with:
+          # shared/crypto runs .test.ts via `node --test` (type stripping);
+          # needs Node >= 22.6. Dev machines run 26.
+          node-version: 24
+
+      # mongodb-memory-server downloads a MongoDB binary on first run.
+      - name: Cache MongoDB binaries
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/mongodb-binaries
+          key: mongodb-binaries-${{ runner.os }}
+
+      - name: Install
+        run: |
+          npm ci
+          npm ci --prefix server
+          npm ci --prefix mobile
+          npm ci --prefix shared/crypto
+
+      - name: Tests (warn-only)
+        run: npm test || true
+
+      - name: Server coverage floor (warn-only)
+        run: npm run test:coverage --prefix server || true
+
+      - name: Spec-sync gate (warn-only)
+        run: node scripts/check-spec-sync.mjs --base origin/main || true

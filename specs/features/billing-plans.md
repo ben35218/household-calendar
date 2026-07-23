@@ -1,7 +1,7 @@
 ---
 title: Billing & plans
 status: current
-last-verified: 797df57 (2026-07-21)
+last-verified: d7c71e0 (2026-07-22)
 code:
   - mobile/src/screens/plan/
   - mobile/src/lib/purchases.ts
@@ -10,6 +10,10 @@ code:
   - server/src/models/MonetizationConfig.js
   - server/src/services/aiUsage.js
   - admin/
+tests:
+  - server/src/test/billingWebhook.integration.test.js
+  - server/src/routes/billing.test.js
+  - server/src/middleware/usageMeter.tokens.test.js
 ---
 
 # Billing & plans
@@ -110,6 +114,19 @@ catalog centrally.
 
 Plan status and AI-usage counts are server-visible by necessity (counts only,
 never prompt content). See [operations/transparency.md](../operations/transparency.md).
+
+## Verification
+
+- Webhook: secret verification, grant → revoke lifecycle, cancellation vs.
+  refund timing, lifecycle state stamping (renewal, billing-issue, expiration),
+  transfer/unknown-entitlement acks, unknown-household ack —
+  `billingWebhook.integration.test.js`.
+- Billing route helpers (status/gauge shaping) — `routes/billing.test.js`.
+- Token metering (weekly budget accounting in the usage meter) —
+  `middleware/usageMeter.tokens.test.js`; the AI-side enforcement view is in
+  [ai-assistant.md](ai-assistant.md).
+- The paywall/purchase client path (`react-native-purchases`) is exercised
+  on-device only.
 
 ## Open questions
 

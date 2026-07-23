@@ -46,6 +46,13 @@ router.post('/:id/complete', activity('taskCompleted'), async (req, res) => {
     const task = await Record.findOne({ _id: req.params.id, ...req.scopeFilter }).lean();
     if (!task) return res.status(404).json({ error: 'Not found' });
 
+    // Validate the re-sealed envelope BEFORE recording anything: a malformed
+    // envelope must not leave an orphaned ledger row behind a 400 (the client
+    // retries and would double-log the completion).
+    let enc;
+    try { enc = pickRecordEnc(req.body); }
+    catch (msg) { return res.status(400).json({ error: String(msg) }); }
+
     const completedDate = req.body.completedDate ? new Date(req.body.completedDate) : new Date();
     const odometerReading = req.body.odometerReading != null ? Number(req.body.odometerReading) : null;
     const nextDueDate = req.body.nextDueDate ? new Date(req.body.nextDueDate) : null;
@@ -64,9 +71,6 @@ router.post('/:id/complete', activity('taskCompleted'), async (req, res) => {
     // Apply the re-sealed ciphertext (the enc blob now carries the new nextDueDate /
     // lastServiceKm / nextDueKm) to the task's Record row. Opaque-only — no
     // plaintext content is stored.
-    let enc;
-    try { enc = pickRecordEnc(req.body); }
-    catch (msg) { return res.status(400).json({ error: String(msg) }); }
     if (enc.enc) await Record.updateOne({ _id: task._id, ...req.scopeFilter }, { $set: enc });
 
     res.json({ task: { _id: task._id }, completion });

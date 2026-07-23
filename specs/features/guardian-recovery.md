@@ -1,13 +1,16 @@
 ---
 title: Guardian recovery (dual-control)
 status: current
-last-verified: 4d68a39 (2026-07-20)
+last-verified: d7c71e0 (2026-07-22)
 code:
   - shared/crypto/src/core.ts                        # createGuardianEnvelope / unsealGuardianOuter / resealGuardianInner / recoverWithGuardian
   - server/src/routes/keys.js                        # /keys/guardian* endpoints (blind store + relay)
   - server/src/models/{User,GuardianRecoveryRequest}.js  # the outer envelope (on User) + the relay slot
   - mobile/src/lib/guardianRecovery.ts               # arm / request / poll / finish / approve
   - mobile/src/screens/profile/GuardianRecoveryScreen.tsx  # setup / recover / approve UI
+tests:
+  - shared/crypto/src/core.test.ts                   # guardian envelope: both legs required; wrong PIN/device/guardian rejected
+  - mobile/src/lib/__tests__/guardianRecovery.test.ts # arm → request → approve → PIN finish over a blind relay
 ---
 
 # Guardian recovery (dual-control)
@@ -205,6 +208,21 @@ envelope exists, which member is the guardian, and that a recovery was requested
   (call/in person) before approving. A substituted key yields a different
   fingerprint → the guardian declines. This must be stated plainly in the
   approval UI (it is, in `GuardianRecoveryScreen` ApproveMode).
+
+## Verification
+
+- The dual-control construction — arming produces an envelope neither party
+  opens alone; the guardian leg re-seals without reading `sk`; the user leg
+  needs the PIN; wrong PIN / wrong device / wrong guardian all fail —
+  `shared/crypto/src/core.test.ts`.
+- The client flow end-to-end over a blind relay (arm on the user's device →
+  request from a locked device → guardian approve → wrong PIN fails without
+  burning the slot → right PIN recovers the exact original key; locked-vault
+  guard rails) — `mobile/src/lib/__tests__/guardianRecovery.test.ts` (real
+  crypto; the API is an in-memory relay holding only opaque strings).
+- The server `/keys/guardian*` relay endpoints have **no integration suite
+  yet** — a known defect tracked in Open questions (arm → request → approve →
+  finish + removed-guardian rejection).
 
 ## Out of scope
 

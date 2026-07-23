@@ -13,6 +13,13 @@ process.env.NODE_ENV = process.env.NODE_ENV || 'test';
 process.env.JWT_SECRET = 'integration-test-secret';
 process.env.ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || 'test-key-not-used';
 process.env.UPLOAD_DIR = process.env.UPLOAD_DIR || require('os').tmpdir() + '/hc-test-uploads';
+// Pin the mongod binary cache to a cwd-independent path: when the suite runs
+// through the root `npm test` fan-out, mongodb-memory-server would otherwise
+// resolve node_modules/.cache from the repo root and every parallel test
+// process would race-download the binary (corrupting its MD5 check). Same path
+// the CI workflow caches.
+process.env.MONGOMS_DOWNLOAD_DIR =
+  process.env.MONGOMS_DOWNLOAD_DIR || require('path').join(require('os').homedir(), '.cache', 'mongodb-binaries');
 delete process.env.E2EE_MIN_APP_VERSION; // version gate is exercised explicitly per test
 
 const { MongoMemoryServer } = require('mongodb-memory-server');

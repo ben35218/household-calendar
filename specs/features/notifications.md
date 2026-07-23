@@ -1,13 +1,16 @@
 ---
 title: Notifications & reminders
 status: current
-last-verified: 4d68a39 (2026-07-21)
+last-verified: d7c71e0 (2026-07-22)
 code:
   - mobile/src/lib/notifications.ts
   - mobile/src/lib/push.ts
   - server/src/routes/notifications.js
   - server/src/services/{push,notify}.js
   - server/src/jobs/scheduler.js
+tests:
+  - server/src/test/notifications.integration.test.js
+  - server/src/jobs/scheduler.test.js
 ---
 
 # Notifications & reminders
@@ -66,6 +69,20 @@ obsolete.
 Reminder content never reaches the server (scheduled on-device from decrypted
 records). Security-alert pushes carry no content — only that a lifecycle event
 occurred.
+
+## Verification
+
+- Push-device registration: web subscribe/unsubscribe and native
+  register/unregister validate input, replace per endpoint/token (no
+  duplicates, fresh keys win), and coerce unknown platforms; `push/key` is
+  always `configured` (native needs no server keys) with a null web key when
+  VAPID is unset; the `local-reminders` duplicate-guard flag round-trips —
+  `notifications.integration.test.js`.
+- The daily reminder cron's behavior — per-member 7am-local firing, timezone
+  spread, audience resolution (`alertAudience` + explicit `alertUserIds`), and
+  the E2EE-active household skip — `jobs/scheduler.test.js`.
+- On-device scheduling (`lib/notifications.ts` rolling window) has no automated
+  coverage yet; it is exercised on-device.
 
 ## Open questions
 
